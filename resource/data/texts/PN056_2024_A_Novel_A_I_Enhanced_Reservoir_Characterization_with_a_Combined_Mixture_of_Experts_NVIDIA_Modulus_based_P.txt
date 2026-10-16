@@ -1,0 +1,1740 @@
+      A Novel A.I Enhanced Reservoir Characterization with a
+      Combined Mixture of Experts - NVIDIA Modulus based
+        Physics Informed Neural Operator Forward Model
+
+      Clement Etienam*[1], Yang Juntao1, Issam Said1, Oleg Ovcharenko1, Kaustubh Tangsali1, Pavel
+                                        Dimitrov1, Ken Hester1
+
+                                                     ABSTRACT
+  We have developed an advanced workflow for reservoir characterization that elegantly addresses the
+  challenges of reservoir history matching. This novel approach integrates a Physics Informed Neural
+  Operator (PINO) as a forward model within a sophisticated mixture of expert’s framework, named Cluster
+  Classify Regress (CCR). The process of inverse modeling is facilitated through an adaptive Regularized
+  Ensemble Kalman Inversion (aREKI), which is particularly efficient for rapid uncertainty quantification
+  tasks involved in reservoir history matching. In our methodology, the unknown fields of permeability and
+  porosity are parameterized, capturing non-Gaussian posterior measures using advanced techniques such as
+  a variational convolution autoencoder and the CCR. The CCR not only serves as exotic priors in our inverse
+  modeling but also synergizes as a supervised model with the prior PINO surrogate to accurately simulate
+  the nonlinear dynamics described by the Peaceman well equations in the forward model. The CCR
+  approach is designed with flexibility, allowing for any distinct and independent machine learning algorithm
+  to be applied across its three stages. The updating of the PINO reservoir surrogate is driven by a loss
+  function derived from supervised data as well as the initial conditions and residuals of the governing black
+  oil PDEs. The integrated model of the PINO and CCR now called PINO-Res-Sim outputs various crucial
+  parameters, including pressures, water and gas saturations, and production rates for oil, water, and gas. This
+  methodology has been validated against traditional numerical simulators in a controlled waterflooding
+  experiment conducted on two synthetic reservoirs and a water-alternating-gas experiment of the Norne
+  field, demonstrating remarkable accuracy. Further application of our PINO-Res-Sim surrogate in the aREKI
+  history matching workflow showed its potential by efficiently recovering unknown permeability and
+  porosity fields with a computational speedup of up to 100 - 6000 times faster than conventional simulation
+  techniques. The learning phase for the PINO-Res-Sim model, conducted on an NVIDIA H100 with 80G of
+  memory, was impressively efficient—taking approximately 30 minutes for 10,000 training samples in a
+  synthetic 2D model, 5 hours in a 3D model, and 4 hours for 100 samples from the Norne field. This
+  workflow is also compatible with ensemble-based methods, which are beneficial for sampling posterior
+  densities in complex computational tasks where evaluating likelihoods is computationally expensive.
+
+
+
+
+  Keywords: Mixture of experts; Cluster Classify Regress; adaptive Regularised Ensemble Kalman Inversion; PINO;
+  Variational convolution autoencoder; Reservoir history matching; Bayesian inverse problems
+
+
+
+
+[1]
+   NVIDIA
+* Corresponding author
+                                                           1
+ 1   Introduction
+
+1.1 Overview
+Reservoir engineering is a critical field where professionals strive to develop dependable simulation models
+that can precisely emulate the intricate behaviours of subsurface reservoir systems. At the heart of this
+challenge lies the inverse problem, which involves using a set of observed measurements, denoted as y, to
+deduce a set of model parameters, u.
+
+These observed data, direct functions of state variables, serve as a gateway to infer vital information about
+the model parameters amidst inherent uncertainties. Focused primarily on discrete inverse problems, i.e.
+systems characterized by a finite number of parameters, reservoir history matching emerges as a
+quintessential example. Here, the finite data, marred by measurement inaccuracies, render the exact
+estimation of reservoir model parameters from inconsistent and incomplete data via a forward model (likely
+flawed itself) a formidable task. Notwithstanding, pre-existing knowledge on the geological model,
+informed by cores, logs, and seismic data, alongside insights into the depositional environment, assists in
+navigating these complexities.
+
+Reservoir history matching, aimed at aligning the reservoir model with actual historical dynamic
+production data to forecast future production and diminish uncertainty in reservoir descriptions, epitomizes
+an ill-posed problem. The discrepancy between the limited independent data and the multitude of variable
+combinations underscores the infinite possibilities of unknown reservoir properties capable of matching
+observed data. This dilemma is compounded by the inaccuracies and potential inconsistencies in reservoir
+information, leading to models riddled with uncertain parameters and, by extension, uncertain predictions.
+
+The past decade has witnessed a growing emphasis on quantifying uncertainty in reservoir model
+predictions and descriptions to manage risk effectively. This fascination with uncertainty characterization
+has popularized the generation of multiple history-matched models. Yet, this approach does not necessarily
+provide an accurate assessment of uncertainty, a concept devoid of scientific significance outside the
+statistical and probabilistic domain. Bayesian statistics offers a coherent framework for addressing
+uncertainty, enabling the formulation of the posterior probability density function (pdf) for reservoir model
+parameters, conditioned on field measurements like production, electromagnetic, and seismic data.
+
+Characterizing model uncertainty, therefore, boils down to sampling this posterior pdf, with a proper
+assessment of uncertainty in reservoir performance predictions emerging from statistical analysis of
+predicted outcomes across various models. Markov chain Monte Carlo (MCMC) methods, despite their
+theoretical appeal for sampling the posterior pdf, face challenges in high-dimensional scenarios due to the
+computational intensity required for evaluating the likelihood associated with each transition in state,
+rendering direct application to realistic reservoir problems impractical.
+
+Our Contribution:
+   • We introduce a cutting-edge approach incorporating the Fourier neural operator surrogate model
+      (PINO-surrogate), leveraging both data and physics loss within the NVIDIA Modulus framework
+      to supplant traditional black oil model reservoir equations.
+   • This innovation paves the way for a novel inverse modelling workflow that utilizes the PINO
+      surrogate in conjunction with exotic priors to meticulously calibrate the permeability and porosity
+      fields of the target reservoir. Furthermore, this workflow is adeptly employed for forward
+      uncertainty quantification and field optimization, showcasing its utility in enhancing reservoir
+      characterization and modelling.
+   • Through our work, we aim to advance the integration of Fourier neural operator techniques in
+      reservoir engineering, building upon the foundation of recent studies that have demonstrated the
+      potential of such models in improving the accuracy and efficiency of reservoir characterization and
+      predictive modelling processes.
+                                                      2
+1.2 Forward problem
+
+1.2.1 Two Phase Flow
+Our simplified model for two-phase flow in porous media for reservoir simulation is given as,
+               𝜕𝑆𝑤                                      𝜕𝑆𝑜
+             𝜑     − 𝛻 . [𝑇𝑤 (𝛻𝑝𝑤 + 𝜌𝑤 𝑔𝑘)] = 𝑄𝑤 ; 𝜑         − 𝛻 . [𝑇𝑜 (𝛻𝑝𝑜 + 𝜌𝑜 𝑔𝑘)] = 𝑄𝑜
+                𝜕𝑡                                      𝜕𝑡
+                                                                                                   Eqn. (1a)
+where subscript 𝑤 stands for water and subscript 𝑜 stands for oil. The system is closed by adding two
+additional equations 𝑃𝑐𝑤𝑜 = 𝑝𝑜 − 𝑝𝑤 ; 𝑆𝑤 + 𝑆𝑜 = 1. This gives four unknowns oil pressure 𝑝𝑜 , water
+pressure 𝑝𝑤 , water saturation 𝑆𝑤 and oil saturation 𝑆𝑜 . Gravity effects are considered by the terms 𝜌𝑤 𝑔𝑘
+and 𝜌𝑜 𝑔𝑘. Ω ⊂ ℝ𝑛 (𝑛 = 2, 3) is the modelling domain with boundary 𝜕Ω, and [0, 𝑡𝑓 ] is the time interval
+for which production data is available. 𝜑 (𝑥) stands for the porosity, and by 𝑇𝑜 , 𝑇𝑤 and 𝑇 the
+transmissibilities, which are known functions of the absolute permeability 𝐾 and the water saturation 𝑆𝑤 :
+                                𝐾(𝑥)𝐾𝑟𝑤 (𝑆𝑤 )          𝐾(𝑥)𝐾𝑟𝑜 (𝑆𝑤 )
+                          𝑇𝑤 =                 ; 𝑇𝑜 =                ; 𝑇 = 𝑇𝑤 + 𝑇𝑜
+                                      𝜇𝑤                   𝜇𝑜
+                                                                                                   Eqn. (1b)
+The relative permeabilities 𝐾𝑟𝑤 (𝑆𝑤 ) and 𝐾𝑟𝑜 (𝑆𝑤 ) are available as tabulated functions, and 𝜇𝑤 and 𝜇𝑜
+denote the viscosities of each phase. 𝑄𝑜 , 𝑄𝑤 and 𝑄 = 𝑄𝑜 + 𝑄𝑤 define the oil flow, the water flow, and
+the total flow, respectively, which are measured at the well positions. Eqn. (1a) is solved with appropriate
+initial conditions and a no-flux boundary condition on 𝜕Ω. We neglect the gravity terms 𝜌𝑤 𝑔𝑘 and 𝜌𝑜 𝑔𝑘,
+as well as capillary pressure (such that 𝑃𝑤 = 𝑃𝑜 = 𝑃). We set the following initial and boundary conditions
+               0 (𝑥) ; 𝑃(𝑥, 0) = 𝑃0 (𝑥) ; 𝛻𝑃. 𝜈 = 0. Here, 𝜈 is the outward unit normal to 𝜕Ω, signifying
+𝑆𝑤 (𝑥, 0) = 𝑆𝑤                     𝑤
+no flux across the boundary. This yields the pressure and saturation equations as follows.
+                                               − 𝛻 . [𝑇𝛻𝑃] = 𝑄
+                                                                                                    Eqn.(2a)
+                                           𝜕𝑆𝑤
+                                         𝜑     − 𝛻 . [𝑇𝑤 (𝛻𝑃)] = 𝑄𝑤
+                                            𝜕𝑡
+                                                                                                    Eqn.(2b)
+1.2.2 Three Phase Flow
+Our simplified model for three -phase flow in porous media for reservoir simulation is given as,
+                                     𝜕𝑆𝑤
+                                  𝜑       − 𝛻 . [𝑇𝑤 (𝛻𝑃𝑤 + 𝜌𝑤 𝑔𝑘)] = 𝑄𝑤
+                                      𝜕𝑡
+                                                                                                   Eqn. (3a)
+
+                                      𝜕𝑆𝑜
+                                  𝜑       − 𝛻 . [𝑇𝑜 (𝛻𝑃𝑜 + 𝜌𝑜 𝑔𝑘)], = 𝑄𝑜
+                                      𝜕𝑡
+                                                                                                    Eqn. (3b)
+           𝜌𝑔                     𝑅𝑠𝑜 𝜌𝑔                               𝜕       𝜌𝑔       𝑅𝑠𝑜 𝜌𝑔
+        𝛻. (  𝑇𝑔 (𝛻𝑃𝑔 + 𝜌𝑔 𝑔𝑘) +         𝑇𝑜 (𝛻𝑃𝑜 + 𝜌𝑜 𝑔𝑘)) − 𝑄𝑔 = − [𝜑 ( 𝑆𝑔 +                  𝑆 )]
+           𝐵𝑔                       𝐵𝑜                                 𝜕𝑡      𝐵𝑔        𝐵𝑜 𝑜
+                                                                                                  Eqn. (3c)
+where subscript 𝑤 = water, 𝑜 = oil, 𝑔 = gas. The system is closed by adding three additional equations.
+
+                           𝑃𝑐𝑤𝑜 = 𝑃𝑜 − 𝑃𝑤 ; 𝑃𝑐𝑜𝑔 = 𝑃𝑔 − 𝑃𝑜 ; 𝑆𝑤 + 𝑆𝑜 + 𝑆𝑔 = 1
+                                                                                                    Eqn. (3d)
+
+Gravity effects are considered by the terms 𝜌𝑤 𝑔𝑘 and 𝜌𝑜 𝑔𝑘. Ω ⊂ ℝ𝑛 (𝑛 = 2, 3) is the modelling domain
+with boundary 𝜕Ω , and [0, 𝑡𝑓 ] is the time interval for which production data is available. 𝜑 (𝑥) = porosity,
+𝑇𝑜 , 𝑇𝑤 , 𝑇𝑔 and 𝑇 the transmissibilities,
+
+
+
+                                                      3
+                             𝐾(𝑥)𝐾𝑟𝑤 (𝑆𝑤 )        𝐾(𝑥)𝐾𝑟𝑜 (𝑆𝑤 )        𝐾(𝑥)𝐾𝑟𝑔 (𝑆𝑜 )
+                      𝑇𝑤 =                 ; 𝑇𝑜 =               ; 𝑇𝑔 =               ;
+                                 𝜇𝑤                   𝜇𝑜                   𝜇𝑔
+                                            𝑇 = 𝑇𝑤 + 𝑇 𝑜 + 𝑇𝑔
+
+𝐾𝑟𝑤 (𝑆𝑤 ) and 𝐾𝑟𝑜 (𝑆𝑤 ) = relative permeabilities, 𝜇𝑤 , 𝜇𝑜 , 𝜇𝑔 = viscosities of each phase. 𝑄𝑜 , 𝑄𝑤 , 𝑄𝑔 and
+𝑄 = 𝑄𝑜 + 𝑄𝑤 + 𝑄𝑔 = oil, water flow, gas flow and the total flow, respectively. Eqn.3 (a-d) is solved with
+                                              0 (𝑥); 𝑃(𝑥, 0) = 𝑃0 (𝑥) and a no-flux boundary condition,
+appropriate initial conditions, 𝑆𝑤 (𝑥, 0) = 𝑆𝑤                    𝑤
+𝛻𝑝. 𝜈 = 0, on 𝜕Ω. Gravity terms 𝜌𝑤 𝑔𝑘 and 𝜌𝑜 𝑔𝑘, as well as capillary pressure are ignored (such that
+𝑃𝑤 = 𝑃𝑜 = 𝑃𝑔 = 𝑃 ).
+
+1.3 Surrogate forward modelling with a Fourier Neural operator (FNO) - Contribution
+If the notation above is clear, we now discuss the PINO model used for solving the forward problem posed
+in Eqn.2(a & b) and Eqn. 3(a-d).
+
+
+
+
+                   Figure 1: A standard Fourier neural operator (FNO) as adopted from [54]
+
+The Fourier neural operator (FNO) is effective in learning the mapping relationships between the infinite-
+dimensional function spaces that convert a traditional convolutional operation into a multiplication
+operation using the Fourier transform [54]. This causes the higher modes of the neural layer to be removed
+from the Fourier space, leaving only the lower modes in the Fourier layer. Hence, FNO can greatly improve
+the computational efficiency of the training process. The goal of FNO is to use a neural network 𝐺 † (𝑎) =
+ 𝑢 to approximate the mapping of function 𝐺 ∶ 𝑈 → 𝑌, 𝐺 ≈ 𝐺 † , where Y and U are separable Banach
+spaces of function.
+
+Figure 1 shows the full FNO architecture; input observation 𝑣(𝑥) is first lifted to a higher dimensional
+potential representation 𝑒0 (𝑥) = 𝑀(𝑣(𝑥)) by fully connected shallow neural network 𝑀. Then, 𝑒0 (𝑥)is
+used as input for an iterative Fourier layer 𝑒0 → 𝑒1 → 𝑒2 → · · · → 𝑒𝑁 . The concrete iterative process
+from state 𝑒𝑛 → 𝑒𝑛 + 1 can be written as:
+                              𝑒𝑛+1 (𝑥) = 𝜎 (𝑊𝑒𝑛 (𝑥) + (℘(𝑎; 𝜗)𝑒𝑛 (𝑥))(𝑥))
+                                                                                                    Eqn. (4)
+
+where 𝑊 is a local liner transform; 𝜎 is a non-linear activation function; 𝑒0 and 𝑒1 are the input and output
+of Fourier layer 1. Here, 𝜎 is a non-linear activation function, 𝑊 is a linear transformation, and ℘ is an
+integral kernel transformation parameterized by a neural network. (℘(𝑎; 𝜗)𝑒𝑛 (𝑥))(𝑥) is the bias, that can
+be written as an integral:
+                                (℘(𝑢; 𝜗)𝑒𝑛 (𝑥))(𝑥) = ∫ ℘𝜗 (𝑥, 𝑦)𝑒𝑛 (𝑦)𝑑𝑦
+                                                                                                    Eqn. (5)
+
+
+To accelerate the integration process ∫ ℘𝜗 (𝑥, 𝑦)𝑒𝑛 (𝑦)𝑑𝑦 Li et al. (2020) imposed a condition that
+℘𝜗 (𝑥, 𝑦) = ℘𝜗 (𝑥 − 𝑦) and the new integral becomes,
+
+                                                      4
+                     (℘(𝑢; 𝜗)𝑒𝑛 (𝑥))(𝑥) = ∫ ℘𝜗 (𝑥, 𝑦)𝑒𝑛 (𝑦)𝑑𝑦 = Ϝ−1 (𝑅𝜗 . (Ϝ𝑒𝑛 ))(𝑥)
+                                                                                                           Eqn. (6)
+
+where Ϝ denotes the Fourier transform, and Ϝ−1 denotes the inverse Fourier transform. 𝑅𝜗 is a Fourier
+transform of periodic function ℘, 𝑅𝜗 = Ϝ(℘𝜗), and ℘𝜗 is the kernel of the neural network. Following the
+𝑁 Fourier layer iteration, the last state output 𝑒𝑁 (𝑥) is projected back to the original space using a fully
+connected neural network 𝑆, 𝑦(𝑥) = 𝑆(𝑒𝑁 (𝑥)).
+In every block of the Fourier layer, FNO approximates highly non-linear functions mainly via combining
+the linear transform 𝑊 and global integral operator 𝑅𝜗 (Fourier transform). 𝑅𝜗 can be parameterized as a
+complex-valued tensor in the Fourier space from truncating high Fourier frequency modes 𝑘, and it can
+greatly reduce the number of trainable parameters and improve efficiency during the process of training.
+
+1.3.1 Two phase flow physics informed surrogate modelling.
+We are interested in predicting the pressure and water saturation given any input of the absolute
+permeability field (𝐾) and effective porosity (𝜑). For completeness, the input and output tensors are
+indicated below, 𝑝𝑖𝑛𝑖 , 𝑠𝑖𝑛𝑖 are the initial pressure and water saturation, 𝑑𝑡, is the change in time steps. Two
+different FNO models [54] are trained simultaneously for the pressure and water saturation, with the same
+interacting loss function, this is to accommodate for the difference in magnitude between these quantities.
+        𝑋 = {𝐾, 𝑄𝑤 , 𝑄, 𝜑, 𝑑𝑡, 𝑃𝑖𝑛𝑖 , 𝑆𝑖𝑛𝑖 } ∈ ℝ𝐵0×1×𝑊×𝐻 (𝑓𝑜𝑟 2𝐷 𝑐𝑎𝑠𝑒) , ℝ𝐵0 ×1×𝐷×𝑊×𝐻 (𝑓𝑜𝑟 3𝐷 𝑐𝑎𝑠𝑒)
+                                          𝑃 = 𝑓1 (𝑋; 𝜃𝑝 ),    𝑆𝑤 = 𝑓2 (𝑋; 𝜃𝑠 )
+𝐾 is the absolute permeability, 𝑄 is the total flow, 𝑄𝑤 is the water flow (injection rate), 𝑑𝑡 is the time
+stepping, 𝑃𝑖𝑛𝑖 is the initial pressure of the reservoir and 𝑆𝑖𝑛𝑖 is the initial water saturation of the reservoir. 𝑃
+is the pressure and 𝑆𝑤 is the water saturation. 𝑓1 (𝑋; 𝜃𝑝 ) is the FNO model for the pressure output and
+𝑓2 (𝑋; 𝜃𝑠 ) is the FNO model for the saturation output.
+The physics loss ansatz is then,
+                                                              1
+                              𝑉(𝑄, 𝑝; 𝑇)𝑝𝑟𝑒𝑠𝑠𝑢𝑟𝑒 𝑒𝑞𝑢𝑎𝑡𝑖𝑜𝑛 = ( ‖− 𝛻 . [𝑇𝛻𝑃] − 𝑄 ‖22 )
+                                                              𝑛𝑠
+                                                                                                           Eqn. (7a)
+                                                                                                 2
+                                                           1     𝜕𝑆𝑤
+                    𝑉(𝑝, 𝑆𝑤 ; 𝑡, 𝑇𝑤 )𝑠𝑎𝑡𝑢𝑟𝑎𝑡𝑖𝑜𝑛 𝑒𝑞𝑢𝑎𝑡𝑖𝑜𝑛 = ‖(𝜑         − 𝛻 . [𝑇𝑤 (𝛻𝑃)]) − 𝑄𝑤 ‖
+                                                           𝑛𝑠     𝜕𝑡                             2
+                                                                                                          Eqn. (7b)
+                    𝜙𝑐𝑓𝑑 = 𝑉(𝑄, 𝑝; 𝑇)𝑝𝑟𝑒𝑠𝑠𝑢𝑟𝑒 𝑒𝑞𝑢𝑎𝑡𝑖𝑜𝑛 + 𝑉(𝑝, 𝑆𝑤 ; 𝑡, 𝑇𝑤 )𝑠𝑎𝑡𝑢𝑟𝑎𝑡𝑖𝑜𝑛 𝑒𝑞𝑢𝑎𝑡𝑖𝑜𝑛
+                                                                                                           Eqn.(8a)
+
+where 𝑛𝑠 is the number of sample points. Together with the initial conditions and boundary conditions.
+                                           0 (𝑥) ; 𝑃(𝑥, 0) = 𝑃(𝑥) ; 𝐹 = 0
+                             𝑆𝑤 (𝑥, 0) = 𝑆𝑤                            𝑦
+                               1                 0 (𝑥)‖2
+                                                            1
+                        𝜙𝑖𝑐 = ‖𝑆𝑤 (𝑥, 0) − 𝑆𝑤          2+     ‖𝑃(𝑥, 0) − 𝑃(𝑥)‖22
+                              𝑛𝑠                           𝑛𝑠
+                                                                                                  Eqn. (8b)
+                                                     1      2
+                                             𝜙𝑏𝑐 =     ‖𝐹 ‖
+                                                     𝑛𝑠 𝑦 2
+                                                                                                   Eqn.(8c)
+
+                                             𝜙 = 𝜙𝑐𝑓𝑑 + 𝜙𝑖𝑐 + 𝜙𝑏𝑐
+                                                                                                         Eqn. (9a)
+                                                                   𝑇
+                                                  𝜃 = [𝜃𝑝 , 𝜃𝑠 ]
+                                                                       𝑗
+                                               𝜃 𝑗+1 = 𝜃 𝑗 − 𝜖𝛻𝜙𝜃
+                                                                                                          Eqn. (9b)
+where j is the iteration step and 𝜖 > 0 is the learning rate. The final 𝑓1 (𝑋; 𝜃𝑝 ), and 𝑓2 (𝑋; 𝜃𝑠 ) is the learned
+                                                         5
+PINO surrogate reservoir model. Also,
+                                                                     𝛻𝑃 = [𝑃𝑥 , 𝑃𝑦 ]
+
+ Algorithm 1: Two-phase PINO
+ Input: X0 = {K, Q w , Q, φ, dt, Pini , Sini } ∈
+ ℝB0×1×W×H (for 2D case) or ℝB0×1×D×W×H (for 3D case),
+ X1 = {K, Q w , Q, φ, dt, Pini , Sini } ∈ ℝB1×1×W×H (for 2D case) or ℝB0×1×D×W×H (for 3D case) ,
+ Y1pt, --labelled pressure
+ Y1st , -- labelled saturation
+ f1 (: , θp ),
+ f2 (: , θs ),
+ T = 30, -- Time
+ epoch, tol, w1 , w2, w3, w4, w5, w6 ϵ
+
+ j = 0
+ while (j ≤ epoch) or (ϕ ≤ tol)do
+     1. Y0p = f1 (X0 ; θp ), Y0s = f2 (X0 ; θs )
+     2. Y1p = f1 (X1 ; θp ), Y1s = f2 (X1 ; θs ),
+                                  K(x)Krw(Y0s)                K(x)Kro (Y0s)
+      3.    Compute: Tw =                           ; To =                       ; T = Tw + To
+                                       μw                           μo
+                                                         1          ∂Y0s                                           2
+      4.    Compute: V(Y0p , Y0s ; t, Tw )           =        ‖(φ          − ∇ . [Tw (∇Y0p )]) − X0 [Q w ]‖
+                                                0s       ns          ∂t                                            2
+                                                         1                                     2
+      5.    Compute: V(X0 [Q], Y0p ; T)              = n ( ‖− ∇ . [T∇Y0p ] − X0 [Q]‖ )
+                                             0p           s                                    2
+                                  K(x)Krw(Y1s)                K(x)Kro (Y1s)
+      6.    Compute: Tw =                           ; To =                       ; T = Tw + To
+                                      μwater                        μoil
+                                                         1          ∂Y                                             2
+      7.    Compute: V(Y1p , Y1s ; t, Tw)            = n ‖(φ ∂t1s − ∇ . [Tw (∇Y1p )]) − X1 [Q w ]‖
+                                                1s       s                                                         2
+                                                         1                                     2
+      8.    Compute: V(X1 [Q], Y1p ; T)              = n ( ‖− ∇ . [T∇Y1p ] − X1 [Q]‖ )
+                                               1p        s                                     2
+                                               2
+      9.    ϕp = ‖Y1pt, − f1 (X1 ; θp )‖
+                                                2
+                                               2
+      10. ϕs = ‖Y1st, − f2 (X1 ; θs )‖2
+      11. ϕ = w1 ϕp + w2 ϕs + w3 V(Y0p , Y0s ; t, Tw )                          + w4 V(X0 [Q], Y0p ; T)        +
+                                                                           0s                             0p
+             w5 V(Y1p , Y1s ; t, Tw ) + w6 V(X1 [Q], Y1p ; T)
+                                      1s                                    1p
+      12. Update models:
+                                                                                     T
+                                                                θ = [θp , θs ]
+                                                                               j
+                                                               j+1
+                                                              θ = θj − ϵ∇ϕθ
+          j ← j+ 1
+ Output:f1 (: , θp ), f2 (: , θs ),
+
+𝑤1 , 𝑤2 , 𝑤3 , 𝑤4 , 𝑤5 , 𝑤6 are the weights associated to the loss functions associated to the 6 terms. 𝑋0 =
+{𝐾, 𝑄𝑤 , 𝑄, 𝜑, 𝑑𝑡, 𝑃𝑖𝑛𝑖 , 𝑆𝑖𝑛𝑖 } ∈ ℝ𝐵0×1×𝑊×𝐻 are the dictionary inputs without running the numerical reservoir simulator.
+𝑋1 = {𝐾, 𝑄𝑤 , 𝑄, 𝜑, 𝑑𝑡, 𝑃𝑖𝑛𝑖 , 𝑆𝑖𝑛𝑖 } ∈ ℝ𝐵1×1×𝑊×𝐻 are the dictionary inputs from running the reservoir simulator.
+𝑒𝑝𝑜𝑐ℎ, 𝑡𝑜𝑙 are the number or epochs and the tolerance level for the loss function. 𝑓(: , 𝜃𝑝 ), 𝑓 (: , 𝜃𝑠 ) are the FNO
+models for the pressure equation and water saturation equation respectively.
+
+1.3.2 Three phase flow physics informed surrogate modelling.
+We are interested in predicting the pressure, water saturation and gas saturation fields given any input of
+the absolute permeability field (𝐾) and effective porosity (𝜑). For completeness, the input and output
+tensors are indicated below, 𝑝𝑖𝑛𝑖 , 𝑠𝑖𝑛𝑖 are the initial pressure and water saturation, 𝑑𝑡, is the change in time
+steps. three different FNO models [54] are trained simultaneously for the pressure, water saturation and gas
+saturation, with the same interacting loss function, this is to accommodate for the difference in magnitude
+between these quantities.
+                               𝑋 = {𝐾, 𝐹𝑇𝑀, 𝜑, 𝑃𝑖𝑛𝑖 , 𝑆𝑖𝑛𝑖 } ∈ ℝ𝐵0 ×1×𝐷×𝑊×𝐻
+                                                                                 6
+                            𝑃 = 𝑓1 (𝑋; 𝜃𝑝 ),     𝑆𝑤 = 𝑓2 (𝑋; 𝜃𝑠 ),     𝑆𝑔 = 𝑓3 (𝑋; 𝜃𝑔 ),
+𝐾 is the absolute permeability, 𝑄 is the total flow, 𝑄𝑤 is the water flow (injection rate), 𝑑𝑡 is the time
+stepping, 𝑃𝑖𝑛𝑖 is the initial pressure of the reservoir and 𝑆𝑖𝑛𝑖 is the initial water saturation of the reservoir. 𝑃
+is the pressure and 𝑆𝑤 is the water saturation. 𝑓1 (𝑋; 𝜃𝑝 ) is the FNO model for the pressure output and
+𝑓2 (𝑋; 𝜃𝑠 ) is the FNO model for the water saturation output and 𝑓3 (𝑋; 𝜃𝑔 ) is the FNO model for the gas
+saturation output.
+The physics loss is then,
+                                                            1
+                            𝑉(𝑄, 𝑝; 𝑇)𝑝𝑟𝑒𝑠𝑠𝑢𝑟𝑒 𝑒𝑞𝑢𝑎𝑡𝑖𝑜𝑛 = ( ‖− 𝛻 . [𝑇𝛻𝑃] − 𝑄 ‖22 )
+                                                            𝑛𝑠
+                                                                                                         Eqn. (10a)
+                                                                                               2
+                                                       1      𝜕𝑆𝑤
+                    𝑉(𝑝, 𝑆𝑤 ; 𝑡, 𝑇𝑤 )water 𝑒𝑞𝑢𝑎𝑡𝑖𝑜𝑛 = ‖(𝜑           − 𝛻 . [𝑇𝑤 (𝛻𝑃)]) − 𝑄𝑤 ‖
+                                                      𝑛𝑠       𝜕𝑡                              2
+                                                                                                         Eqn. (10b)
+                                                                                                                 2
+                                 1     𝜌𝑔         𝑅𝑠𝑜 𝜌𝑔                𝜕    𝜌𝑔    𝑅𝑠𝑜 𝜌𝑔
+ 𝑉(𝑝, 𝑆𝑔 ; 𝑡, 𝑇𝑔 )              = ‖𝛻. ( 𝑇𝑔 (𝛻𝑃) +        𝑇𝑜 (𝛻𝑃)) − 𝑄𝑔 + [𝜑 ( 𝑆𝑔 +        𝑆 )]‖
+                   gas 𝑒𝑞𝑢𝑎𝑡𝑖𝑜𝑛  𝑛𝑠    𝐵𝑔          𝐵𝑜                   𝜕𝑡   𝐵𝑔     𝐵𝑜 𝑜
+                                                                                                                 2
+                                                                                                         Eqn.(10c)
+
+     𝜙𝑐𝑓𝑑 = 𝑉(𝑄, 𝑝; 𝑇)𝑝𝑟𝑒𝑠𝑠𝑢𝑟𝑒 𝑒𝑞𝑢𝑎𝑡𝑖𝑜𝑛 + 𝑉(𝑝, 𝑆𝑤 ; 𝑡, 𝑇𝑤 )water 𝑒𝑞𝑢𝑎𝑡𝑖𝑜𝑛 + 𝑉(𝑝, 𝑆𝑔 ; 𝑡, 𝑇𝑔 )
+                                                                                                 gas 𝑒𝑞𝑢𝑎𝑡𝑖𝑜𝑛
+                                                                                                         Eqn. (11)
+Together with the initial conditions and boundary conditions.
+                                   0 (𝑥)
+                     𝑆𝑤 (𝑥, 0) = 𝑆𝑤       ; 𝑃(𝑥, 0) = 𝑃(𝑥) ; 𝑆𝑔 (𝑥, 0) = 𝑆𝑔0 (𝑥); 𝐹𝑦 = 0
+                   1                 0 (𝑥)‖2 +
+                                                1                        1                   2
+          𝜙𝑖𝑐 = ‖𝑆𝑤 (𝑥, 0) − 𝑆𝑤             2      ‖𝑃(𝑥, 0) − 𝑃(𝑥)‖22 + ‖𝑆𝑔 (𝑥, 0) − 𝑆𝑔0 (𝑥)‖
+                  𝑛𝑠                           𝑛𝑠                       𝑛𝑠                   2
+                                                                                                        Eqn. (12a)
+                                                      1       2
+                                                𝜙𝑏𝑐 =    ‖𝐹𝑦 ‖
+                                                      𝑛𝑠      2
+                                                                                                         Eqn.(12b)
+                                       𝝓 = 𝝓𝒄𝒇𝒅 + 𝝓𝒊𝒄 + 𝝓𝒃𝒄 + 𝝓𝒅𝒂𝒕𝒂
+                                                                                                         Eqn. (13)
+                                                                      𝑇
+                                                𝜃 = [𝜃𝑝 , 𝜃𝑠 , 𝜃𝑔 ]
+                                                                          𝑗
+                                               𝜃 𝑗+1 = 𝜃 𝑗 − 𝜖𝛻𝜙𝜃
+In algorithm 2, 𝑤1 … , 𝑤8 are the weights associated to the loss functions associated to the 8 terms. 𝑋0 =
+{𝐾, FTM, 𝜑, 𝑃𝑖𝑛𝑖 , 𝑆𝑖𝑛𝑖 } are the dictionary inputs without running the numerical reservoir simulator. 𝑋1 =
+{𝐾, FTM, 𝜑, 𝑃𝑖𝑛𝑖 , 𝑆𝑖𝑛𝑖 } are the dictionary inputs from running the reservoir simulator. 𝑒𝑝𝑜𝑐ℎ, 𝑡𝑜𝑙 are the
+number or epochs and the tolerance level for the loss function. 𝑓1 (: , 𝜃𝑝 ), 𝑓2 (: , 𝜃𝑠 ), 𝑓3 (: , 𝜃𝑔 )are the FNO
+models for the pressure, water, and gas saturation equation respectively.
+
+1.4 Inverse Problem
+
+In this section, we lay out the problem setting for the inverse problem by primarily following the
+mathematical setup in [56]. We follow the notation of section 1.2 with G: U → Y as the forward operator.
+We aim to solve an inverse problem of finding unknown u ∈ U given observations y of the form.
+
+                                                  y = G(u) + η
+                                                                                                         Eqn. (14)
+
+
+
+
+                                                          7
+Algorithm 2: Three-phase PINO
+Input: X0 = {K, FTM, φ, Pini , Sini } ∈ ℝB0×1×D×W×H , XN0 = {Q w , Q g , Q, dt } ∈ ℝB0×T×D×W×H
+X1 = {K, FTM, φ, Pini , Sini } ∈ ℝB1×1×D×W×H , , XN1 = {Q w , Q g , Q, dt } ∈ ℝB1×T×D×W×H
+Y1pt, --labelled pressure
+Y1st , -- labelled water saturation
+Y1gt , -- labelled gas saturation
+f1 (: , θp ),
+f2 (: , θs ),
+f3 (: , θg ),
+T -- Time
+epoch, tol, w1 , w2, w3, w4, w5, w6 ϵ
+j = 0
+while (j ≤ epoch) or (ϕ ≤ tol)do
+       1. Y0p = f1 (X0 ; θp ), Y0s = f2 (X0 ; θs ) , Y0g = f3 (X0 ; θg )
+       2. Y1p = f1 (X1 ; θp ), Y1s = f2 (X1 ; θs ), Y1g = f3 (X1 ; θg ),
+                                   K(x)Krw(Y0s)                   K(x)Kro (Y0s)                 K(x)Krg(1−(Y0s+Y0g ))
+      3.    Compute: Tw =                              ; To =                          ; Tg =                             ; T = Tw +
+                                            μw                            μo                                  μg
+            To + Tg
+                                                            1             ∂Y                                                   2
+      4.    Compute: V(Y0p , Y0s ; t, Tw )              = n ‖(φ ∂t0s − ∇ . [Tw (∇Y0p )]) − XN0 [Q w ]‖
+                                                   0s        s                                                                 2
+                                                                          1            ρg                  Rso ρg
+      5.    Compute: V(Y0p , Y0s , Y0g ; t, To , Tg )                 = n ‖∇. (B Tg (∇Y0p ) +                  Bo
+                                                                                                                    To (∇Y0p )) −
+                                                                 0g        s            g
+                                                                                                2
+                           ∂        ρg             Rso ρg
+            XN0 [Q g] + ∂t [φ (B Y0g +                      (1 − (Y0s + Y0g ))]‖
+                                        g              Bo
+                                                                                                2
+                                                            1                                             2
+      6.    Compute: V(X0 [Q], Y0p ; T)                 = n ( ‖− ∇ . [T∇Y0p ] − X0 [Q]‖ )
+                                              0p             s                                           2
+                                   K(x)Krw(Y1s)                   K(x)Kro (Y1s)                 K(x)Krg(1−(Y1s+Y1g ))
+      7.    Compute: Tw =                              ; To =                      ; Tg =                                 ; T = Tw +
+                                            μw                            μo                              μg
+            To + Tg
+                                                            1             ∂Y                                               2
+      8.    Compute: V(Y1p , Y1s ; t, Tw)               = n ‖(φ ∂t1s − ∇ . [Tw (∇Y1p )]) − X1 [Q w ]‖
+                                                   1s        s                                                             2
+                                                                          1            ρg                 Rso ρg
+      9.    Compute: V(Y1p , Y1s , Y1g ; t, To , Tg )                 =        ‖∇. (     T (∇Y1p ) +                To (∇Y1p )) −
+                                                                1g        ns           Bg g                   Bo
+                                                                                                2
+                           ∂        ρ              Rso ρg
+            XN1 [Q g] +         [φ ( g Y1g +                (1 − (Y1s + Y1g ))]‖
+                           ∂t       Bg                 Bo
+                                                                                                2
+                                                            1                                             2
+      10. Compute: V(X1 [Q], Y1p ; T)                   =        ( ‖− ∇ . [T∇Y1p ] − X1 [Q]‖ )
+                                                   1p       ns                                            2
+                                                   2
+      11. ϕp = ‖Y1pt, − f1 (X1 ; θp )‖
+                                                  2
+                                                 2
+      12. ϕs = ‖Y1st, − f2 (X1 ; θs )‖2
+                                                   2
+      13. ϕg = ‖Y1gt, − f3 (X1 ; θg )‖
+                                                   2
+      14. ϕ = w1 ϕp + w2 ϕs + w3 ϕg + w4 V(Y0p , Y0s ; t, Tw )                                       + w5 V(X0 [Q], Y0p ; T)            +
+                                                                                                0s                                 0p
+            w6 V(Y1p , Y1s ; t, Tw ) + w7 V(X1 [Q], Y1p ; T)                           + w8 V(Y0p , Y0s , Y0g ; t, To , Tg )
+                                            1s                                    1p                                           1g
+      15. Update models:
+                                                                                            T
+                                                                  θ = [θp , θs , θg ]
+                                                                                            j
+                                                                  θj+1 = θj − ϵ∇ϕθ
+         j ← j+ 1
+Output:f1 (: , θp ), f2 (: , θs ), f3 (: , θg ),
+
+
+
+
+                                                                                        8
+where η is assumed a Gaussian noise with known covariance Γ. To solve the inverse problem instead of a
+filtering problem with Ensemble Kalman methods, we construct an artificial dynamic based on state
+augmentation by constructing the space Z = Y × U, and the mapping Ξ: Z → Z, where.
+                                             𝑢              𝑢
+                                   𝛯(𝑧) = (      ) 𝑓𝑜𝑟 𝑧 = ( ) ∈ 𝑍.
+                                            𝐺(𝑢)            𝑦
+                                                                                            Eqn. (15)
+
+Thus, we have the following artificial dynamics zn+1 = Ξ(zn ). The observation y includes all the historical
+observed data in a fixed time window. We emphasize that the artificial dynamics Ξ is the iterative scheme
+of the ensemble Kalman inversion process, which is different from the actual time dependent dynamics of
+the oil reservoir model.
+
+We denote the observation operator by H: Z → Y which is defined as H = (0, I). We assume the following
+relationship between the observation and the dynamics,
+                                          yn+1 = H zn+1 + ηn+1
+                                                                                               Eqn. (16),
+where {ηn }n∈ Z+ is an i.i.d. sequence with ηn ∼ N(0, Γ). We denote the prior distribution by μ0 . It is of
+common practice to consider a log normal prior on the permeability field. In such case, the Gaussian
+random permeability field can be represented by K = u0 + exp (∑j≤ 1 uj √{λj}θj) where λj and θj are the
+KL expansion basis and u0 , uj are real coefficients. Given a log normal Gaussian prior μ0 , then we can
+sample K with uj ∼ N(0, 1). We denote by γ1 the standard Gaussian measure in R1 , then we have the
+probability space (RN , B(R)N , γ), where B is the Borel σ-algebra and γ = ⨂∞       i=1 γ1 . The wellposedness for
+elliptic as well as parabolic type problems with log normal Gaussian prior has been investigated in [35,57].
+The well-posedness for flow equation is also investigated in [58] in two dimensions with periodic boundary
+condition. However, rigorous proofs for the black oil reservoir models listed in Section 1.2 are not available
+to the author’s best knowledge. Despite the elliptic-parabolic like coupled system, it is complicated by the
+facts that the coefficient in the elliptic equation (e.g. the viscosity in the pressure equation) is dependent on
+the saturation [59]. In addition, non-Gaussian priors have been widely used and validated within the
+engineering community. In section 3, we investigated our method with numerical experiments for history
+matching inverse problem with both Gaussian prior and exotic prior. Rigorous analysis of ensemble
+Kalman methods for inverse problem can be found in [56] with numerical examples on Darcy model of
+groundwater flow. Here we adopted a variation of vanilla ensemble Kalman inversion method called
+αREKI described in Algorithm 3.
+
+
+Typically, in the application of ensemble Kalman methods for history matching problems of oil reservoir
+modelling, the construction of the Kalman gain matrix is often computationally cheaper relative to the
+computational cost of the forward operator G, especially for high fidelity numerical models. In this paper,
+we propose the use of AI surrogate model G † discussed in section 1.3 to replace the numerical
+approximation of G in Algorithm 3.
+
+The ensemble update step can be improved by the application of techniques known as covariance
+localization. It is a technique used in reservoir history matching to filter divergence elimination and
+spurious correlations, which are found in both standard ensemble-based methods. It selectively assimilates
+data during the update step by adjusting the correlation between the data measured at a location A and the
+model parameters or data measured at a further location B to be zero, therefore eliminating long-distance
+non-zero spurious correlations and increasing the degrees of freedom available for data assimilation.
+Various localization methods are available in the literature, and each scheme distinguishes themselves by
+the choice of the localizing function. In this paper, we adopt the fifth order piecewise rational function by
+Gaspari and Cohn as shown below,
+
+                                                        9
+ Algorithm 3: aREKI
+           (j) J
+ Input: {u0 }            -- prior
+                j=1
+ y -- measurements
+ Γ --measurement errors covariance
+ iter -- iteration
+
+ sn = 0
+ n = 0
+ while (sn < 1) or (n ≤ iter)do
+                      (j)
+    1. Compute: G (un ) , j ∈ {1, . . J}
+                                              −1                      2 J
+                                        1
+    2.   Compute: Φn ≡ {2 ‖Γ 2 (y − G(u))‖ }
+                                                                      2 j=1
+    3.   Compute: ̅̅̅̅
+                  Φn , σ2Φn -- mean & variance
+                                                           1
+    4.   Compute ∶ αn =
+                                                    L(y)       L(y)
+                                         min{max{ ̅̅̅̅̅,√ ̅̅̅̅̅̅̅
+                                                            2
+                                                                  },1− sn }
+                                                    2Φn        2σΦ
+                                                                  n
+                                               1
+    5.   Compute: sn = sn + α
+                                               n
+                          1   J        (j)   ̅̅̅̅̅̅̅̅̅̅
+                                                   (j)       (j)   ̅̅̅̅̅̅̅̅̅̅
+                                                                         (j)
+    6.   Compute: CnGG = j−1 ∑j=1 (G (un ) − G (un )) ⊗ (G (un ) − G (un )) , j                                 ∈ {1, . . J}
+                          1   J      (j)   ̅̅̅̅̅̅̅
+                                              (j)        (j)   ̅̅̅̅̅̅̅̅̅̅
+                                                                     (j)
+    7.   Compute: CnuG = j−1 ∑j=1 ((un ) − (un )) ⊗ (G (un ) − G (un )) , j ∈ {1, . . J}
+    8.   Update ensemble :
+                   (j)         (j)                                                            (j)
+              un+1 = un + CnuG (CnGG + αn Γ)−1 (y + √αn ξn − G (un )) , , j ∈ {1, . . J}
+
+ n ← n+ 1
+ Output: u(j)
+
+
+                                                     5                      4             3         2
+                                         1 |z| 1 |z| 5 |z| 5 |z|
+                                        − ( ) + ( ) + ( ) − ( ) + 1,                                                           0 ≤ |z| ≤ c,
+                                         4 c   2 c   8 c   3 c
+         ρ=                         5                 4                     3             2
+                 1 |z| 1 |z| 5 |z|   5 |z|   |z|     2 |z|
+                  ( ) − ( ) + ( ) + ( ) − 5 ( ) + 4 − ( ) , c ≤ |z| ≤ 2c,
+                12 c   2 c   8 c     3 c      c      3 c
+              {                    0,                         2c ≤ |z|.
+                                                                       Eqn. (17)
+
+                         (j)            (j)                                     −1                        (j)
+                    un+1 = un + ρ o CnuG (CnGG + αn Γ)                               (y + √αn ξn − G (un )) , j ∈ {1, . . J}
+                                                                                                                                         Eqn. (18)
+
+The localization function can be introduced to the ensemble update step by Schur product, which is an
+element-by-element multiplication [15]. It is introduced to modify the Kalman Gain during update step for
+aREKI.
+
+1.5 Mixture of experts.
+In general, the problem of designing machine learning based models in a supervised context is the
+following. Assume {(𝑥𝑖 , 𝑦𝑖 )}𝑁  𝑖=1 where 𝑥𝑖 ∈ ℝ
+                                                       𝐾
+                                                          and 𝑦𝑖 ∈ ℝ𝑀 for regression or 𝑦𝑖 ∈ {0,1, … 𝐽}𝑀 for
+classification. Postulating amongst a family of ansatz 𝑓(. ; 𝜃), parametrized by 𝜃 ∈ ℝ𝑃 , we can find a
+𝜃 ∗ such that for all 𝑖 = 1, … 𝑁,𝑦𝑖 = 𝑓(𝑥𝑖 ; 𝜃 ∗ ). Then for all 𝑥 ′ in the set {𝑥𝑖 }𝑁     ′     ′ ∗            ′
+                                                                                     𝑖=1 ,𝑦 ≈ 𝑓(𝑥 ; 𝜃 ). Where 𝑦 is
+                    ′
+the true label of 𝑥
+
+                                                                                     10
+For a set of labelled data 𝑫 = {(𝑥𝑖 , 𝑦𝑖 )}𝑁𝑖=1 , where (𝑥𝑖 , 𝑦𝑖 ) ∈ 𝜒 × 𝛾 assumed to be input and output of a
+model shown in Eqn. 19.
+                                                    𝑦𝑖 ≈ 𝑓(𝑥𝑖 )
+                                                                                                      Eqn. 19
+𝑓: 𝜒 → 𝛾 is irregular and has sharp features, very non-linear and has noticeable discontinuities,
+The output space is taken as 𝛾 = ℝ and 𝜒 = ℝ𝑑
+1.5.1 Cluster
+In this stage, we seek to cluster the training input and output pairs.
+𝜆: 𝜒 × 𝛾 → ℒ ≔ {1, … , 𝐿} where the label function minimizes,
+                                                                     𝐿
+
+                                                 Φ𝑐𝑙𝑢𝑠𝑡 (𝜆) = ∑ ∑ ℓ(𝑥𝑖 , 𝑦𝑖 )
+                                                                    𝑙=1 𝑖𝜖𝑆𝑙
+                                                                                                                 Eqn. 20
+                                                 𝑆𝑙 = {(𝑥𝑖 , 𝑦𝑖 ); 𝜆(𝑥𝑖 , 𝑦𝑖 ) = 𝑙}
+                                                                                                                 Eqn. 21
+ℓ𝑙 loss function associated to cluster 𝑙
+                                                 𝑧𝑖 = (𝑥𝑖 , 𝑦𝑖 ), ℓ𝑙 = |𝑧𝑖 − 𝜇𝑙 |2
+                                                                                                                 Eqn. 22
+       1
+𝜇𝑙 = |𝑆 | ∑𝑖𝜖𝑆𝑙 𝑧𝑖 where |. | denotes the Euclidean norm
+        𝑙
+
+
+1.5.2 Classify
+𝑙𝑖 = 𝜆(𝑥𝑖 , 𝑦𝑖 ) is an expanded training set
+                                                            {(𝑥𝑖 , 𝑦𝑖 , 𝑙𝑖 )}𝑁
+                                                                             𝑖=1
+                                                                                                               Eqn. (23a)
+                                                                𝑓𝑐 : 𝜒 → ℒ
+                                                                                                         Eqn. (23b)
+𝑥 ∈ 𝜒 provides an estimate 𝑓𝑐 ∶ 𝑥 ⟼ 𝑓(𝑥) ∈ ℒ such that 𝑓𝑐 (𝑥𝑖 ) = 𝑙𝑖 for most of the data. Crucial for the ultimate
+fidelity of the prediction. {𝑦𝑖 } is ignored at this phase. The classification function minimizes,
+                                                                    𝑁
+
+                                                 Φ𝑐𝑙𝑢𝑠𝑡 (𝑓𝑐 ) = ∑ 𝜙𝑐 (𝑙𝑖 , 𝑓𝑐 (𝑥𝑖 ))
+                                                                   𝑖=1
+                                                                                                        Eqn. (23c)
+𝜙𝑐 ∶ ℒ × ℒ → ℝ+ is small if 𝑓𝑐 (𝑥𝑖 ) = 𝑙𝑖 for example we can choose 𝑓𝑐 (𝑥 ) = 𝑎𝑟𝑔𝑚𝑎𝑥𝑙∈ℒ 𝑔𝑙 (𝑥 ) where 𝑔𝑙 (𝑥 ) >
+0, ∑ℒ𝑙=1 𝑔𝑙 (𝑥 ) is a soft classifier and 𝜙𝑐 (𝑙𝑖 , 𝑓𝑐 (𝑥𝑖 )) = − log(𝑔𝑙 (𝑥 )) is a cross-entropic loss.
+
+1.5.3 Regress
+                                                          𝑓𝑟 ∶ 𝜒 × ℒ → 𝛾
+                                                                                                               Eqn. (24a)
+For each (𝑥, 𝑙 ) ∈ 𝜒 × ℒ must provide an estimate 𝑓𝑟 ∶ (𝑥, 𝑙 ) ⟼ 𝑓𝑟 (𝑥, 𝑙 ) ∈ 𝛾 such that 𝑓𝑟 (𝑥, 𝑓𝑐 (𝑥 )) ≈ 𝑦 for both the
+training and test data. If successful a good reconstruction for
+                                                            𝑓: 𝜒 → 𝛾
+                                                                                                               Eqn. (24b)
+Where 𝑓(. ) = 𝑓𝑟 (. , 𝑓𝑐 (. )) the regression function can be found by minimizing
+                                                            𝑁
+
+                                               Φ𝑟 (𝑓𝑟 ) = ∑ 𝜙𝑟 (𝑦𝑖 , 𝑓𝑟 (𝑥𝑖 , 𝑓𝑐 (𝑥𝑖 )))
+                                                           𝑖=1
+                                                                                                        Eqn. (24c)
+Where 𝜙𝑟 ∶ 𝛾 × 𝛾 → ℝ+ minimized when 𝑓𝑟 (𝑥𝑖 , 𝑓𝑐 (𝑥𝑖 )) = 𝑦𝑖 in this case can be chosen as 𝜙𝑟 (𝑦, 𝑓𝑟 (𝑥, 𝑓𝑐 (𝑥 ))) =
+                    2
+ |𝑦 − 𝑓𝑟 (𝑥, 𝑓𝑐 (𝑥 ))| . Data can be partitioned into 𝐶𝑙 = {𝑖; 𝑓𝑐 (𝑥𝑖 ) = 𝑙 } for 𝑙 = 1, … 𝐿 and then perform 𝐿 separate
+regressions done in parallel.
+                                                Φ𝑟𝑙 (𝑓𝑟 (. , 𝑙 ) = ∑ 𝜙𝑟 (𝑦𝑖 , 𝑓𝑟 (𝑥𝑖 , 𝑙 ))
+                                                                  𝑖∈𝐶𝑙
+
+                                                                      11
+                                                                                                               Eqn. (24d)
+1.5.4 Scaling of the Data
+𝑥 = (𝑥 1 , … 𝑥 𝑑 ) ∈ ℝ𝑑 and 𝑦 ∈ ℝ hence, have |(𝑥, 𝑦) − (𝑥 ′ , 𝑦 ′ )|2 = (𝑦 − 𝑦 ′ )2 + |𝑥 − 𝑥 ′ |2
+For 𝑗 = 1, … 𝑑,
+                                                          𝑗                  𝑗                 𝑗
+                              𝑥̃ 𝑗 = (𝑥 𝑗 − 𝑚𝑖𝑛𝑖∈{1,..𝑁} 𝑥𝑖 )⁄(𝑚𝑎𝑥𝑖∈{1,..𝑁} 𝑥𝑖 − 𝑚𝑖𝑛𝑖∈{1,..𝑁} 𝑥𝑖 )
+                                                                                                                Eqn. (25a)
+                               𝑦̃ = 𝐶(𝑦 − 𝑚𝑖𝑛𝑖∈{1,..𝑁} 𝑦𝑖 )⁄(𝑚𝑎𝑥𝑖∈{1,..𝑁} 𝑦𝑖 − 𝑚𝑖𝑛𝑖∈{1,..𝑁} 𝑦𝑖 )
+                                                                                                               Eqn. (25b)
+For 𝐶 > 1 𝐶 = 10𝑑 where 𝑑 = dim(𝑥) For regression 𝐶 = 1
+
+
+1.5.5 Bayesian Formulation
+A critique of this method is that it re-uses the data in each phase. A Bayesian postulation handles this
+limitation elegantly. Recall,
+                                                   𝑫 = {(𝑥𝑖 , 𝑦𝑖 )}𝑁𝑖=1
+                                                                                                                Eqn. (26a)
+Assume parametric models for the classifier 𝑔𝑙 (. ; 𝜃𝑐 ) = 𝑔𝑙 (. ; 𝜃𝑐𝑙 ) and the regressor.
+𝑓𝑟 (. , 𝑙; 𝜃𝑟𝑙 ) for 𝑙 = 1, … 𝐿 where 𝜃𝑐 = (𝜃𝑐1 , … , 𝜃𝑐𝐿 ) and 𝜃𝑟 = (𝜃𝑟1 , … , 𝜃𝑟𝐿 ) and let 𝜃 = (𝜃𝑐 , 𝜃𝑟 ), the posterior
+density has the form,
+                                                𝑁
+
+                                𝜋(𝜃, 𝑙|𝐷) ∝ ∏ 𝜋(𝑦𝑖 |𝑥𝑖 , 𝜃𝑟 , 𝑙) 𝜋(𝑙|𝑥𝑖 , 𝜃𝑐 )𝜋(𝜃𝑟 )𝜋(𝜃𝑐 )
+                                               𝑖=1
+                                                                                                              Eqn. (26b)
+                                                              1                        2
+                                   𝜋(𝑦𝑖 |𝑥𝑖 , 𝜃𝑟 , 𝑙) ∝ exp (− |𝑦𝑖 − 𝑓𝑟 (𝑥𝑖 , 𝑙; 𝜃𝑟𝑙 )| )
+                                                              2
+                                                                                                              Eqn. (26c)
+And
+                                                 𝜋(𝑙|𝑥𝑖 , 𝜃𝑐 ) = 𝑔𝑙 (𝑥𝑖 ; 𝜃𝑐 )
+                                                                                                              Eqn. (26d)
+                                                               exp (ℎ𝑙 (𝑥; 𝜃𝑐𝑙 ))
+                                           𝑔𝑙 (𝑥𝑖 ; 𝜃𝑐 ) =
+                                                             ∑𝐿𝑙=1 exp (ℎ𝑙 (𝑥; 𝜃𝑐𝑙 ))
+                                                                                                              Eqn. (26e)
+ℎ𝑙 (𝑥; 𝜃𝑐𝑙 ) are some standard parametric regressors. We note that the 1-pass CCR algorithm can be used as
+parametrisation method to maintain discontinuous functions or patters in the unknown parameter
+(permeability & porosity ) field.
+
+1.6 NVIDIA Modulus
+
+NVIDIA Modulus is an open-source deep-learning framework for building, training, and fine-tuning deep
+learning models using state-of-the-art physics ML methods [60]. This framework is part of NVIDIA's suite
+of AI tools and is tailored for domain scientists, engineers, and AI researchers working on complex
+simulations across various domains such as fluid dynamics, atmospheric sciences, structural mechanics,
+electromagnetics, acoustics, and related domains. The emphasis on providing components and models that
+introduce inductive bias into the neural networks (e.g. FNOs, GNNs, etc.) and training (e.g. physics-based
+constraints) allows for more accurate and generalizable trained models for physics-ML applications,
+especially in scenarios where the data might be scarce or expensive to obtain.
+
+The Modulus framework is fundamentally composed of Modulus Core (generally referred to as Modulus)
+and Modulus-Sym. Modulus-Sym is built on top of Modulus which is a generalized toolkit for physics-ML
+model development and training. Modulus provides core utilities to train AI models in the physics-ML
+domain with optimized implementations of various network architectures specifically suited for physics-
+                                                                 12
+based applications (MLPs, operator networks like FNOs, DeepONet, graph networks), efficient data pipes
+for typical physics-ML datasets (structured and unstructured grids, point-clouds, etc.) and utilities to
+distribute and scale the training across multiple GPUs and nodes. Modulus-Sym provides utilities to
+introduce physics-based constraints into the model training and has utilities to handle various geometries (via
+built-in geometry module or STLs), introduce PDE constraints, and compute gradients efficiently through an
+optimized gradient backend. It also provides abstractions such as pre-defined training loops that enable
+domain scientists to experiment with AI model training quickly without diving into the depths of specific
+implementations of DL training. Modulus-Sym is designed to be highly flexible, supporting various types of
+partial differential equations (PDEs) (built-in PDE definitions as well as easy ways to introduce your own
+PDEs symbolically) and constraint definitions typically found in physics-based problems like boundary and
+equation residual conditions.
+
+Modulus is compatible with NVIDIA's broader AI and HPC (high-performance computing) ecosystems. It is
+built on top of PyTorch and is interoperable with PyTorch. Modulus’ architecture allows for easy
+customization and has several integrations with other NVIDIA technologies like CUDA, Warp, PySDF,
+DALI, NVFuser, and Omniverse, to facilitate efficient computation, scaling, performance optimizations, and
+real-time visualization leveraging NVIDIA GPUs.
+
+How It Works
+Modulus provides several tools required to set up an AI model training. Fundamentally, the goal of training
+an AI model using Modulus requires translating the problem of solving PDEs into a machine-learning task.
+Under the abstracted workflow of Modulus-Sym, the user defines the problem in terms of PDEs, boundary
+conditions, and any available data. The framework then employs neural networks to approximate the
+solution to these PDEs. During training, the loss function is designed to minimize not just the error between
+the predicted and actual data points (if available) but also the discrepancy from satisfying the physical laws
+as described by the PDEs and boundary/initial conditions. This dual emphasis on data fidelity and physical
+consistency is what makes PIML models powerful.
+
+Key Features
+   • Solver Independence: Unlike traditional numerical solvers that are often specialized for specific
+      types of PDEs or require grid-based discretization, Modulus is more flexible and capable of handling
+      a wide range of problems without the need for meshing the domain.
+   • GPU Acceleration: Leveraging NVIDIA GPUs, Modulus enables the training of AI models and
+      surrogates that can perform complex calculations and model training significantly faster than CPU-
+      based approaches, enabling faster iteration times.
+   • High-Level API: Modulus-Sym provides a high-level API that abstracts away many of the
+      complexities involved in setting up PIML models, making it accessible to users who may not be
+      experts in machine learning or computational physics.
+
+Use Cases
+Practical applications of NVIDIA Modulus span multiple industries and research areas. With the flexibility
+to train models using data and physics constraints, NVIDIA Modulus has enabled several applications across
+multiple domains. For example, in the field of atmospheric sciences and fluid dynamics, AI models
+developed for global weather prediction, super-resolution of flow fields, industrial digital twins for fluid
+flow in and past complex geometries and shapes have showcased remarkable savings in computational cost
+while maintaining good accuracy compared to traditional methods. In energy, applications include modelling
+subsurface flows for oil and gas exploration and optimizing renewable energy systems.
+
+NVIDIA Modulus represents a significant advancement in the field of computational science, marrying the
+predictive power of machine learning with the foundational principles of physics. Its ability to integrate
+physical laws into the learning process opens new possibilities for solving complex scientific problems,
+making it a valuable tool for researchers and engineers looking to push the boundaries of simulation and
+modelling.
+                                                      13
+2. Methodology
+In the workflow in Fig. 2, a suitable training-image (TI) is used to generate an initial prior density of
+permeability fields using the MPSlib software library [18]. This prior density is then used to generate a
+non-Gaussian prior (VCAE/CCR). A selected number of realisations is then used for the inverse problem
+workload. First, we forward the ensemble members using the prior developed PINO model to get predicted
+data. Then we parametrise these permeability fields with the CCR/VCAE, next we correct these quantities
+with aREKI and we recover the original parameters to repeat the process until a suitable stopping criterion
+is met.
+
+
+
+
+                    Figure 2: Cartoon showing the overall developed PINO-aREKI workflow.
+
+In this methodology, we model the combined dynamic property estimation surrogate shown in algorithm (1
+& 2) together with the peaceman analytical well model shown in Eqn. (27) via the CCR approach in section
+1.5 to yield Eqn. (28)
+                                             2𝜋𝐾𝑘𝑟 ℎ(𝑃𝑎𝑣𝑔 − 𝑃𝑤𝑓 )
+                                         𝑄=              𝑟
+                                                 𝜇𝐵𝐼𝑛 ( 𝑒 ) + 𝑠
+                                                         𝑟𝑤
+                                                                                              Eqn. (27)
+Where:
+     • 𝑄 is the flow rate.
+     • 𝐾𝑘𝑟 is the absolute permeability of the reservoir at the voxel location of the well.
+     • 𝑘𝑟 is the relative permeability which is a function of water and gas saturation.
+     • ℎ is the thickness of the reservoir.
+     • 𝑃𝑎𝑣𝑔 is the average reservoir pressure.
+     • 𝑃𝑤𝑓 is the bottom hole flowing pressure.
+     • 𝜇 is the viscosity of the fluid.
+     • 𝐵 is the formation volume factor.
+     • R𝑟𝑒 is the effective drainage radius.
+     • 𝑟𝑤 is the radius of the wellbore.
+     • 𝑠 is the skin factor.
+
+
+                                                     14
+This gives a novel implementation where we couple the CCR algorithm and the PINO approach to give a
+surrogate reservoir simulator called PINO-Res-Sim
+
+                                                      𝑓𝑐𝑐𝑟 (𝑓1 (: , 𝜃𝑝 ), 𝑓2 (: , 𝜃𝑠 ), 𝑓3 (: , 𝜃𝑔 ); 𝜃𝑐𝑐𝑟 )
+                                                                                                                                               Eqn. (28)
+
+
+The detailed implementation is shown in Algorithm. 4 and it replaces the expensive numerical forward
+solver during the history matching loop.
+
+
+
+ Algorithm 4: PINO – Res – Sim Reservoir simulator
+ Input
+ 𝑋0 = {𝐾, 𝐹𝑇𝑀, 𝜑, 𝑃𝑖𝑛𝑖 , 𝑆𝑖𝑛𝑖 } ∈ ℝ𝐵1×1×𝐷×𝑊×𝐻
+ 𝑓1 (: , 𝜃𝑝 ) − 𝑃𝐼NO pressure surrogate,
+ 𝑓2 (: , 𝜃𝑠 ) − 𝑃𝐼NO Water saturation surrogate,
+ 𝑓3 (: , 𝜃𝑔 ) − PINO Gas saturation surrogate,
+ 𝑓𝑐𝑐𝑟 (: , 𝜃𝑐𝑐𝑟 ) −CCR Peaceman surrogate (section 1.4, CCR algorithm),
+ 𝑁𝑝𝑟 – Number of producers
+ 𝑁𝑥 , 𝑁𝑦 , 𝑁𝑧 – size of reservoir computational domain
+  T – Time Index
+ 𝑖𝑝𝑒𝑓 , 𝑗𝑝𝑒𝑓 , 𝑘𝑝𝑒𝑓 locations/completions
+
+ Begin
+ 1. Compute: 𝑌1𝑝 = 𝑓1 (𝑋0 ; 𝜃𝑝 ), 𝑌1𝑠 = 𝑓2 (𝑋0 ; 𝜃𝑠 ), 𝑌1g = 𝑓3 (𝑋0 ; 𝜃𝑔 )
+                                     1
+                                       ∑𝑁𝑧
+                                        𝑘𝑝𝑒𝑓 =1 𝐾𝑖𝑝𝑒𝑟𝑓 𝑗𝑝𝑒𝑟𝑓 𝑘𝑝𝑒𝑓 ,
+                                         𝑁𝑧              𝑛        𝑛
+                                   1  𝑁𝑝𝑟 1  𝑁𝑧
+                                     ∑      ∑       𝑓 (𝑋1 , 𝜃𝑝 )𝑖                ,
+                                  𝑁𝑝𝑟 𝑛=1 𝑁𝑧 𝑘𝑝𝑒𝑓 =1 1           𝑝𝑒𝑟𝑓 𝑗𝑝𝑒𝑟𝑓 𝑘𝑝𝑒𝑓          𝑛               𝑛
+                                           1
+                                               ∑𝑁𝑧
+                                                          (       )
+                                                𝑘𝑝𝑒𝑓 =1 𝑓2 𝑋1 , 𝜃𝑠 𝑖𝑝𝑒𝑟𝑓 𝑗𝑝𝑒𝑟𝑓 𝑘𝑝𝑒𝑓 ,
+                                          𝑁𝑧                                   𝑛          𝑛
+ 2.       Construct: 𝑋1 =                 1
+                                               ∑𝑁𝑧                                                                         ∈ ℝ𝐵1×T×[4𝑁𝑝𝑟 +2]
+                                          𝑁𝑧    𝑘𝑝𝑒𝑓 =1 𝑓3 (𝑋1 , 𝜃𝑔 )    𝑖𝑝𝑒𝑟𝑓 𝑗𝑝𝑒𝑟𝑓 𝑘𝑝𝑒𝑓
+                                                                                                          ,
+                                                                                𝑛             𝑛
+                                      1                  1
+                                          ∑𝑁 𝑧
+                                                             ∑𝑁 𝑧
+                                                                     𝑓 (𝑋1 , 𝜃𝑠 )𝑖𝑝𝑒𝑟𝑓 𝑗𝑝𝑒𝑟𝑓 𝑘𝑝𝑒𝑓
+                                   𝑁𝑧      𝑘   𝑝𝑒𝑓 =1 𝑁𝑧      𝑘𝑝𝑒𝑓 =1 2                           𝑛           𝑛
+                                1−(              1                                                                ),
+                                           +          ∑𝑁𝑧
+                                                       𝑘𝑝𝑒𝑓 =1 𝑓3 (𝑋1 , 𝜃𝑔 )
+                                                 𝑁𝑧                            𝑖𝑝𝑒𝑟𝑓 𝑗𝑝𝑒𝑟𝑓 𝑘𝑝𝑒𝑓
+                                                                                      𝑛               𝑛
+                            [                   T                                                                      ]
+                                           ∀𝑛 = 1,2 … 𝑁𝑝𝑟
+ 3. Compute: 𝑌𝑜𝑢𝑡 = 𝑓𝑐𝑐𝑟 (𝑋1 ; 𝜃𝑐𝑐𝑟 ) ∈ ℝ𝐵1×T×3𝑁𝑝𝑟 – wopr, wwpr, wgpr
+ Output: 𝑌𝑜𝑢𝑡
+
+
+3. Numerical Experiments
+The code for these numerical experiments is staged in the links below,
+      •     Detailed installation for NVIDIA Modulus-Sym can be found at:
+            https://github.com/NVIDIA/modulus-sym/tree/main
+      •     The reservoir characterisation examples in this paper example can be found at:
+            https://github.com/NVIDIA/modulus-
+            sym/tree/4c5e6bb9e651bcabb2fee1b2bca75be5bdace056/examples/reservoir_simulation
+
+
+
+
+                                                                                 15
+                           (i)                                                   (ii)
+
+
+
+
+                                                      (iii)
+
+
+
+
+Figure 3: Cartoon showing the 2 synthetic models and 1 modified real model for the numerical experiments. (1) 2D
+            Channelised bimodal reservoir (ii) 3D Gaussian sandstone reservoir and (iii) Norne Field
+
+
+3.1 Numerical experiment 1 - 2D
+The result for the PINO surrogate is shown in Fig. (5), 10,000 training samples (9800 samples for the
+physics loss without any labelling and 200 samples for the data loss requiring labelling and running our
+in-house GPU accelerated CFD simulator) were used. The water flows from the injectors (downwards-
+facing arrows) towards the producers (upwards-facing arrows). The size of the reservoir computational
+voxel is 𝑛𝑥, 𝑛𝑦, 𝑛𝑧 = 33,33,1. Two phases are considered (oil and water) and the wells (4 injectors and 4
+producers) are arranged in an “analogous 5- spot pattern” as shown in Fig. 5. The 4 producers well have
+measurable quantities of oil rate, water rate, and water-cut and are controlled by bottom-hole-pressure.
+The 4 water injector wells have a measurable quantity of bottom hole pressure (BHP), controlled by
+injection rates. The reservoir is a sandstone channelised reservoir consisting of 2 lithofacies (sand and
+shale as shown in Fig. 8). 2,340 days of simulation are simulated. The left column of all panels in Fig. 5 is
+                                                       16
+the responses from the PINO surrogate, the middle column is the responses from the in-house finite
+volume solver with AMG and the right column is the difference between each response. For all panels in
+Fig. 5, the first row is for the pressure, the second row is for the water saturation and the third row is for
+the gas saturation.
+
+
+The root-mean-square-error (RMSE) function for each ensemble member (𝑖) is defined as
+                                                                                  1
+                                                𝑘                                 2
+                                             𝑁 𝑁𝑑𝑎𝑡𝑎        𝑗        𝑗        2
+                                      1      𝐷𝑜𝑏𝑠 (𝑘) − 𝐷𝑠𝑖𝑚,𝑖 (𝑘)
+                           RMSE(𝑖) = ( ∑ ∑ (                       ) )
+                                      𝑁              𝜎𝑛,𝑗
+                                            𝑘=1 𝑗=1
+
+                                                                                                   Eqn. (29)
+𝑁: Number of data assimilation time steps where measurements are assimilated (measurement times)
+   𝑘
+𝑁𝑑𝑎𝑡𝑎  : Number of data collected at each time step 𝑘
+𝑖: Ensemble member index
+𝑘: Time index
+𝑗: Metric or response (history matched metric or response)
+  𝑗
+𝐷𝑜𝑏𝑠 (𝑘): Observed data metric for metrics j (Data equivalent in state space ensemble) at time step k.
+  𝑗
+𝐷𝑠𝑖𝑚 (𝑘): Simulated data from simulator for metrics j (Data equivalent in state space ensemble) at time
+step k.
+𝜎𝑛,𝑗 : Observed data standard deviation for metrics j (Data equivalent in state space ensemble).
+
+An open-source algorithm SSIM is used to compare the permeability field of the history matched
+reconstructed permeability realization. SSIM is an image metric quantifier that analyses the visual impact
+of three identities of an image: structure, contrast, and luminance ( 𝑠, 𝑐, and 𝑙). For further description of
+the algorithm, the reader may consult. Explaining SSIM further, a value of 1 means complete similarity
+while the value of −1 indicates complete dissimilarity.
+SSIM is defined as:
+                              𝑆𝑆𝐼𝑀(𝑥, 𝑦) = [𝑙(𝑥, 𝑦)]𝛼 × [𝑐(𝑥, 𝑦)]𝛽 × [𝑠(𝑥, 𝑦)]𝛾
+                                                                                                   Eqn. (30a)
+where
+                                                       2𝜇𝑥 𝜇𝑦 + 𝐶1
+                                           𝑙(𝑥, 𝑦) = 2              ,
+                                                      𝜇𝑥 + 𝜇𝑦2 + 𝐶1
+                                                                                                   Eqn. (30b)
+                                                       2𝜎𝑥 𝜎𝑦 + 𝐶2
+                                          𝑐(𝑥, 𝑦) = 2                ,
+                                                      𝜎𝑥 + 𝜎𝑦2 + 𝐶2
+                                                                                                   Eqn. (30c)
+                                                         𝜎𝑥𝑦 + 𝐶3
+                                             𝑠(𝑥, 𝑦) =
+                                                        𝜎𝑥 𝜎𝑦 + 𝐶3
+                                                                                                   Eqn. (30d)
+ 𝜇𝑥 , 𝜇𝑦 , 𝜎𝑥 𝜎𝑦 , and 𝜎𝑥𝑦 are the local means, standard deviations, and cross-covariance for images 𝑥
+(reference image or true model maps), and 𝑦 (either of the history matched realisations). If α = β = γ = 1,
+and 𝐶3 = 𝐶2 ⁄2 ,𝐶1 = (𝐵1 𝐿)2 , 𝐶2 = (𝐵2 𝐿)2 where 𝐶1 and 𝐶2 are two variables that stabilises the division
+with a weak denominator, 𝐿 is the dynamic range of the value of the pixels, 𝐵1 = 0.01 and 𝐵2 = 0.03 ,
+the index then becomes:
+                                                 (2𝜇𝑥 𝜇𝑦 + 𝐶1 )(2𝜎𝑥𝑦 + 𝐶2 )
+                                𝑆𝑆𝐼𝑀(𝑥, 𝑦) = 2
+                                               (𝜇𝑥 + 𝜇𝑦2 + 𝐶1 )(𝜎𝑥2 + 𝜎𝑦2 + 𝐶2 )
+                                                                                                   Eqn. (30e)
+                                         𝜙(𝑆𝑆𝐼𝑀) = 𝑎𝑏𝑠(1 − 𝑆𝑆𝐼𝑀)
+                                                                                                   Eqn. (30f)
+                                                       17
+      Figure 4:Training image used to get the prior pdf for the permeability field for numerical experiment 1.
+
+
+3.1.1 Forward Modelling
+
+           Table 1: Reference Reservoir synthetic model properties for Numerical experiment 1
+                        Property                                             Value
+                   Grid Configuration                                   33 × 33 × 1
+                        Grid size                                     50 × 50 × 20 𝑓𝑡
+                   Well configuration                                        8-spot
+                     # of producers                                            4
+                      # of injectors                                           4
+                   Simulation period                                     3000 days
+                Integration step length                                   100 days
+                 # of integration steps                                        30
+                     Reservoir depth                                        4,000ft
+               Initial Reservoir pressure                                1,000psia
+                  Injector’s constraint                                 500 STB/day
+                 Producer’s constraint                                    100 psia
+                Residual oil saturation                                       0.2
+               Connate water saturation                                       0.2
+          Petro-physical property distribution               Bi-modal permeability/porosity
+           Uncertain parameters to estimate                 Distributed permeability, porosity
+                     Historical data                         𝑄𝑜𝑖𝑙 , 𝑄𝑤𝑎𝑡𝑒𝑟 , 𝐵𝐻𝑃, 𝑤𝑎𝑡𝑒𝑟 − 𝑐𝑢𝑡
+
+
+
+
+                                                         18
+          100 days                           700 days                           1300 days
+
+
+
+
+         1900 days                          2400 days                           3000 days
+
+
+
+
+Figure 5: Numerical implementation of Reservoir forward simulation evolution. PINO-based reservoir
+ forwarding (left column), Finite volume method (FVM) based reservoir forwarding (first principle),
+        (middle column) and the difference in magnitudes from both approaches (last column)
+
+
+                Table 2: FVM-GPU simulator specifics (single-node + single GPU)
+                    Property                                          Value
+                  Discretisation                 Finite-Volume. (Central in space and forward
+                                                                     in time)
+                 Solver scheme                     Adaptive implicit (Based on CFL number)
+                 Pressure solver                   V-cycle n stage AMG (PMIS coarsening +
+                                                      Level scheduling + graph matching +
+                                                                    colouring)
+                Saturation solver                  Left- preconditioned GMRES with ILU (0)
+               Jacobian formation                                      CSR
+              Boundary conditions                              Dirichlet, Neumann
+
+
+
+
+                                                19
+   Figure 6: Inference time comparing the FVM-GPU simulator(green) and PINO surrogate (red) for
+                                            experiment 1
+
+Water saturation
+       100 days                1200 days                 2400 days                 3000 days
+
+
+
+
+Oil saturation
+        100 days               1200 days                 2400 days                 3000 days
+
+
+
+
+Pressure
+       100 days                1200 days                 2400 days                 3000 days
+
+
+
+
+Figure 7: Numerical implementation of Reservoir forward simulation. PINO-based reservoir forwarding
+                      showing the water saturation, oil saturation and pressure.
+
+
+
+
+                                                20
+                           Figure 8: Synthetic reservoir model used for the experiment 1
+
+
+
+
+  Figure 9: Production profile comparison. (red) True model, (blue) PINO model. The first row is for the bottom-
+hole-pressure of well injectors (I1-I4), the second row is for the oil rate production for the well producers (P1-P4),
+ the third row is for the water rate production for the well producers (P1-P4) and the last row is for the water cut
+                                         ratio of the 4 well producers (P1-P4)
+
+
+                                                          21
+3.1.2 Inverse modelling
+
+The parameter to recover here is,
+                                                         𝐽
+                                                       𝐾 𝑗
+                                                 𝑢 = ∑[ ]
+                                                       𝜑
+                                                       𝑗=1
+
+
+
+
+   Figure 10: Comparison of permeability field reconstruction (a) True Model (b) Prior, (c) Posterior – aREKI +
+     KSVD + OMP, (d) Posterior – aREKI + CCR, (e) Posterior – aREKI + KMEANS, (f) Posterior – aREKI +
+      Convolution autoencoder, (g) Posterior – aREKI + DCT, (h) Posterior – aREKI + Denoising Convolution
+   autoencoder, (i) Posterior – aREKI + Variational Convolution Auto Encoder, (j) Posterior – Vanilla aREKI, (k)
+              Posterior – aREKI + PCA, (l) Posterior aREKI + Level set (m) Posterior – aREKI SVM
+
+
+
+ In Fig. 10, we compare the developed PINO-aREKI with various parameterisation methods with the 3
+ selected methods. Which is characterisation with KSVD + OMP [12], characterisation with CCR [13 &
+ 53] and characterisation with VCAE. We notice the improved geological realism from these 3 methods
+ when compared to other methods.
+
+
+
+
+                                                        22
+                Table 3: RMS & SSIM cost function of MAP models from different methods.
+            Model                𝝓(𝑺𝑺𝑰𝑴)               RMS function              Overall cost
+                                                                                   function [
+                                                                              𝝓(𝑺𝑺𝑰𝑴)
+                                                                              + 𝐑𝐌𝐒 𝐟𝐮𝐧𝐜𝐭𝐢𝐨𝐧]
+      aREKI + KSVD +               0.129                   0.044                     0.173
+             OMP
+        aREKI + CCR                0.131                   0.046                     0.177
+     aREKI + KMEANS                0.175                   0.081                     0.256
+           aREKI +                 0.134                   0.053                     0.187
+         Convolution
+         autoencoder
+        aREKI + DCT                0.142                   0.058                      0.2
+     aREKI + Denoising             0.135                   0.051                     0.186
+         Convolution
+         autoencoder,
+           aREKI +                 0.124                   0.044                     0.168
+          Variational
+      Convolution Auto
+           Encoder
+       Vanilla aREKI               0.234                   0.081                     0.315
+        aREKI + PCA                0.215                   0.077                     0.292
+      aREKI + Level set            0.146                   0.069                     0.215
+
+
+
+                          (i)                                                             (ii)
+
+
+
+
+   Figure 11: Production profile comparison for the prior ensemble (i) and Production profile comparison for the
+   posterior ensemble(ii). (red) True model, (grey) Ensemble. The first row is for the bottom-hole-pressure of well
+injectors (I1-I4), the second row is for the oil rate production for the well producers (P1-P4), the third row is for the
+     water rate production for the well producers (P1-P4) and the last row is for the water cut ratio of the 4 well
+  producers (P1-P4). The left of the dash vertical line is used for assimilation while the right of this line is used for
+                                                            23
+                                                      prediction.
+
+
+
+
+ Figure 12: P10-P50-P90 Production profile comparison for the posterior ensemble. (red) True model, (Blue) P10
+ model, (cyan) P50 model, (green) P90 model. The first row is for the bottom-hole-pressure of well injectors (I1-I4),
+    the second row is for the oil rate production for the well producers (P1-P4), third row is for the water rate
+production for the well producers (P1-P4) and the last row is for the water cut ratio of the 4 well producers (P1-P4).
+     The left of the dash vertical line is used for assimilation while the right of this line is used for prediction.
+
+
+
+
+Figure 13: Cost function evolution. (Top-left) the initial cost function for the initial ensemble, (top-right) Final cost
+  function for the posterior ensemble. (Bottom-left) Cost function evolution for both the MAP model and the best
+                                                           24
+      model. Notice the number of iterations (less than 10) necessary for convergence to the posterior density.
+
+Fig. 13 shows the elegance of the developed aREKI, we can sample the posterior density with the fewest iteration
+possible.
+
+
+              Table 4: RMS cost function evolution of Best 7 Realisations with the proposed method.
+              Realisation                  RMS value of prior model              RMS value of posterior model
+                   6                                  0.81                                  0.071
+                  17                                  0.77                                  0.062
+                  30                                  0.83                                  0.042
+                  33                                  0.93                                   0.06
+                  93                                  0.88                                  0.051
+                  54                                  0.89                                  0.053
+                  41                                  0.93                                  0.044
+
+
+
+
+  Figure 14: Production profile comparison for MAP model. (red) True model, (Blue) MAP model after aREKI +
+VCAE+ CCR. The first row is for the bottom-hole-pressure of well injectors (I1-I4), the second row is for the oil rate
+production for the well producers (P1-P4), the third row is for the water rate production for the well producers (P1-
+                   P4) and the last row is for the water cut ratio of the 4 well producers (P1-P4)
+
+
+
+
+                                                          25
+3.2 Numerical experiment 2 - 3D
+The result for the PINO surrogate for experiment 2 is shown in Fig. (15-17), 10,000 training samples
+(9800 samples for the physics loss without any labelling and 200 samples for the data loss requiring
+labelling and running our in-house GPU accelerated CFD simulator) were used. The water flows from the
+injectors (downwards-facing arrows) towards the producers (upwards-facing arrows). The size of the
+reservoir computational voxel is 𝑛𝑥, 𝑛𝑦, 𝑛𝑧 = 40,40,3. Two phases are considered (oil and water) and the
+wells (4 injectors and 4 producers) are arranged in an “analogous 5- spot pattern”. The 4 producers well
+have measurable quantities of oil rate, water rate, and water-cut and are controlled by bottom-hole-
+pressure. The 4 water injector wells have a measurable quantity of bottom hole pressure (BHP), controlled
+by injection rates. The reservoir is a sandstone Gaussian reservoir. 2,340 days of simulation are simulated.
+The left column of Fig. 15-16 is the responses from the PINO surrogate, the middle column is the
+responses from the finite volume solver with AMG and the right column is the difference between each
+response.
+
+
+           Table 5: Reference Reservoir synthetic model properties for Numerical experiment 2
+                        Property                                           Value
+                   Grid Configuration                                   40 × 40 × 3
+                        Grid size                                    50 × 50 × 20 𝑓𝑡
+                   Well configuration                                      8-spot
+                     # of producers                                          4
+                      # of injectors                                         4
+                   Simulation period                                     3000 days
+                Integration step length                                  100 days
+                 # of integration steps                                      30
+                     Reservoir depth                                      4,000ft
+               Initial Reservoir pressure                                1,000psia
+                  Injector’s constraint                                500 STB/day
+                 Producer’s constraint                                    100 psia
+                Residual oil saturation                                     0.2
+               Connate water saturation                                     0.2
+          Petro-physical property distribution               Gaussian permeability/porosity
+           Uncertain parameters to estimate                 Distributed permeability, porosity
+
+
+
+
+                                                     26
+3.2.1 Forward modelling
+
+             100 days                                700 days                               1300 days
+
+
+
+
+            1900 days                               2400 days                               3000 days
+
+
+
+
+    Figure 15: Oil saturation evolution Numerical implementation of Reservoir forward simulation. PINO-based
+    reservoir forwarding (left column), Finite volume method (FVM) based reservoir forwarding (first principle),
+                (middle column) and the difference in magnitudes from both approaches (last column)
+
+             100 days                                700 days                               1300 days
+
+
+
+
+            1900 days                               2400 days                               3000 days
+
+
+
+
+   Figure 16: water saturation evolution Numerical implementation of Reservoir forward simulation. PINO-based
+    reservoir forwarding (left column), Finite volume method (FVM) based reservoir forwarding (first principle),
+                                                         27
+            (middle column) and the difference in magnitudes from both approaches (last column)
+
+
+
+
+Figure 17: Inference time comparing the FVM-GPU simulator(green) and PINO surrogate (red) for experiment.
+
+
+
+
+                                                    28
+  Figure 18: Production profile comparison. (red) True model, (blue) PINO model. First row is for the bottom-hole-
+ pressure of well injectors (I1-I4), second row is for the oil rate production for the well producers (P1-P4), third row
+   is for the water rate production for the well producers (P1-P4) and the last row is for the water cut ratio of the 4
+                                                 well producers (P1-P4)
+
+ Water saturation
+        100 days                       1200 days                     2400 days                       3000 days
+
+
+
+
+ Oil saturation
+         100 days                      1200 days                     2400 days                       3000 days
+
+
+
+
+ Figure 19: Numerical implementation of Reservoir forward simulation. PINO-based reservoir forwarding. Showing
+                                     the water saturation and oil saturation.
+
+3.2.2 Inverse modelling
+The parameter to recover here is,
+                                                            𝐽
+                                                          𝐾 𝑗
+                                                    𝑢 = ∑[ ]
+                                                          𝜑
+                                                          𝑗=1
+                             (i)                                                          (ii)
+
+
+
+
+Figure 20: Production profile comparison for prior ensemble (i) and posterior ensemble (ii). (red) True model, (grey)
+Ensemble. First row is for the bottom-hole-pressure of well injectors (I1-I4), second row is for the oil rate production
+                                                           29
+for the well producers (P1-P4), third row is for the water rate production for the well producers (P1-P4) and the last
+  row is for the water cut ratio of the 4 well producers (P1-P4). Left of the dash vertical line is used for assimilation
+                                       while right of this line is used for prediction.
+
+
+
+
+  Figure 21: Cost function evolution. (Top -left) prior ensemble RMSE cost, (Top-right) posterior ensemble RMSE
+        cost, (Bottom-left) RMSE cost evolution between the MAP model (blue) and the MLE model (green)
+
+
+
+
+     Figure 22: Comparison of permeability field reconstruction (1st column) prior, (2nd column) MLE estimate
+ (posterior) (third column) MAP estimate (posterior) and (4th-column) True Model. The method used is the – aREKI
+                                           + Convolution autoencoder.
+
+
+                                                            30
+  Figure 23: P10-P50-P90 Production profile comparison for the posterior ensemble. (red) True model, (Blue) P10
+  model, (cyan) P50 model, (green) P90 model. The first row is for the bottom-hole-pressure of well injectors (I1-I4),
+     the second row is for the oil rate production for the well producers (P1-P4), third row is for the water rate
+ production for the well producers (P1-P4) and the last row is for the water cut ratio of the 4 well producers (P1-P4).
+      The left of the dash vertical line is used for assimilation while the right of this line is used for prediction.
+
+3.3 Numerical experiment 3 - Norne
+The result for the PINO surrogate for the Norne field is shown in Fig.24 (a-d), The Norne reservoir model
+is based on a real field black-oil model for an oil field in the Norwegian Sea [62,63]. The grid is a faulted
+corner-point grid, with heterogenous and anisotropic permeability 100 training samples for the data loss
+requiring labelling and running the OPM-Flow simulator [61] were used. The water flows from the
+injectors (downwards-facing arrows) towards the producers (upwards-facing arrows). The size of the
+reservoir computational voxel is 𝑛𝑥, 𝑛𝑦, 𝑛𝑧 = 46,112,22. Three phases are considered (oil, gas, and water)
+and the wells (9 water injectors, 4 gas injectors and 22 producers) are configured. The 22 producers well
+have measurable quantities of oil rate, water rate, and gas rate and are controlled by bottom-hole-pressure.
+The 4 water injector wells have a measurable quantity of bottom hole pressure (BHP), controlled by
+injection rates. The reservoir is a sandstone Gaussian reservoir. 3,298 days of simulation are simulated. 100
+realizations of the Norne model that include variations in porosity, rock permeabilities, and fault
+transmissibility multipliers are used to generate the training and test data.
+
+
+The left column of Fig. 24(a-d) is the responses from the PINO surrogate, the middle column is the
+responses from the finite volume solver -Flow and the right column is the difference between each
+response.
+
+
+
+
+                                                           31
+           Table 5: Reference Reservoir synthetic model properties for Norne
+              Property                                            Value
+         Grid Configuration                                  46 × 112 × 22
+              Grid size                                     50 × 50 × 20 𝑓𝑡
+           # of producers                                           22
+            # of injectors                                          13
+         Simulation period                                      3,298 days
+      Integration step length                                    100 days
+       # of integration steps                                       30
+           Reservoir depth                                        4,000ft
+     Initial Reservoir pressure                                 1,000psia
+        Injector’s constraint                                 500 STB/day
+       Producer’s constraint                                     100 psia
+      Residual oil saturation                                       0.2
+     Connate water saturation                                       0.2
+Petro-physical property distribution                  Gaussian permeability/porosity
+ Uncertain parameters to estimate                Distributed permeability, porosity, Fault
+                                                        transmissibility multiplier
+
+
+
+
+                                           32
+3.3.1 Forward modelling
+
+
+
+
+   Figure 24(a): Forwarding of the Norne Field. 𝑁𝑥 = 46 , 𝑁𝑦 = 112 , 𝑁𝑧 = 22. At Time = 8 days. Dynamic
+properties comparison between the pressure, water saturation, oil saturation and gas saturation field between NVIDIA
+ Modulus’s PINO surrogate (left column), Flow reservoir simulator (middle column) and the difference between both
+ approaches (last column). They are 22 oil/water/gas producers (green), 9 water injectors (blue) and 4 gas injectors)
+ red. We can see good concordance between the surrogate’s prediction and the numerical reservoir simulator (Flow)
+
+
+
+
+                                                         33
+  Figure 24(b): Forwarding of the Norne Field. 𝑁𝑥 = 46 , 𝑁𝑦 = 112 , 𝑁𝑧 = 22. At Time = 968 days. Dynamic
+properties comparison between the pressure, water saturation, oil saturation and gas saturation field between NVIDIA
+ Modulus’s PINO surrogate (left column), Flow reservoir simulator (middle column) and the difference between both
+ approaches (last column). They are 22 oil/water/gas producers (green), 9 water injectors (blue) and 4 gas injectors)
+ red. We can see good concordance between the surrogate’s prediction and the numerical reservoir simulator (Flow)
+
+
+
+
+                                                         34
+    Figure 24(c): Forwarding of the Norne Field. 𝑁𝑥 = 46 , 𝑁𝑦 = 112 , 𝑁𝑧 = 22. At Time = 2104 days. Dynamic
+properties comparison between the pressure, water saturation, oil saturation and gas saturation field between NVIDIA
+ Modulus’s PINO surrogate (left column), Flow reservoir simulator (middle column) and the difference between both
+ approaches (last column). They are 22 oil/water/gas producers (green), 9 water injectors (blue) and 4 gas injectors)
+ red. We can see good concordance between the surrogate’s prediction and the numerical reservoir simulator (Flow)
+
+
+
+
+                                                         35
+    Figure 24(d): Forwarding of the Norne Field. 𝑁𝑥 = 46 , 𝑁𝑦 = 112 , 𝑁𝑧 = 22. At Time = 3298 days. Dynamic
+properties comparison between the pressure, water saturation, oil saturation and gas saturation field between NVIDIA
+ Modulus’s PINO surrogate (left column), Flow reservoir simulator (middle column) and the difference between both
+ approaches (last column). They are 22 oil/water/gas producers (green), 9 water injectors (blue) and 4 gas injectors)
+ red. We can see good concordance between the surrogate’s prediction and the numerical reservoir simulator (Flow)
+
+
+
+
+                                                         36
+Figure 25: Forwarding of the Norne Field. 𝑁𝑥 = 46 , 𝑁𝑦 = 112 , 𝑁𝑧 = 22 =46. (a) Speed-up using the PINO-RES-
+                                                SIM machine
+
+
+
+
+                                                     37
+Figure 26(a): Forwarding of the Norne Field Comparison between using the. (red) True model, (blue) PINO-RES-
+                                                                     (𝑠𝑡𝑏)
+ SIM model. Outputs from peaceman machine for oil production rate,𝑄𝑜 (𝑑𝑎𝑦) from the 22 producers. They are 22
+                         oil/water/gas producers, 9 water injectors and 4 gas injectors.
+
+
+
+
+ Figure 26(b): Forwarding of the Norne Field Comparison between using the. (red) True model, (blue) PINO-RES-
+                                                                       (𝑠𝑡𝑏)
+SIM model. Outputs from peaceman machine for water production rate,𝑄𝑤 (𝑑𝑎𝑦) from the 22 producers. They are 22
+                         oil/water/gas producers, 9 water injectors and 4 gas injectors.
+
+
+
+
+                                                       38
+  Figure 26(c): Forwarding of the Norne Field Comparison between using the. (red) True model, (blue) PINO-RES-
+                                                                       (𝑠𝑐𝑓)
+   SIM model. Outputs from peaceman machine for oil production rate,𝑄𝑔 (𝑑𝑎𝑦) from the 22 producers. They are 22
+                          oil/water/gas producers, 9 water injectors and 4 gas injectors.
+
+3.3.2 Inverse modelling
+
+The parameter to recover here is represented by,
+                                                      𝐽           𝑗
+                                                        𝐾
+                                               𝑢 = ∑[ 𝜑 ]
+                                                   𝑗=1 𝐹𝑇𝑀
+
+
+
+                                                          39
+Figure 27: Covariance localisation matrix generated from the 5th order compact support Gaspari-Cohn correlation
+                                                     matrix.
+
+
+
+
+                                                      40
+Figure 28(a): Inverse modelling with covariance localisation and aREKI prior ensemble for oil production
+                                                      (𝑠𝑡𝑏)
+                                             rate,𝑄𝑜 (𝑑𝑎𝑦)
+
+
+
+
+                                                   41
+Figure 28(b): Inverse modelling with covariance localisation and aREKI posterior ensemble for oil production rate
+                                                        (𝑠𝑡𝑏)
+                                                    ,𝑄𝑜 (𝑑𝑎𝑦)
+
+
+
+
+                                                       42
+Figure 28(c): Inverse modelling with covariance localisation and aREKI prior ensemble for water production
+                                                        (𝑠𝑡𝑏)
+                                               rate,𝑄𝑤 (𝑑𝑎𝑦)
+
+
+
+
+                                                    43
+Figure 28(d): Inverse modelling with covariance localisation and posterior ensemble water production
+                                                    (𝑠𝑡𝑏)
+                                            rate,𝑄𝑤 (𝑑𝑎𝑦)
+
+
+
+
+                                                 44
+Figure 28(e): Inverse modelling with covariance localisation and aREKI prior ensemble for gas production
+                                                       (𝑠𝑐𝑓)
+                                             rate,𝑄𝑤 (𝑑𝑎𝑦).
+
+
+
+
+                                                   45
+Figure 28(f): Inverse modelling with covariance localisation and aREKI posterior ensemble for gas production
+                                                        (𝑠𝑐𝑓)
+                                               rate,𝑄𝑤 (𝑑𝑎𝑦)
+
+
+
+
+                                                     46
+Figure 29: Cost function evolution. (Top -left) prior ensemble RMSE cost, (Top-right) posterior ensemble RMSE
+      cost, (Bottom-left) RMSE cost evolution between the MAP model (blue) and the MLE model (green)
+
+
+
+
+                                                     47
+    Figure 30: Comparison of permeability field reconstruction (1st column) prior, (2nd column) MLE estimate
+(posterior) (third column) MAP estimate (posterior) and (4th-column) True Model. The method used is the – aREKI
+                                          + Convolution autoencoder.
+
+
+
+
+                                                      48
+Figure 31(a): P10-P50-P90 Production profile comparison for the posterior ensemble. (red) True model, (Blue) P10
+                                                                                                       (𝑠𝑡𝑏)
+model, (cyan) P50 model, (green) P90 model. Outputs from peaceman machine for gas production rate,𝑄𝑜 (𝑑𝑎𝑦) from
+           the 22 producers. They are 22 oil/water/gas producers, 9 water injectors and 4 gas injectors.
+
+
+
+
+                                                        49
+Figure 31(b): P10-P50-P90 Production profile comparison for the posterior ensemble. (red) True model, (Blue) P10
+                                                                                                          (𝑠𝑡𝑏)
+  model, (cyan) P50 model, (green) P90 model. Outputs from peaceman machine for gas production rate,𝑄𝑤 (𝑑𝑎𝑦)
+        from the 22 producers. They are 22 oil/water/gas producers, 9 water injectors and 4 gas injectors.
+
+
+
+
+                                                        50
+Figure 31(c): P10-P50-P90 Production profile comparison for the posterior ensemble. (red) True model, (Blue) P10
+                                                                                                          (𝑠𝑐𝑓)
+  model, (cyan) P50 model, (green) P90 model. Outputs from peaceman machine for gas production rate,𝑄𝑔 (𝑑𝑎𝑦)
+        from the 22 producers. They are 22 oil/water/gas producers, 9 water injectors and 4 gas injectors.
+
+
+
+
+                                                        51
+ Figure 32: Inverse modelling of the Norne Field with covariance localisation and aREKI. RMSE value showing the
+                  performance of the 6-reservoir model accuracy to the True data to be matched.
+
+Conclusion
+We have developed a physics-informed neural operator-based reservoir simulator that solves the black oil
+model by augmenting the supervised loss from the labelled data with the residual loss of the governing pde.
+The PINO can approximate the pressure and water saturation field for any input realization of permeability
+and porosity for the two-phase problem and approximate the pressure, water saturation and gas saturation
+given any input of the permeability and porosity field and the fault multiplier term for the three-phase
+problem. The network is a neural operator. The developed PINO is first compared to the numerical black
+oil reservoir simulator and the similarities are very close. Next, we use this developed surrogate simulator
+in an ensemble-based history-matching workflow on a synthetic reservoir model. The method used is the
+aREKI with VCAE/CCR parametrization to retain the facies connectivity and sample the non-Gaussian
+posterior density. The overall workflow is successful in recovering the unknown permeability field and
+simulation (inference) is very fast with a speedup of 100 - 6000X to the numerical method as we do not
+need to form the large sparse Jacobian matrix. Training of the PINO on a cluster with an NVIDIA H100,
+takes approximately 30 minutes with 10,000 training samples (9800 samples for the physics loss without
+any labelling and 200 samples for the data loss requiring labelling and running our in-house numerical
+simulator). For the Norne field, the overall workflow is successful in recovering the unknown permeability
+field and simulation (inference) is very fast with an inference time of ~7secs as we do not need to form the
+large sparse Jacobian matrix. Training of the PINO surrogate for the Norne field on a cluster with 2
+NVIDIA H100 GPUs with 80G memory each takes approximately 4 hours for ~100 training samples. Full
+reservoir characterization together with plotting and solution to the inverse problem for an ensemble size of
+200 realizations took ~1 hour(s). The workflow is suitable to be used in an inverse uncertainty
+quantification scenario where sampling the full posterior density is desirable.
+
+
+
+                                                        52
+Credit authorship contribution statement
+Clement Etienam: Data curation, Conceptualization, Formal analysis, Investigation, Methodology,
+Software, Validation, Writing – original draft. Yang Juntao/Oleg Ovcharenko: Investigation, Writing –
+review & editing – original draft. Issam Said/Pavel Dimitrov/Ken Hester: Research direction,
+conceptualisation of the forward and inverse problem. Kaustubh Tangsali: Technical expertise in the
+usage of NVIDIA-Modulus-Sym, Writing and editing.
+
+
+Acknowledgement
+The authors would like to express gratitude to NVIDIA for their financial support and permission to publish
+the article. Additionally, we extend our thanks to colleagues who contributed to this paper by way of
+intellectual discussions and suggestions: Tugrul Konuk, Asma Farjallah and Harpreet Sethi.
+
+
+References
+[1] Aanonsen, S., Oliver, D., Reynolds, A. & Valles, B., 2009. The Ensemble Kalman Filter in Reservoir
+Engineering--a Review. SPE Journal, 14(3), pp. 393-412.
+[2] Aharon, M., Elad, M. & Bruckstein, A., 2006. K-SVD: An Algorithm for Designing Overcomplete
+Dictionaries for Sparse Representation. IEEE Transactions on Signal Processing, 54(11), pp. 4311-4322.
+[3] Bishop. Christopher M 2006. Pattern Recognition and Machine Learning (Information Science and
+Statistics). Springer-Verlag, Berlin, Heidelberg.
+[4] Candes, E. J., Romberg, J. & Tao, T., 2006. Robust uncertainty principles: Exact signal reconstruction
+from high incomplete frequency information. Information Theory, IEEE Transactions on, 52(2), pp. 489-
+509.
+[5] Chang, H., Zhang, D. & Lu, Z., 2010. History matching of facies distribution with the EnKF and level
+set parameterization. Journal of Computational Physics, 229(1), pp. 8011-8030.
+[6] Chen, Y. and Oliver, D., .2011 Ensemble randomized maximum likelihood method as an iterative
+ensemble smoother, Mathematical Geosciences, Online First.
+[7] Dorn, O. & Villegas, R., 2008. History matching of petroleum reservoirs using a level set technique.
+Inverse problems, p. 24.
+[8] Elsheikh, A., Wheeler, M. & Hoteit, I., 2013. Sparse calibration of subsurface flow models using
+nonlinear orthogonal matching pursuit and an iterative stochastic ensemble method. Advances in Water
+Resources, 56(1), pp. 14-26.
+[9] Emerick, A. A. and Reynolds A. C., 2013 Ensemble smoother with multiple data assimilation,
+Computers & Geosciences.
+[10] Etienam, C., Mahmood, I. & Villegas, R., 2017. History matching of Reservoirs by Updating Fault
+Properties Using 4D Seismic Results and Ensemble Kalman Filter. Paris, SPE.
+[11] Etienam, C., Villegas, R., Babaei, M & Dorn,O 2018. An Improved Reservoir Model Calibration
+through Sparsity Promoting ES-MDA. ECMI conference proceeding. 20th European Conference on
+Mathematics for Industry (ECMI) 18-22 June 2018, Budapest, Hungary
+[12] Etienam C. 4D Seismic History Matching Incorporating Unsupervised Learning, Society of Petroleum
+Engineers B (2019 June), 10.2118/195500-MS
+[13] Etienam C., Law, J.H L., Wade, S., Ultra-fast Deep Mixtures of Gaussian Process Experts.
+https://arxiv.org/abs/2006.13309.
+[14] Evensen, G., 2003. The Ensemble Kalman Filter: Theoretical formulation and practical
+implementation. Ocean Dynamics, 53(4), pp. 343-367.
+[15] Evensen, G.,2009. The ensemble Kalman filter for combined state and parameter estimation, IEEE
+Control Systems Magazine, pp. 83-104.
+[16] Evensen, G., Eikrem, K, S 2018. Conditioning reservoir models on rate data using ensemble
+smoothers.Computational Geosciences,22(5), pp.1251-1270.
+[17] Haibin, C. & Zhang, D., 2015. Jointly updating the mean size and spatial distribution of facies in
+reservoir history matching. Computational Geosciences.
+                                                    53
+[18] Hansen, T.M., Vu. L.T., and Bach, T. 2016. MPSLIB: A C++ class for sequential simulation of
+multiple-point statistical models, in SoftwareX, doi:10.1016/j.softx.2016.07.001. [pdf,www].
+[19] Hanke, M.,1997. A regularizing Levenberg-Marquardt scheme, with applications to inverse
+groundwater filtration problems. Inverse problems 13(1), pp. 79–95
+[20] Iglesias, M.A., Dawson, C.2013. The regularizing Levenberg-Marquardt scheme for history matching
+of petroleum reservoirs. Computational Geosciences 17, pp.1033–1053
+[21] Jafarpour, B., 2011. Wavelet reconstruction of geologic facies from nonlinear dynamic flow
+measurements. Geosciences and Remote sensing, IEEE Transactions, 49(5), pp. 1520-1535.
+[22] Jafarpour, B. & McLaughlin, D. B., 2007. History matching with an ensemble Kalman filter and
+discrete cosine parametrization. Anaheim, California, SPE.
+[23] Khaninezhad, M. M., Jafarpour, B. & Li, L., 2012. Sparse geologic dictionaries for subsurface flow
+model calibration: Part 1, Inversion formulation. Advances in Water Resources, 39(1), pp. 106-121.
+[24] Kim S, Min B, Lee K,& Jeong H, 2018 Integration of an Iterative Update of Sparse Geologic
+Dictionaries with ES-MDA for History Matching of Channelized Reservoirs. Geofluids, Volume 2018,
+Article ID 1532868, 21 pages.
+[25] Law K J H & Stuart A M, 2012 Evaluating Data Assimilation Algorithms Mon. Weather Rev 140 37-
+57
+[26] Liu, E. & Jafarpour, B., 2013. Learning sparse geologic dictionaries from low-rank representations of
+facies connectivity for flow model calibration. Water resources, Volume 49, pp. 7088-7101.
+[26] Lorentzen, R. J., Flornes, M. K. & Naevdal, G., 2012. History matching Channelized Reservoirs Using
+the Ensemble Kalman Filter. Society of Petroleum Engineers, 17(1).
+[27] Luo X, Bhakta T, Jakobsen M, Naevdal G, 2018. Efficient big data assimilation through sparse
+representation: A 3D benchmark case study in petroleum engineering. PLoS ONE 13(7): e0198586.
+https://doi.org/10.1371/journal.pone.0198586
+[28] Moreno, D. L., 2011. Continuous Facies Updating Using the Ensemble Kalman Filter and the Level
+set method. s.l., Mathematical Geosciences.
+[29] Nocedal, J. and Wright, S.J, 1999.Numerical Optimization, Springer, New York.
+[30] Oliver, D. S. & Chen, Y., 2010. Recent progress on reservoir history matching: a review. s.l.:
+Computational Geoscience - Springer Science.
+[31] Oliver, D. S., Reynolds, A. C. & Liu, N., 2008. Inverse Theory for Petroleum Reservoir
+Characterization and History Matching. s.l.:Cambridge University Press.
+[32] Sana, F, Katterbauer, K, Al-Naffouri, T.Y and Hoteit, I.,2016 Orthogonal matching pursuit for
+enhanced recovery of sparse geological structures with the ensemble Kalman filter, IEEE Journal of
+Selected Topics in Applied Earth Observations and Remote Sensing, vol. 9, no. 4, pp. 1710–1724
+[33] Sarma, P., L. J. Durlofsky, and K. Aziz,.2008. Kernel principal component analysis for efficient
+differentiable parameterization of multipoint geostatistics, Mathematical Geosciences, 40, 3-32, 2008.
+[34] Sherman, J., Morrison, W. J.1950. Adjustment of an inverse matrix corresponding to a change in one
+element of a given matrix. The Annals of Mathematical Statistics 21, 124–127.
+[35] Stuart A M,2010 Inverse problems: A Bayesian perspective Acta Numerica 19 451-559.
+[36] Tarantola, 2005. Inverse problem theory and methods for model parameter estimation. 1 ed.
+Philadelphia: SIAM.
+[37] Tarrahi, M. & Afra, S., 2016. Improved Geological model calibration through Sparsity-promoting
+Ensemble Kalman Filter. Offshore Technology Conference.
+[38] Tropp, J. A. & Gilbert, C. A., 2007. Signal recovery from random measurements via orthogonal
+matching pursuit. Information Theory, IEEE Transactions on, 53(12), pp. 4655-4666.
+[39] Villegas, R., Etienam, C., Dorn, O., & Babaei, M.,2018. The shape and Distributed Parameter
+Estimation for History Matching using a Modified Ensemble Kalman Filter and Level Sets. ; Inverse
+problems Science and Engineering.
+[40] William P, Mitchell J,1993 JPEG: Still Image Data Compression Standard, Van Nostrand Reinhold,
+[41] Wu, J., Boucher, A. & Journel, G. A., 2006. A 3D code for mp simulation of continuous and
+categorical variables: FILTERSIM. SPE.
+[42] Zhou, H, Li, L and. Gómez-Hernández, J.,2012, “Characterizing curvilinear features using the
+localized normal-score ensemble Kalman filter,” Abstract and Applied Analysis, vol. 2012, Article ID
+                                                    54
+805707, 18 pages.
+[43] L. Yang, D. Zhang, G. E. Karniadakis, Physics-informed generative adversarial networks for
+stochastic differential equations, arXiv preprint arXiv:1811.02033
+[43] J. Adler, O. Oktem, solving ill-posed inverse problems using iterative ¨ deep neural networks, Inverse
+Problems 33 (12) (2017) 124007. URL http://stacks.iop.org/0266-5611/33/i=12/a=124007
+[44] J.-Y. Zhu, R. Zhang, D. Pathak, T. Darrell, A. A. Efros, O. Wang, E. Shechtman, Toward multimodal
+image-to-image translation, in Advances in Neural Information Processing Systems, 2017, pp. 465–476.
+[45] S. Rojas, J. Koplik, Nonlinear flow in porous media, Phys. Rev. E 58 (1998) 4776–
+4782.doi:10.1103/PhysRevE.58.4776.URL,https://link.aps.org/doi/10.1103/PhysRevE.58.4776
+[46] I. Goodfellow, J. Pouget-Abadie, M. Mirza, B. Xu, D. Warde-Farley, S. Ozair, A. Courville, Y.
+Bengio, Generative adversarial nets, in: Z. Ghahramani, M. Welling, C. Cortes, N. D. Lawrence, K. Q.
+Weinberger (Eds.), Advances in Neural Information Processing Systems 27, Curran Associates, Inc., 2014,
+pp. 2672–2680. URL http://papers.nips.cc/paper/5423-generative-adversarial-nets. pdf
+[47] M. Raissi, P. Perdikaris, G. Karniadakis, Physics-informed neural networks: A deep learning
+framework for solving forward and inverse problems involving nonlinear partial differential equations,
+Journal         of       Computational          Physics        378       (2019)       686        –        707.
+DOI:https://doi.org/10.1016/j.jcp.2018.10.045.URL,http://www.sciencedirect.com/science/article/pii/
+S0021999118307125
+[48] M. Raissi, Forward-backward stochastic neural networks: Deep learning of high-dimensional partial
+differential equations, arXiv preprint arXiv:1804.07010
+[49] M. Raissi, P. Perdikaris, G. E. Karniadakis, Physics Informed Deep Learning (Part I): Data-driven
+solutions of nonlinear partial differential equations, arXiv preprint arXiv:1711.10561
+[50] Bishop. Christopher M 2006. Pattern Recognition and Machine Learning (Information Science and
+Statistics). Springer-Verlag, Berlin, Heidelberg.
+[51] Dorn O & Villegas R, 2008 History matching of petroleum reservoirs using a level set technique,
+Inverse problems Volume: 24 Issue: 3 Article Number: 035015
+[52] Hansen, T.M., Vu. L.T., and Bach, T. 2016. MPSLIB: A C++ class for sequential simulation of
+multiple-point statistical models, in Software X, doi:10.1016/j.softx.2016.07.001. [pdf, www].
+[53] David E. Bernholdt, Mark R. Cianciosa, David L. Green, Jin M. Park, Kody J. H. Law, and Clement
+Etienam. Cluster, classify regress: A general method for learning discontinuous functions. Foundations of
+Data Science, 1(2639-8001-2019-4-491):491, 2019.
+[54] Zongyi Li, Nikola Kovachki, Kamyar Azizzadenesheli, Burigede Liu, Kaushik Bhattacharya, Andrew
+Stuart, Anima Anandkumar. Fourier Neural Operator for Parametric Partial Differential Equations.
+https://doi.org/10.48550/arXiv.2010.08895
+[55] Zongyi Li, Hongkai Zheng, Nikola Kovachki, David Jin, Haoxuan Chen, Burigede Liu, Kamyar
+Azizzadenesheli, Anima Anandkumar. Physics-Informed Neural Operator for Learning Partial Differential
+Equations. https://arxiv.org/pdf/2111.03794.pdf
+[56] Marco A Iglesias et al 2013 Inverse Problems 29 045001
+[57] VH Hoang, C Schwab. Convergence rate analysis of MCMC-FEM for Bayesian inversion of log-
+normal diffusion problems.
+[58] S. L. Cotter, M. Dashti, J. C. Robinson and A. M. Stuart, Bayesian inverse problems for functions and
+applications to fluid mechanics, Inverse Problems, 25 (2009), 115008, 43 pp. doi: 10.1088/0266-
+5611/25/11/115008.
+[59] Chen, Zhangxin and Ewing, Richard. Mathematical Analysis for Reservoir Models, SIAM Journal on
+Mathematical Analysis, 30(1999), 431-453pp. doi: 10.1137/S0036141097319152.
+[60] NVIDIA Modulus Team. NVIDIA Modulus [Computer software].
+https://github.com/NVIDIA/modulus/tree/main
+[61] R. Blöchliger, M. Blatt, A. Bürger, H. Hajibeygi, R. Klöfkorn, and O. Møyner. The OPM Flow
+Simulator for Geologic Carbon Storage. Computers & Geosciences, 2020
+[62] Chen, Y., & Oliver, D. S. (2014). Ensemble-based methods for solving reservoir engineering problems
+applied to Norne field data. Energy Exploration & Exploitation.
+[63] Foss, B., & Jensen, J. L. (2002). Stochastic reservoir simulation for the modelling of uncertainty in the
+Norne field. SPE Reservoir Evaluation & Engineering.
+                                                      55
+

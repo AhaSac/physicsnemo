@@ -1,0 +1,349 @@
+                                                        Reconstructive AI Spectroscopy of Charged Particle
+                                                                             Beams
+                                                                      Vasily Kozhevnikov∗, Andrey Kozyrev, Elena Klepalova,
+                                                                                Victor Tarasenko, Evgenii Baksht
+                                                                           Institute of High Current Electronics, 634055 Tomsk, Russia
+
+                                                                                                August 13, 2026
+arXiv:2608.11628v1 [physics.plasm-ph] 12 Aug 2026
+
+
+
+
+                                                                                                     Abstract
+                                                              This work introduces a physics-informed neural network (PINN) framework for re-
+                                                              constructing electron energy spectra from sparsely sampled attenuation-curve data.
+                                                              Leveraging the NVIDIA PhysicsNeMo platform, the proposed mesh-free methodology
+                                                              operates directly on raw experimental datasets while explicitly incorporating all ex-
+                                                              perimental uncertainties. Validation on subnanosecond electron beam measurements
+                                                              demonstrates that the approach accurately resolves complex, multi-peaked spectral
+                                                              features of energy distribution. The framework enforces physical consistency through
+                                                              embedded governing principles and exhibits substantial predictive capability for energy
+                                                              spectrum reconstruction from noisy, low-precision, and sparse experimental data.
+
+                                                    Keywords: electron energy spectrum, PINN, inverse ill-posed problems, NVIDIA PhysicsNeMo,
+                                                    anomalous electrons
+
+
+                                                    1         Introduction
+                                                    The investigation of the energy characteristics of charged and neutral particle beams remains
+                                                    one of the central and most actively pursued problems in accelerator physics [1]. Of particular
+                                                    interest are the energy spectra of electron beams generated at the output of nanosecond
+                                                    and subnanosecond gas-filled and vacuum diodes when a high-voltage pulse with a short
+                                                    leading edge is applied. Under these conditions, the electron energy spectra typically exhibit
+                                                    complex, multi-peak structures.
+                                                        A distinctive feature of subnanosecond discharge systems is the production of electrons
+                                                    with "anomalous" energies ε that substantially exceed the values determined by the ampli-
+                                                    tude of the applied voltage U0 across the diode gap (ε > qU0 , where q is the elementary
+                                                    charge). Elucidation of the physical mechanisms responsible for this effect critically depends
+                                                    on the accuracy and reliability of the measured particle energy spectra.
+                                                        ∗
+                                                            Corresponding author: Vasily.Y.Kozhevnikov@ieee.org
+
+
+                                                                                                         1
+   Direct measurement of the spectral energy characteristics of short-duration beams is
+technically challenging and often yields results of limited reliability [2]. Consequently, the
+"attenuation curve method" [3] has historically served as the principal technique for de-
+termining the energy composition of such beams. This method is based on recording the
+amplitude of the absorbed charge or current as an electron beam traverses metallic filters
+of different thicknesses. Under contemporary experimental conditions, attenuation curves
+can be obtained with a relative uncertainty on the order of 1–2 % or even lower. How-
+ever, the task of extracting a beam spectrum from a set of N attenuation curve points
+g(x), x = x1 , x2 . . . xN is an ill-posed inverse problem for a Fredholm integral equation of
+the first kind:
+                                     Z εmax
+                                            K(x, ε)f (ε)dε = g(x)                          (1)
+                                    εmin
+
+where f (ε) is the unknown electron energy spectrum to be reconstructed, K(x, ε) is the
+kernel of integral equation representing the known attenuation function for a monoenergetic
+electron beam of energy ε in a foil of thickness x, and εmin and εmax are the lower and upper
+boundaries of the energy range considered for the beam. In such problems, variations in the
+initial data (due to experimental error) lead to unlimited variation in the desired solution.
+This occurs because the integral operator is compact and its singular values accumulate
+at zero, so arbitrarily small perturbations in the measured attenuation curve can excite
+high-frequency components of the solution with unbounded amplitudes. Consequently, a
+naïve minimization of the residual alone yields an infinite family of mutually distant spec-
+tra, all fitting the same experimental data within the error margins. Without additional
+regularization, these solutions may differ from one another by an arbitrarily large amount,
+rendering the reconstruction physically meaningless unless prior constraints are imposed.
+    Over an extended period, the classical Arsenin–Tikhonov algorithm was employed to
+reconstruct energy spectra of fast electrons in vacuum and gas diodes [4, 5, 6]. This mathe-
+matical method is a variational approach, resulting in a regularization equation that yielded
+electron energy distributions that are stable with respect to variations in the attenuation
+curve data g(x) within the limits of experimental uncertainty. Nevertheless, it exhibited sev-
+eral significant drawbacks that led to computational artifacts in the reconstructed spectrum
+f (ε). The principal limitations of this approach can be summarized as follows (in order of
+decreasing importance):
+  1. Uncertainties in the kernel of the integral equation, K(x, ε), which effectively de-
+     scribe the inaccuracies in modeling the interaction of electrons with the foil material
+     (Tabata–Ito approximation [7]), were not taken into account;
+  2. The fine structure of the reconstructed spectrum was critically sensitive to the pre-
+     processing of the experimental attenuation curve g(x), in particular to the artificial
+     increase in the number of data points to 50 or more by means of various interpolation
+     schemes;
+  3. Tikhonov regularization introduces additional boundary conditions that must be im-
+     posed at the edges of the considered energy interval, e.g., f (εmin , εmax ), f ′ (εmin , εmax ),
+     f ′′ (εmin , εmax ), etc. These boundary conditions substantially affect the overall shape
+
+                                                 2
+      of the reconstructed spectrum, although they are only weakly constrained by physical
+      considerations.
+
+    In this paper, a fundamentally different computational approach is used. It can be
+classified as physically-informed neural networks (PINNs). This methodology was introduced
+first in [8]. The essence of the approach is that (1) is regularized by minimizing a generalized
+normalized loss function that includes all possible uncertainty propagation, preserving the
+meshless framework and the ability to operate with raw sparse experimental data. This
+eliminates the introduction of artificial distortions into the spectrum structure. The purpose
+of this article is to apply the AI algorithm to reconstruct the spectrum of fast electrons based
+on a data set of the attenuation curve for a subnanosecond discharge from one of the early
+experiments [3]. It is shown that AI analysis makes it possible to verify the energy structure
+of an electron beam and confirm the existence of its "anomalous" components while fully
+taking into account experimentally determined uncertainties.
+
+
+2    Numerical Method
+As already mentioned above, the full set of uncertainties affecting the structure of the energy
+spectrum is determined by the experimental error of the right-hand side (attenuation curve)
+and the kernel of the equation (Tabata-Ito formula [7])
+
+                                        g(x) = ḡ(x) ± ∆g(x),
+                                                                                            (2)
+                                K(x, ε) = K(x, ε) ± ∆K(x, ε)
+
+where ḡ(x) and K(x, ε) represent the discrete or approximated sets of mean values for the
+attenuation curve and the integral kernel, respectively. The terms ∆g(x) and ∆K(x, ε)
+denote the corresponding experimental errors.
+    For uncertainties (2), we can formulate a generalized normalized loss function. Minimiz-
+ing it using deep learning methods yields a solution f (ε) that is robust to all experimental
+errors in the problem. This normalized loss function ℵ has the form.
+
+                               PN        R εmax                      2
+                                  i=1εmin
+                                           K(xi , ε)fθ (ε)dε − g(xi )
+                        ℵ(θ) =          PN                              +
+                                                           2
+                                           i=1 |g(xi )| + δ
+                                    PM             2       ′  2
+                                     j=1 [fθ (εj ) + fθ (εj ) ]
+                               + λ 1 PM                         +                           (3)
+                                             |f   (ε   )| 2+δ
+                                        j=1     θ    j
+                                             N M
+                                                                      !
+                                       1 XX
+                               + λ2                     ∆K(xi , εj )2
+                                     M N i=1 j=1
+
+where θ denotes the vector of trainable machine learning parameters, including weights
+and biases, while N represents the number of discrete experimental points and M is the
+number of nodes in the uniform energy grid used for the regularization term. The parameters
+xi and g(xi ) refer to the specific foil thicknesses and their corresponding measured beam
+
+                                                  3
+charge or current values within the experimental dataset. The constant δ is introduced
+in the denominators to ensure numerical stability and prevent division by zero during the
+normalization of individual loss components. The weighting coefficients λ1 and λ2 govern
+the regularization process: the second term in equation (3) ensures the smoothness of the
+reconstructed spectrum by penalizing the values of the network-approximated function fθ (εj )
+and its first derivative, computed via automatic differentiation. In contrast, the third term
+constrains the magnitude of the adaptive kernel correction ∆K(xi , εj ) generated by the
+auxiliary neural network. The neural network architecture for the task and the computation
+process are shown in Fig. 1. In this methodology, data normalization is not a mandatory
+procedure.
+
+
+
+
+Figure 1: AI-based workflow for solving the inverse Fredholm integral equation (1), including
+spectrum reconstruction, kernel correction, and regularized optimization.
+
+                                             4
+     The computational framework is built upon the NVIDIA PhysicsNeMo library, utiliz-
+ing its optimized FullyConnected multi-layer perceptron (MLP) components to implement a
+physics-informed neural network (PINN) architecture. NVIDIA PhysicsNeMo offers a more
+efficient GPU-accelerated framework compared to the previously used MATLAB Deep Learn-
+ing Toolbox [8, 9]. The system consists of two primary interconnected networks: Spectrum-
+Net, which approximates the target electron energy spectrum f (ε), and DeltaKNet, which
+provides an adaptive correction ∆K(x, ε) to the integral kernel. SpectrumNet is configured
+with four hidden layers of 128 neurons each using tanh activations, followed by a Softplus
+output layer to enforce the physical requirement of non-negativity strictly. DeltaKNet em-
+ploys four layers with 256 neurons and a linear output layer (without activation function)
+to compensate for uncertainties in the theoretical Tabata-Ito model, allowing the correction
+∆K(x, ε) to take both positive and negative values.
+     This transforms the reconstruction into a full inverse problem where the kernel is adap-
+tively adjusted during training. The Fredholm integral operator is evaluated directly within
+the differentiable framework using a Gauss-Legendre quadrature with 1,000 nodes, ensuring
+high-order spectral accuracy. The gradients for SpectrumNet and DeltaKNet are computed
+simultaneously via backpropagation through the entire computational graph, ensuring consis-
+tent adaptation of the spectral reconstruction and the kernel correction without requiring al-
+ternating freeze–thaw strategies. Training was conducted using the Adam optimizer with an
+initial learning rate of 10−3 and an exponential decay scheduler (γ = 0.99) over 40,000 epochs.
+Both networks are trained jointly by minimizing the unified loss function (3) using a sin-
+gle optimizer (Adam). All computations were performed on an NVIDIA Quadro A4000
+GPU, leveraging the CUDA toolkit to provide the high-performance throughput necessary
+for joint network optimization. The overall workflow, including the interconnection between
+SpectrumNet, DeltaKNet, and the integral operator evaluation, is schematically illustrated
+in Fig. 1.
+
+
+3    Experiment and Spectrum Reconstruction
+To validate the proposed AI-driven methodology, we utilized experimental data character-
+izing subnanosecond runaway electron beams generated in a gas-filled diode [3]. The ex-
+periments were conducted in air at atmospheric pressure using the SLEP-150 high-voltage
+generator, which produces pulses with a voltage amplitude of up to 220 kV and a rise time of
+approximately 250 ps. The diode featured a sphere-plane geometry consisting of a 9.5-mm-
+diameter steel spherical cathode and a 10-15 µm aluminum foil anode, with an interelectrode
+gap maintained at 8 mm. To refine measurement conditions and limit beam divergence, a
+copper diaphragm with a 5 mm aperture was frequently employed.
+    The experimental diagnostic suite utilized a high-precision measurement chain specifically
+engineered to capture the characteristics of subnanosecond electron beams with a temporal
+resolution of approximately 0.1 ns. The transmitted beam current and total charge were
+registered by a high-speed collector (Faraday cup) and analyzed using a Tektronix TDS-6604
+digital real-time oscilloscope, which provided a 6 GHz bandwidth and a sampling rate of
+20 GS/s to ensure the integrity of ultra-short signals. The primary experimental input
+(attenuation curve) representing the transmitted beam charge as a function of the thickness
+
+
+                                              5
+of aluminum filters, ranging from 0 to 270 µm, contained 14 raw experimental points [3]. The
+energy spectrum was reconstructed in the range from 10 keV to 500 keV using the proposed
+AI-driven algorithm. For aluminum filters of the given thickness range used in the work, the
+maximum relative error of the Tabata-Ito formula can be 10-15 %. At the same time, the
+accuracy of measuring the attenuation curves (Fig. 2) does not exceed 5 %.
+
+
+
+
+Figure 2: Attenuation curve raw data for a subnanosecond electron beam attenuation in
+aluminum foils set from experimental paper [3].
+
+    Fig. 3 shows a comparative reconstruction of the electron spectrum behind the anode of
+the diode of the design under consideration. The dashed line represents the energy spectrum
+points obtained in [3]. The colored lines represent the spectrum reconstruction result using
+the proposed AI-driven reconstruction algorithm. The uncertainty level of the Tabata-Ito
+formula was not varied, preserving 10 % for aluminum. At the same time, the reconstruction
+smoothness and sensitivity to data noise were controlled by the regularization weight λ1 .
+Varying λ1 effectively changes the regularization strength, allowing exploration of spectral
+features that are stable with respect to the assumed noise level in the attenuation curve.
+Lower λ1 values reduce the smoothness penalty, enabling the network to resolve finer spectral
+details, while higher values enforce a smoother solution that is less sensitive to experimental
+uncertainties.
+
+
+
+
+                                              6
+Figure 3: Comparative representation of the energy spectra reconstructed by the AI-based
+algorithm (curves 2–4) and the experimentally obtained reference spectrum (curve 1) re-
+ported in [3]. The uncertainty of the attenuation curve, expressed as the maximum relative
+experimental error, is specified in the legend.
+
+   It can be seen that reducing the uncertainty value of the attenuation curve leads to
+the formation of energy spectrum features that are most important for obtaining accurate
+spectra: the additional maxima and strict non-negativity of the spectrum. Moreover, the
+AI procedure does not use additional artificially introduced points for the attenuation curve
+g(x), operating only with the raw experimental data set in Fig. 2. The method also does not
+impose any additional conditions on the boundary values of f (ε), as always required by the
+Arsenin-Tikhonov procedure [5, 6]. The main physical observation derived using the current
+technique is the appearance of a maximum in the region of 130 keV, which corresponds to
+a group of runaway electrons with anomalously high energies (up to 183 keV). Red curve
+4 in Fig. 3 represents the method’s predictive horizon, indicating the ultimate spectrum
+shape for the lowest relative error level < 1%, which was unachievable experimentally in [3].
+Further increasing the reconstruction accuracy on the data set in Fig. 2 does not lead to
+any noticeable transformations in the energy spectrum. A more detailed spectrum can be
+expected to be obtained with a more accurately measured attenuation curve g(x).
+
+
+4    Conclusions
+The proposed deep learning–based framework yields a robust and physically consistent solu-
+tion to the full inverse problem of reconstructing electron-beam energy spectra from exper-
+imental attenuation data. By employing a mesh-free formulation that operates directly on
+raw, sparse experimental datasets, the approach effectively mitigates the numerical artifacts
+
+                                             7
+and sampling errors commonly introduced by the interpolation and preprocessing procedures
+required in classical Tikhonov regularization schemes. Moreover, integrating the DeltaKNet
+architecture enables the model to adaptively compensate for intrinsic uncertainties in the
+theoretical Tabata–Ito kernel, which may reach up to 15 %, thereby ensuring a more stable
+and accurate spectral reconstruction than conventional methodologies.
+    A principal advantage of this methodology lies in its substantial predictive capability.
+Even in regimes where the initial experimental accuracy is limited, the PINN architecture
+can resolve subtle, statistically significant trends embedded within the data. As the pre-
+sumed fidelity of the input measurements is systematically enhanced via the adjustment of
+regularization parameters, these latent features—such as the two-peak structure and the pop-
+ulation of "anomalous" high-energy electrons—progressively sharpen from broad, qualitative
+tendencies into quantitatively well-resolved physical structures.
+    Beyond its specific application to electron-beam spectroscopy, the proposed methodology
+encompasses a broad class of inverse problems that are mathematically equivalent to equa-
+tion (1), namely Fredholm integral equations of the first kind in which both the right-hand
+side and the kernel are affected by experimental uncertainties. Such problems are pervasive
+in experimental physics and engineering. Representative examples include the reconstruction
+of radial magnetic-field profiles in Z-pinch plasmas from discrete magnetic-probe measure-
+ments, the inference of electron energy distribution functions from bremsstrahlung spectra
+in high-temperature plasmas, and the determination of particle-size distributions from laser
+diffraction data; all of these can be cast into the same ill-posed integral framework.
+    More generally, any diagnostic modality in which the measured quantity is obtained as
+the solution of a first-kind Fredholm integral equation (1) — whether in plasma physics,
+accelerator diagnostics, medical imaging, or industrial non-destructive evaluation—can take
+advantage of the mesh-free, uncertainty-aware framework introduced here. Its capability to
+operate directly on raw, sparse datasets while explicitly compensating for kernel inaccuracies
+renders it a versatile and robust methodology, and positions it as a promising basis for a new
+generation of intelligent data-processing systems in pulsed-power science and related fields.
+
+
+Acknowledgment
+This paper is dedicated to the cherished memory of Prof. Dr. Ðorđe Paunović, whose service
+as Chairman of the TELFOR International Conference Steering Committee has left a lasting
+legacy in our discipline. We honor him with profound warmth and gratitude—as a mentor
+who shaped this conference, a senior colleague who inspired us, and a dear friend who shared
+our journey.
+    This research has been supported by the program of State assignment of the ISE SB RAS,
+project No. FWRM-2026-0008, FWRM-2026-0009.
+
+
+References
+ [1] G.A. Mesyats, “Pulsed Power”; Springer: Berlin/Heidelberg, Germany, 2005; 568p.
+
+
+
+                                              8
+[2] S.P. Bugaev, V.I. Koshelev, and M.N. Timofeev, "Ion-beam formation in a vacuum
+    diode," Soviet Physics Journal, vol. 18, no. 2, pp. 173–175, Feb. 1975.
+
+[3] V.F. Tarasenko, E.Kh. Baksht, A.G. Burachenko, I.D. Kostyrya, M.I. Lomaev, V.K.
+    Petin, D.V. Rybka, and S.V. Shlyakhtun, "Energy Distribution of Runaway Electrons
+    Generated by a Nanosecond Discharge in Atmospheric-Pressure Air," Plasma Physics
+    Reports, vol. 34, no. 12, pp. 1028–1036, 2008.
+
+[4] A.V. Kozyrev, V.Yu. Kozhevnikov, E.Kh. Baksht, A.G. Buranchenko, and V.F.
+    Tarasenko, "Spectrum reconstruction of a nanosecond electron beam from the data
+    on its extinction in thin foils," Russian Physics Journal, vol. 53, no. 4, pp. 361–368,
+    Sep. 2010.
+
+[5] E.H. Baksht, A.G. Burachenko, V.Y. Kozhevnikov, A.V. Kozyrev, I.D. Kostyrya, and
+    V.F. Tarasenko, "Spectrum of fast electrons in a subnanosecond breakdown of air-filled
+    diodes at atmospheric pressure," Journal of Physics D: Applied Physics, vol. 43, no. 30,
+    p. 305201, Jul. 2010.
+
+[6] A.V. Kozyrev et al., "Reconstruction of electron beam energy spectra for vacuum and
+    gas diodes," Laser and Particle Beams, vol. 33, no. 2, pp. 183–192, Mar. 2015.
+
+[7] T. Tabata and R. Ito, "A generalized empirical equation for the transmission coefficient
+    of electrons," Nuclear Instruments and Methods, vol. 127, no. 3, pp. 429–434, Aug.
+    1975.
+
+[8] V. Kozhevnikov et al., "Deep Learning-Based Reconstruction of Particle Beam Energy
+    Spectra from Attenuation Curve Data," Plasma, vol. 9, no. 2, p. 18, Jun. 2026.
+
+[9] V.F. Tarasenko, V.Y. Kozhevnikov, A.V. Kozyrev, E.K. Baksht, and M.S. Vorobyov,
+    "Electrons with Anomalous Energy Generated in Gas-Filled and Vacuum Diodes," arXiv
+    preprint arXiv:2606.27889, 2026.
+
+
+
+
+                                            9
+

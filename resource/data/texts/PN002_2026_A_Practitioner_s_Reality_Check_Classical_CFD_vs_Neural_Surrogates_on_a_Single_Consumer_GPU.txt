@@ -1,0 +1,251 @@
+   A Practitioner’s Reality Check: Classical CFD vs.
+    Neural Surrogates on a Single Consumer GPU
+                                                           Hiroki Fujiwara
+                                             Innovation for Design and Engineering
+                                         Advanced Institute of Industrial Technology (AIIT)
+                                                           Tokyo, Japan
+
+
+   Abstract—Recent large-scale benchmarking (e.g., REALM [1])          tive question was rarely “which method is more accurate in
+shows neural surrogates for multiphysics flows often report            principle” but “which method can I trust enough to act on
+strong nominal accuracy while missing key transient structures.        today.” That practical framing is the lens applied throughout.
+This paper asks a narrower, practitioner-oriented question: on
+the kind of small, well-posed problem a CFD engineer encounters
+daily, how does a classical linear reduced-order model (POD-
+Galerkin, DMD) compare to a modern neural surrogate (NVIDIA
+PhysicsNeMo), when both run end-to-end on a single consumer
+workstation? We report three self-contained experiments —              A. Related Work
+parametric interpolation via POD-ROM vs. a fully-connected
+neural surrogate, transient analysis via DMD, and interface               Projection-based reduced-order models such as POD-
+prediction via a CNN on a two-phase (VOF) flow — all on a single
+RTX 4090 GPU. Under conditions favorable to linear ROM,                Galerkin [2] and DMD [3] have a decades-long track record
+classical methods remain substantially more accurate and equally       in fluid dynamics, valued for their interpretability and low
+fast; neural methods degrade further under autoregressive rollout      computational cost, but they typically assume a fixed com-
+on sharp-interface data. We state these limitations explicitly and     putational domain and struggle to generalize across geometry
+position this as an early, practitioner-level data point rather than   [2]. Physics-informed neural networks [4] and neural operators
+a comprehensive benchmark, drawing on nine years of industrial
+CFD experience (Siemens STAR-CD/STAR-CCM+).                            such as the Fourier Neural Operator [5] were introduced in
+   Index Terms—CFD, neural surrogates, reduced-order model-            part to address this limitation, offering mesh-agnostic gen-
+ing, proper orthogonal decomposition, dynamic mode decompo-            eralization at the cost of interpretability and, as this paper’s
+sition, benchmarking, HPC on consumer hardware                         Experiment C illustrates, robustness under autoregressive roll-
+                                                                       out on sharp-interface data. A growing body of work has
+                       I. I NTRODUCTION                                coupled POD with neural networks (POD-NN) to combine
+   Neural surrogate modeling for computational fluid dynam-            the interpretability of linear modes with the flexibility of
+ics has advanced rapidly, but recent large-scale evaluations           learned mappings, though these hybrid approaches inherit
+suggest the field may be suffering from an “illusion of                POD’s difficulty with geometrically varying domains unless
+mastery”: existing evaluations rely too heavily on simplified,         paired with mesh-morphing or point-cloud-based encoders.
+low-dimensional proxy tasks that fail to expose the fragility             At the benchmarking level, REALM [1] is the closest point
+of neural models under realistic conditions. The REALM                 of comparison: it systematically evaluates over a dozen neural
+benchmark [1] operationalized this concern at scale, testing           surrogate architectures on eleven high-fidelity, application-
+over a dozen neural surrogate families across eleven high-             driven multiphysics datasets requiring hundreds to thousands
+fidelity multiphysics datasets, and found a persistent gap             of HPC-hours to generate, and identifies a persistent gap
+between nominal accuracy metrics and physically trustworthy            between nominal accuracy and physically trustworthy rollout
+behavior.                                                              behavior. Other recent benchmarking efforts in this space
+   This paper asks a smaller, more mundane question from               similarly emphasize dataset scale and architectural diversity.
+the opposite end of the resource spectrum: does the same               This paper occupies a complementary and much smaller
+qualitative gap already show up when a single practitioner,            niche: rather than adding another large-scale benchmark, it
+using a single consumer GPU and textbook-scale test cases,             asks whether the same qualitative warning is visible to a
+runs classical and neural methods side by side? This is not an         single practitioner working with consumer-grade hardware and
+attempt to replicate REALM’s scale. It is closer to a sanity           off-the-shelf, open-source tools (OpenFOAM, PhysicsNeMo)
+check that any practitioner can run in an afternoon, and a first       in the course of a single afternoon. To our knowledge, no
+step toward the kind of HPC-adjacent, resource-constrained             prior work has explicitly framed this resource-constrained,
+validation that this workshop’s community engages with reg-            practitioner-level replication as a check on whether large-
+ularly.                                                                scale benchmarking findings are artifacts of scale or genuine
+   The motivation comes from nine years of applied CFD                 structural properties of naive supervised training on physical
+work (Siemens, STAR-CD/STAR-CCM+), where the opera-                    fields.
+                    II. E XPERIMENTAL S ETUP                           POD-ROM formulation. Given snapshots u(x, y; Ui ) ∈
+A. Hardware & Software                                               R1200 for i = 1, . . . , 9, we assemble the snapshot matrix
+                                                                     S = [u1 , . . . , u9 ] ∈ R1200×9 and compute its singular value
+   Table I and Table II summarize the workstation used for all
+                                                                     decomposition S = ΦΣV⊤ . The velocity field is approxi-
+experiments. No cluster or commercial license was required;
+                                                                     mated as
+the entire pipeline runs on commodity hardware.                                                       r
+                                                                                                      X
+                                                                                       û(x, y; U ) ≈   ak (U ) ϕk (x, y),       (1)
+                           TABLE I                                                                  k=1
+             W ORKSTATION HARDWARE SPECIFICATION .
+                                                                     where ϕk are the leading r = 3 left singular vectors (POD
+          Component        Detail                                    modes) and the modal coefficients ak (U ) are obtained by
+                                                                     projecting each training snapshot onto the mode basis and
+          CPU              Intel Core i9-13900F (24c/32t)
+          RAM              64 GB DDR5-5600                           interpolating across U with natural cubic splines. This is a
+          GPU              NVIDIA RTX 4090, 24 GB VRAM               fully data-driven (non-intrusive) ROM: no Galerkin projection
+          Storage          2× Samsung 990 PRO 1TB NVMe               of the Navier–Stokes operator is performed, keeping the com-
+                                                                     parison to the neural surrogate on equal footing in terms of
+                                                                     required domain-specific derivation.
+                               TABLE II                                 Neural surrogate. PhysicsNeMo FullyConnected network
+                           S OFTWARE STACK .
+                                                                     fθ : (x, y, U ) 7→ (u, v) with 4 hidden layers of 128 units each
+           Layer             Version
+                                                                     and tanh-family activations, trained for 3000 epochs on 3600
+                                                                     collocation points (400 per training case × 9 cases) with MSE
+           WSL2              Ubuntu 26.04 LTS
+           CFD solver        OpenFOAM v2512 [6]                      loss, Adam optimizer, and cosine learning-rate decay from
+           AI framework      NVIDIA PhysicsNeMo 1.3.0 [7]            an initial rate of 10−3 . Final training loss was 5.90 × 10−4 .
+           Deep learning     PyTorch 2.13.0+cu126                    Unlike the POD-ROM, the network receives no explicit modal
+                                                                     structure and must learn the mapping from raw coordinates and
+                                                                     the parameter U directly.
+B. Validation
+   OpenFOAM was validated on the lid-driven cavity (ico-                                        TABLE III
+Foam) and dam-break (interFoam, VOF) tutorials. Physic-                                POD-ROM VS . NEURAL SURROGATE .
+sNeMo’s official test suite passed in full (2511/2511, 163
+skipped, 0 failed). A KNN benchmark showed cuML scaling                      Case        POD err.   POD time   NN err.   NN time
+far better than naive torch/scipy implementations (6.27 ms vs.               U = 2.5     0.128%     0.056 ms   3.364%    0.276 ms
+79.9 ms at 100k points/5k queries), relevant to mesh/point-                  U = 7.5     0.018%     0.034 ms   2.199%    0.264 ms
+cloud-based surrogates such as DoMINO (Fig. 1). These are
+installation/sanity checks, not benchmark claims in their own
+right.
+
+
+
+
+                                                                     Fig. 2. Accuracy and inference-speed comparison, POD-ROM vs. Physic-
+                                                                     sNeMo.
+
+                                                                        POD-ROM outperformed the neural surrogate by roughly
+                                                                     25× in accuracy at comparable or better speed. This should
+                                                                     not be read as “classical beats neural.” The problem was
+  Fig. 1. KNN search time across implementations, RTX 4090, k = 5.   deliberately smooth, single-geometry, single-parameter, low-
+                                                                     Reynolds — precisely the regime a linear ROM dominates
+                                                                     (dominant POD mode R2 = 0.99999 linear in U ). Neural
+     III. E XPERIMENT A — POD-ROM VS . N EURAL                       methods are expected to win when geometry varies, the
+                      S URROGATE                                     parameter space is high-dimensional, gradients are needed for
+  Setup. Lid-driven cavity, parametrized by lid velocity U ∈         optimization, or physics is strongly nonlinear — none of which
+{1, . . . , 10} \ {7} (9 OpenFOAM runs training, held-out U =        apply here. With 9 training snapshots and 2 test points, this is
+2.5, 7.5).                                                           a single reproducible data point, not a statistical claim.
+IV. E XPERIMENT B — DYNAMIC M ODE D ECOMPOSITION                         frame at every test time, isolating one-step prediction error;
+   DMD formulation. Given a sequence of m = 100 time-                    and (ii) autoregressive rollout, where the model receives only
+resolved snapshots {u1 , . . . , um } sampled at fixed U = 5 with        the initial seed frame and is then repeatedly fed its own
+dt = 0.005 s, we form the data matrices X = [u1 , . . . , um−1 ]         predictions for 15 consecutive steps, the regime relevant to
+and X′ = [u2 , . . . , um ] and seek the best-fit linear operator        actually replacing rather than merely post-processing a solver.
+A satisfying X′ ≈ AX. Exact DMD [3] computes the
+eigendecomposition of A restricted to the r-dimensional POD                                         TABLE V
+                                                                                         NN-VOF: SINGLE - STEP VS . ROLLOUT.
+subspace of X, yielding DMD modes φj , eigenvalues λj , and
+continuous-time growth rates/frequencies via ωj = ln(λj )/dt.                       Mode                 Rel. L2 error      Speed
+We truncate to r = 5 modes, retaining 99.999989% of the                             Single-step             13.5%        0.24 ms/step
+singular value energy.                                                              Rollout (15 steps)      44.6%        0.24 ms/step
+   Setup and results. Fixed U = 5, transient icoFoam run, 100
+snapshots. All five retained modes had Im(ωj ) = 0 (purely                  Single-step error (13.5%) was already ∼5× worse than
+decaying, non-oscillatory), consistent with the expected mono-           Experiment A’s neural surrogate (2–3%), compounding to
+tonic relaxation to steady state at this low Reynolds number,            44.6% under rollout, with visible blurring and loss of fine
+with no periodic vortex shedding. Mode 1 (|λ| ≈ 1, near-                 droplet structure (Fig. 3). This is the well-known failure mode
+zero growth rate) is the steady-state attractor and reproduces           of MSE-trained image-to-image regression on sharp-interface
+the same primary-vortex pattern seen in the PINN solution of             data, reproducing at toy scale the motivation for specialized
+Section III’s validation step; mode 0 has the fastest decay rate         approaches (phase-field PINNs [4], level-set neural operators
+and is spatially localized near the moving-lid corner, consis-           [5]) rather than arguing against them.
+tent with it capturing the impulsive start transient; modes 2
+and 3 have intermediate decay rates and show swirling spatial                                     VI. D ISCUSSION
+patterns consistent with transient vortex reorganization before          A. Scope of the claim
+the flow settles. complementary rather than competing [2],                  This does not show neural surrogates are inferior in general
+[3]: POD-ROM answers “how does the solution change across                — the problems were chosen to be exactly the regime classical
+parameters,” DMD answers “how does a single solution evolve              ROM is built for. It does show the accuracy gap can be large
+in time.” Both are cheap and interpretable — properties that             (≈25×) on identical hardware in comparable wall-clock time,
+matter when an engineer must explain why a result looks the              invisible from inference speed alone. The operational takeaway
+way it does.                                                             for practitioners: match the tool to the geometry/parameter
+                                                                         regime rather than assuming a speed advantage implies an
+                        TABLE IV                                         accuracy advantage.
+    DMD MODE DECOMPOSITION OF THE TRANSIENT CAVITY FLOW.
+                                                                         B. Threats to validity
+ Mode    |λ| amp.   Growth (1/s)   Freq. (Hz)   Interpretation
+                                                                            Textbook-scale cases only; no industrially complex geom-
+   1      21.48      −0.0014          0.0       Steady-state attractor   etry. Small samples (9 snapshots, single Reynolds number).
+   0      11.05      −461.79          0.0       Fastest-decaying shock
+   2      25.40      −122.08          0.0       Vortex reorganization    No hyperparameter search on the neural models. Single-seed
+   3      24.67      −98.52           0.0       Vortex reorganization    runs.
+   4      8.98       −44.33           0.0       Slowest-decaying
+                                                                         C. Toward a geometry-varying extension
+                                                                            The single largest limitation of the POD-ROM formulation
+ V. E XPERIMENT C — N EURAL I NTERFACE P REDICTION                       used here is implicit in Eq. (1): it assumes every snapshot
+   Dam-break (interFoam), 97 snapshots of alpha.water                    lives on the same discretization, so the modes ϕk are only
+[8] on a 64 × 64 grid. 5-layer CNN encoder-decoder, 2000                 meaningful when the computational domain is fixed. This is
+epochs.                                                                  a well-documented limitation of projection-based ROMs [2]
+   Architecture and training. The volume-fraction field                  and is precisely the condition this paper’s test cases were
+α(x, y, t) ∈ [0, 1], tracking the liquid-gas interface via the           chosen to satisfy, in order to isolate the accuracy comparison
+VOF method [8], was interpolated from the unstructured                   from confounds introduced by mesh morphing or point-cloud
+OpenFOAM mesh onto a regular 64 × 64 grid at each of                     encoding. A natural next step — left for future work — is to
+97 time steps. A 5-layer convolutional encoder-decoder gθ :              introduce a parametrized geometric obstacle into the cavity or
+αt 7→ α̂t+1 (Conv2d layers with stride-2 downsampling in the             channel flow and measure the deformation magnitude at which
+encoder, transposed-convolution upsampling in the decoder,               a mesh-agnostic neural surrogate (e.g., a point-cloud or graph-
+sigmoid output activation to respect α ∈ [0, 1]) was trained             based architecture such as PhysicsNeMo’s DoMINO) begins
+on 81 consecutive frame pairs (t, t + 1) with 15 held out                to outperform a POD-ROM equipped with a mesh-morphing
+for testing, using MSE loss and 2000 training epochs (final              preprocessing step. Identifying this crossover threshold, rather
+training loss 1.29×10−3 ). Two evaluation protocols were used:           than simply confirming that it exists, would convert the
+(i) single-step, where the model receives the true previous              qualitative expectation stated in Section III into an actionable,
+Fig. 3. NN-VOF prediction vs. ground truth. Top: ground truth. Middle: single-step. Bottom: autoregressive rollout. Progressive blurring is visible under
+rollout, consistent with Table V.
+
+
+quantitative design rule for practitioners choosing between                   setting, the cost of discovering an accuracy/trustworthiness gap
+ROM and neural approaches under geometric variability.                        late — after a surrogate has already been integrated into a
+                                                                              design-optimization loop or a real-time monitoring pipeline
+D. Implications for HPC-adjacent scientific ML practice                       — is substantially higher than the cost of a consumer-GPU
+   This community routinely evaluates AI-for-science methods                  sanity check performed up front, even accounting for the sanity
+at extreme scale — across large clusters, diverse accelerators,               check’s inherent limitations in scale and statistical power.
+and high-fidelity datasets requiring substantial HPC alloca-
+                                                                              E. Relation to prior work
+tion. That scale is essential for characterizing state-of-the-art
+surrogate performance, but it also raises the cost of even a                     REALM [1] identified, at scale, a persistent gap between
+first sanity check: a practitioner deciding whether to invest                 nominal accuracy and physically trustworthy behavior. Ex-
+a research group’s compute budget in a neural surrogate                       periment C reproduces the same qualitative pattern with a
+for a new problem class may not have HPC-scale resources                      single CNN, a single GPU, and an afternoon of compute —
+available at the outset. The experiments here suggest that a                  evidence, though not proof, that the gap REALM documents
+meaningful first signal — whether a naive neural surrogate                    is not purely an artifact of scale. A single architecture is
+is even competitive with a decades-old linear baseline on a                   not conclusive; broader validation across architectures and
+simplified version of the target problem — can be obtained on                 problem classes, closer to REALM’s own scope, would be
+commodity hardware before committing to larger-scale valida-                  needed to establish this reading rigorously. We view this
+tion. We do not propose this as a substitute for rigorous, large-             note as a cheap, easily repeated observation consistent with
+scale benchmarking such as REALM, but as a complementary,                     REALM’s finding, offered to this workshop’s community as an
+low-cost triage step: if a neural surrogate cannot outperform                 entry point for discussion of low-cost, HPC-adjacent validation
+a linear ROM on a simplified, favorable-case version of a                     practices for scientific ML.
+problem, that is useful information before scaling up. Making
+this kind of check cheap and habitual may also help surface                                            VII. C ONCLUSION
+the REALM-style accuracy/trustworthiness gap earlier in a                       Tool selection should match problem structure, not hype.
+project’s lifecycle, when it is less costly to change course.                 On this class of problem, classical linear methods (POD-
+In our experience managing CFD workloads in an industrial                     ROM, DMD) remain highly competitive on accuracy and
+speed, and their interpretability is an operational advantage
+where engineers must justify results. Neural surrogates’ value
+lies elsewhere — geometry generalization, high-dimensional
+parameter spaces, differentiability for optimization — not
+raw accuracy on every problem. The entire pipeline runs
+on a single consumer GPU workstation with open-source
+tools, suggesting this kind of practitioner-level sanity check
+is broadly replicable without institutional compute access, and
+may be a useful complement to large-scale HPC benchmarking
+efforts within this community.
+                         DATA AVAILABILITY
+  Code for the POD-ROM, DMD, and CNN experiments will
+be made publicly available upon acceptance.
+                             AUTHOR N OTE
+  The author spent nine years as an industrial CFD engineer
+(Siemens, STAR-CD/STAR-CCM+) prior to transitioning to
+HCI and perceptual-science research, which motivates the
+practitioner framing of this note.
+                              R EFERENCES
+[1] R. Mao, R. Zhang, X. Bai, T. Wu, T. Zhang, Z. Chen, M. Lin, B. Zeng,
+    Y. Xu, Y. Xiang, H. Zhang, S. Goswami, P. A. Dawe, Y. Xu, Z. An,
+    M. Yan, X. Lu, Y. Wang, R. Bai, H. Gao, X. Fang, H. Li, H. Sun, and
+    Z. X. Chen, “Benchmarking neural surrogates on realistic spatiotemporal
+    multiphysics flows,” arXiv preprint arXiv:2512.18595, 2025.
+[2] L. Sirovich, “Turbulence and the dynamics of coherent structures. I–III,”
+    Quarterly of Applied Mathematics, vol. 45, no. 3, pp. 561–590, 1987.
+[3] P. J. Schmid, “Dynamic mode decomposition of numerical and experi-
+    mental data,” Journal of Fluid Mechanics, vol. 656, pp. 5–28, 2010.
+[4] M. Raissi, P. Perdikaris, and G. E. Karniadakis, “Physics-informed neural
+    networks: A deep learning framework for solving forward and inverse
+    problems involving nonlinear partial differential equations,” Journal of
+    Computational Physics, vol. 378, pp. 686–707, 2019.
+[5] Z. Li, N. B. Kovachki, K. Azizzadenesheli, B. Liu, K. Bhattacharya,
+    A. M. Stuart, and A. Anandkumar, “Fourier neural operator for parametric
+    partial differential equations,” in International Conference on Learning
+    Representations (ICLR), 2021.
+[6] The OpenFOAM Foundation, “OpenFOAM: The open source CFD tool-
+    box,” https://www.openfoam.org, 2025, version v2512.
+[7] NVIDIA          Corporation,       “NVIDIA         PhysicsNeMo:         An
+    open-source        framework        for      physics-AI      applications,”
+    https://github.com/NVIDIA/physicsnemo, 2024, version 1.3.0.
+[8] C. W. Hirt and B. D. Nichols, “Volume of fluid (VOF) method for the
+    dynamics of free boundaries,” Journal of Computational Physics, vol. 39,
+    no. 1, pp. 201–225, 1981.
+

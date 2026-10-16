@@ -1,0 +1,683 @@
+                                                   DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+                                                        for Modeling Large Scale Engineering Simulations
+
+
+                                             Rishikesh Ranade 1 Mohammad Amin Nabian 1 Kaustubh Tangsali 1 Alexey Kamenev 1 Oliver Hennigh 1
+                                                                          Ram Cherukuri 1 Sanjay Choudhry 1
+
+
+                                                                 Abstract                                   boundary conditions. Engineering simulation tools are pre-
+arXiv:2501.13350v1 [cs.LG] 23 Jan 2025
+
+
+
+
+                                              Numerical simulations play a critical role in de-             dominantly used in the development of innovative and op-
+                                              sign and development of engineering products                  timized designs. Typically, simulations are based on nu-
+                                              and processes. Traditional computational meth-                merical methods such as finite volume or element methods
+                                              ods, such as CFD, can provide accurate predic-                (LeVeque, 2002; 2007), which are used to discretize the
+                                              tions but are computationally expensive, particu-             computational domain into smaller elements known as a
+                                              larly for complex geometries. Several machine                 mesh, approximating the various partial differentials and
+                                              learning (ML) models have been proposed in the                solving the system of equations derived on the mesh to ob-
+                                              literature to significantly reduce computation time           tain the discrete PDE solutions. In many cases, the choice
+                                              while maintaining acceptable accuracy. However,               of discretization is a trade-off between accuracy and compu-
+                                              ML models often face limitations in terms of ac-              tational cost. The computational time and memory grows
+                                              curacy and scalability and depend on significant              proportionally with the number of elements as it directly
+                                              mesh downsampling, which can negatively af-                   impacts the process of meshing the computational domain
+                                              fect prediction accuracy and generalization. In               as well as solving the discrete equations on this mesh. As
+                                              this work, we propose a novel ML model archi-                 a result, there has been a constant drive to develop newer
+                                              tecture, DoMINO (Decomposable Multi-scale It-                 numerical methods that can provide greater accuracy as well
+                                              erative Neural Operator) developed in NVIDIA                  as greater computational efficiency, i.e., faster and ideally at
+                                              Modulus to address the various challenges of ma-              a lower computational cost.
+                                              chine learning based surrogate modeling of engi-              A significant amount of work has been carried out in im-
+                                              neering simulations. DoMINO is a point cloud-                 proving the computational efficiency of existing methods,
+                                              based ML model that uses local geometric infor-               development of new methods (Sharma et al., 2020; Angel
+                                              mation to predict flow fields on discrete points.             et al., 2024; Ashton et al., 2025; Bernaschi et al., 2023), and
+                                              The DoMINO model is validated for the automo-                 also by utilizing the latest High Performance Computing
+                                              tive aerodynamics use case using the DrivAerML                (HPC) hardware such as GPUs, arm64-based processors etc
+                                              dataset. Through our experiments we demonstrate               (Stone et al., 2021; Appa et al., 2021; Piscaglia & Ghioldi,
+                                              the scalability, performance, accuracy and gener-             2023; Xue et al., 2024). Despite these advancements, there
+                                              alization of our model to both in-distribution and            has been a continual need to explore Machine Learning
+                                              out-of-distribution testing samples. Moreover, the            (ML) approaches to serve as surrogate models for numerical
+                                              results are analyzed using a range of engineering             simulations and provide further acceleration. ML methods
+                                              specific metrics important for validating numeri-             developed for numerical simulations have primarily fallen
+                                              cal simulations.                                              into 2 categories, neural operators and mesh (or graph-)-
+                                                                                                            based approaches.
+                                         1. Introduction                                                    Neural operators are a class of deep-learning methods that
+                                                                                                            learn relationships functional spaces. These are mesh-free,
+                                         Simulation and modeling of engineering applications in-            infinite dimensional operators that are learned using neural
+                                         volve representing complex physical and chemical processes         networks (Lu et al., 2019; Li et al., 2020a;b; Patel et al.,
+                                         with partial differential equations (PDEs) followed by solv-       2021). Recently, significant advancements have been made
+                                         ing these equations on a computational domain with given           in applying these methods to large-scale simulations such as
+                                            1
+                                              NVIDIA, Santa Clara, United States. Correspondence to:        computational fluid dynamcics, weather modeling etc (Az-
+                                         Rishikesh Ranade <rranade@nvidia.com>.                             izzadenesheli et al., 2024). Methods are being developed
+                                                                                                            to learn and represent geometries to develop more accurate
+                                         .
+
+                                                                                                        1
+                              DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+and generalizable methods. Li et al. (2024) adapted to neu-          methods are dependent on the spatial structure of the input
+ral operators to modeling directly on meshes. They learn a           and do not generalize to other arbitrary distributions. For
+graph neural operator to project surface meshes of geome-            example, ML algorithms trained on simulation meshes do
+tries on to structured latent spaces, apply fourier layers and       not generalize and have lower accuracy when evaluated on
+decode the solutions back on the structured meshes. Zhong            uniform point clouds or meshes.
+& Meidani (2025) developed a physics-informed geometry
+                                                                     In this work, we propose a novel model architecture,
+aware neural network where the geometry representations
+                                                                     DoMINO, a decomposable, multi-scale, iterative neural
+was learned from point cloud representation of the surfaces
+                                                                     operator, to provide scalable, accurate and generalizable
+and combined that with physics losses to improve the ro-
+                                                                     surrogates to model large-scale numerical simulations. We
+bustness of the learning algorithm. He et al. (2024); Park &
+                                                                     demonstrate the DoMINO model using the external aero-
+Kang (2024) used geometry parameters and signed distance
+                                                                     dynamics use case. External aerodynamics simulations on
+field (SDF) information in their DeepONet architecture to
+                                                                     realistic car geometries involve significantly large surface
+model a structural problem.
+                                                                     and volume meshes to capture the near-wall effects and
+Mesh-based methods have been another area of focus in                resolve the flow fields in the downstream wake and near
+modeling numerical simulations. In these methods, ML                 other parts of the car such as underbody, side mirrors etc.
+models are directly trained on simulation meshes and learn           Accurate and fast predictions of velocity fields, pressure and
+to predict solution fields using local mesh information. Early       wall-shear-stresses obtained from aerodynamic simulations
+works in this field, such as GraphNet (Allen et al., 2023)           are important for providing designers with guidance in de-
+and Gated Graph Neural Networks (GGNNs) (Li et al.,                  veloping optimized and innovative vehicle designs. Due to
+2015), have been applied to a wide range of tasks, includ-           the large-scale nature of this use case, it is ideal for vali-
+ing fluid dynamics and structural mechanics, where they              dating the scalability, accuracy and generalizability of ML
+model physical interactions through message passing be-              models. Additionally, as vehicle geometries are complex it
+tween mesh nodes. In recent years, these methods have                requires ML models to efficiently represent the large and
+been enhanced in works such as MeshGraphNet (Pfaff et al.,           small features present in these geometries to enable accurate
+2020; Sanchez-Gonzalez et al., 2020), where the geometries           predictions. In the past, several studies have explored the
+are represented with nodal information and physical relation-        development of ML surrogates for this application. Chen &
+ships are learned using mesh faces to train more accurate and        Akasaka (2021) use a 3-D UNet architecture (Ronneberger
+generalizable ML models. While these GNN-based models                et al., 2015) in combination with a custom loss function
+have made significant advancement in modeling numeri-                including the continuity equation loss to model flow fields
+cal simulations, they face challenges in terms of scalability        around vehicles. They use SDFs as inputs to their model
+and capturing long-range interactions. Several methods and           to represent and parameterize the car geometries. Jacob
+frameworks have been developed to address the scalability            et al. (2021) follows a similar approach where they use
+challenge by decomposing the graphs into smaller subdo-              a modified 3-D UNet architecture to learn a mapping be-
+mains and parallelizing the training algorithms on multi-gpu         tween a SDF input and the output flow fields. However,
+and multi-node architectures (Nabian, 2024; Kakka et al.,            they also use the bottleneck layer of the UNet to simultane-
+2024; Nastorg, 2024).                                                ously predict the drag coefficient using a fully-connected
+                                                                     neural network. Ananthan et al. (2024) provide a compre-
+The classes of ML methods described above provide differ-
+                                                                     hensive study of modeling vehicle aerodynamics. They
+ent paradigms for modeling numerical simulations. How-
+                                                                     provide 4 different case studies, ranging from surface pre-
+ever, a few shortcomings of these methods are outlined be-
+                                                                     dictions using MeshGraphNets (Pfaff et al., 2020) on the
+low, and subsequently are motivations for this work. Most
+                                                                     Drivaer car dataset, volume predictions with UNet on a mo-
+ML methods struggle to scale to large-scale simulations
+                                                                     torbike dataset generated OpenFoam tutorial (Jasak et al.,
+with element counts ranging in hundreds of millions or bil-
+                                                                     2007) to a stable diffusion model to generate different vari-
+lions due to significant memory and compute requirements.
+                                                                     ations starting from a base car geometry. Elrefaie et al.
+The methods that scale to large meshes demonstrate lower
+                                                                     (2024) proposed a RegDGCNN model to directly learn sur-
+accuracy and generalizability due to their inability to ef-
+                                                                     face aerodynamic quantities from meshes by integrating
+ficiently represent the geometries and capture long-range
+                                                                     encoding capability of PointNet with graph CNNs. These
+interactions. Typically, ML methods try to learn global
+                                                                     advances demonstrate the potential of machine learning in
+geometry representations which are then used to predict
+                                                                     accelerating design cycles by providing rapid predictions of
+solution fields on the surface and in the volume. However,
+                                                                     aerodynamics quantities. However, challenges still exist in
+global geometry representations are high-dimensional and
+                                                                     terms of generalizing across diverse geometries, scaling to
+dense and are not efficient in accurately predicting solution
+                                                                     large simulation meshes and the ability to accurately predict
+fields especially in large computational domains and when
+                                                                     both surface and volume aerodynamic quantities.
+geometries have finer features. Finally, many of the ML
+
+                                                                 2
+                              DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+In this paper, we demonstrate the DoMINO model for the               tion into the computational domain and to learn short- and
+external aerodynamics use case to address these challenges.          long-range dependencies. The N-D structured representa-
+We train the model on a select set of samples from the Dri-          tion is a unique global encoding for a given geometry and
+vAerML dataset (Ashton et al., 2024) and validate the model          encapsulates the relevant features of the geometry. However
+on the remaining samples. The DrivAerML dataset is cho-              the global encoding is high-dimensional and dense, while
+sen for this experiement because it consists of high-fidelity        the solution at any point in the computational domain is
+simulation results on large meshes ranging in hundreds of            heavily influenced by the information in its locality. As
+millions. Moreover, the geometric variations in this dataset         a result, a local encoding needs to be extracted from the
+are significant, resulting in drag force variations from 300         global geometry encoding to enable accurate predictions of
+N to 600 N across the various designs. Through the exper-            solutions.
+iments we demonstrate the ability of the DoMINO model
+                                                                     Next, we sample a batch of discrete points in the compu-
+to capture both surface and volume flow fields as well as
+                                                                     tational domain where we want to evaluate the solution.
+other relevant engineering metrics such as design trends and
+                                                                     When the model is training, these can be sampled from
+drag force comparisons. Additionally, we showcase that
+                                                                     points where the solution is known, for example the nodes
+DoMINO model is mesh independent by validating the sur-
+                                                                     of the simulation mesh, while during inference they can be
+face predictions on a uniformly sampled point cloud instead
+                                                                     sampled randomly as the simulation mesh may not be avail-
+of the simulation mesh. The results highlight the potential
+                                                                     able. For each of the sampled points in a batch, a subregion
+of DoMINO as a practical and efficient surrogate models for
+                                                                     of size l × l × l is defined around it and a local geometry
+aerodynamic evaluation, supporting real-time applications
+                                                                     encoding is calculated. The local encoding is essentially
+in automotive design and optimization.
+                                                                     a subset of the global encoding depending on its position
+The paper is structured as follows. In Section 2, we pro-            in the computational domain and is calculated using point
+vide an overview of the DoMINO model architecture and                convolutions. Additional details about the local encoding
+delve deeper into the details of the architecture. Section 3         are provided in Section 2.2.
+presents additional details related to the experiment, prob-
+                                                                     Furthermore, for each of the sampled points in a batch p
+lem setup, dataset etc. Following this, we present the results
+                                                                     neighboring points are sampled in the computational do-
+and analysis in Section 4.
+                                                                     main to form a local computational stencil of p + 1 points.
+                                                                     A batch of computational stencils are represented by their
+2. DoMINO Model Overview                                             local coordinates in the domain and normals whenever avail-
+                                                                     able, especially for points sampled on the surface of the
+In this section, we introduce the DoMINO approach to learn
+                                                                     geometry. An aggregation network is trained to to predict
+local geometry encodings from point cloud representations
+                                                                     the solutions on each of the discrete points in the batch using
+to predict PDE solutions on discrete points sampled in com-
+                                                                     the local geometry encoding and the input features of the
+putational domain using dynamically constructed computa-
+                                                                     computational stencil. More details about the aggregation
+tional stencils in local regions around it. We present how the
+                                                                     network are provided in Section 2.3.
+DoMINO model leverages local features within sub-regions
+of the computational domain to predict solutions on both the         The solution variables on surface typically differ from
+surface of geometry as well as in the computational domain           those calculated in the volume. For example, in the
+volume. Predicting both sets of quantities is extremely im-          external aerodynamics use case, the solutions variables on
+portant in industrial applications for making crucial choices        surface include pressure and the wall shear stress vector
+and decisions regarding product and process design.                  and the volume variables include pressure, velocity and
+                                                                     turbulence parameters. As a result, the aggregation neural
+An overview diagram for the DoMINO model architectures
+                                                                     network needs to be defined separately for predicting
+is shown in Fig. 1. Although we present an automotive
+                                                                     volume and surface variables but the global geometry
+aerodynamics example for explanation purposes, the ap-
+                                                                     encoding network can be shared between them. The code
+proach is applicable to other applications in engineering
+                                                                     for the DoMINO is available in the Modulus repository
+simulation as well. DoMINO takes the 3-D surface mesh of
+                                                                     (Contributors, 2023) on Github (https://github.
+the geometry as input. A 3-D bounding box is constructed
+                                                                     com/NVIDIA/modulus/tree/main/examples/
+around the geometry to represent a computational domain
+                                                                     cfd/external_aerodynamics/domino).
+that captures the most important solutions fields required for
+design guidance. The arbitrary point cloud representation is
+transformed into a N-D fixed, structured representation of           2.1. Global geometry representation
+resolution m × m × m × f defined on the computational                In this section, we describe the details of the geometry rep-
+domain. A multi-resolution, iterative approach described             resentation network used to calculate the global geometry
+in Section 2.1, is used to propagate geometry representa-            representation from a point cloud. Fig. 2 describes the
+
+                                                                 3
+                               DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+                                                                       ical size of the kernel and the extent of information learned
+                                                                       from the neighbors. A larger radius signifies a bigger kernel
+                                                                       and means that the geometry information propagates further
+                                                                       into the domain. A smaller radius learns smaller kernels and
+                                                                       captures finer geoemtry details. In the DoMINO architec-
+                                                                       ture, we adopt a multi-scale approach by using a range of
+                                                                       kernel sizes controlled by the radius parameter to capture
+                                                                       both finer geometry features and long-range interactions of
+                                                                       geometry.
+                                                                       A structured grid of the same resolution is also constructed
+                                                                       in the computational domain bounding box. Geometry fea-
+                                                                       tures are propagated into the computational domain bound-
+                                                                       ing box using 2 methods, 1) a separate set of multi-scale
+                                                                       point convolution kernels are learned to project geometry
+                                                                       information on to the computational domain grid and 2) the
+                                                                       features on the surface bounding box grid (Gs ) are propa-
+                                                                       gated to the computational domain bounding box grid ((Gc )
+                                                                       using CNN blocks containing convolution, pooling, and un-
+                                                                       pooling layers. The CNN blocks are evaluated iteratively for
+                                                                       a specified number of iterations. Although not explored in
+                                                                       this work, a stopping criterion (such as L2 (Gs , Gc ) < 1e−3 )
+                                                                       can be specified to break the iterations using a fixed-point
+                                                                       iteration strategy. The m×m×m×f features calculated on
+                                                                       the grid in the computational domain represent the geometry
+                                                                       point cloud. In addition this, a SDF and its gradient compo-
+                                                                       nents are also calculated on the computational domain grid
+                                                                       and appended to the learned features to provide additional
+                                                                       information about the topology of the geometry.
+              Figure 1: DoMINO architecture
+                                                                       2.2. Local geometry representation
+                                                                       The local geometry representation depends on the physical
+                                                                       location within the computational domain where the solu-
+various components of the geometry representation neural               tions fields are evaluated. Hence, before computing the local
+network. First, a tight-fitted bounding box is constructed             geometry representation, a batch of points is sampled in the
+around the surface in addition to a bounding box represent-            computational domain. For each sampled point in the batch,
+ing the computational domain as shown in Fig. 2A. The                  p neighboring points are sampled randomly around them
+features of the geometry point cloud, such as spatial coordi-          to form a computational stencil of points similar to finite
+nates, are projected on to a N-D structured grid of resolution         volume and element methods. Fig. 1 represents a single
+m × m × m × f overlaid on the surface bounding box using               sampled point and p neighboring points randomly sampled
+learnable point convolution kernels. The point convolution             around it. The local geometry representation is learned by
+kernel used for projecting point clouds onto N-D structured            drawing a subregion around the computational stencil of
+grids is described in Eq. 1, where x⃗i , x⃗j represent different       p + 1 points. A point convolution kernel, as described in
+sets of point clouds, dij the distance metric between them             Eq. 1, is used to extract the local features of resolution,
+and f represents a fully connected deep neural network. In             l × l × l × nf , in this subregion from the global geometry
+this work, the point convolution kernel is implemented using           representation on the computational domain. The extracted
+custom, GPU accelerated ball query layers using NVIDIA                 local features are further transformed using fully connected
+Warp.                                                                  neural networks. This local geometry representation is used
+                        j=ny
+                         X                                             to evaluate the solution fields on the sampled points using
+                   yi =       f (x⃗i , x⃗j , dij )           (1)       the aggregation network described Section 2.3.
+                         j=0
+
+The point convolution kernel depends on 2 additional fac-
+tors, a radius of influence and number of points specified in
+the kernel (ny ). The radius of influence determines the phys-
+
+                                                                   4
+                              DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+
+
+
+                                                                    Figure 3: A: Local geometry encoding and B: Aggregation
+Figure 2: A: Bounding box representation and B: Geometry            network
+NN architecture
+
+
+
+                                                                    3. Experiments details
+                                                                    In this section, we demonstrate the application of DoMINO
+                                                                    to predict key aerodynamic quantities on the surface of cars
+2.3. Aggregation network                                            and in the volume around the cars. Most ML models are in
+                                                                    literature exhibit a trade-off between scalability, accuracy
+The local geometry representation represents the learned            and generalizability. ML models are typically trained on
+features of the geometry and solution in the vicinity of the        significantly down sampled meshes or point clouds. How-
+computational stencil of the sampled points and its neigh-          ever, the proposed DoMINO model architecture provides a
+bors. Each of the points in this computational stencil are          possible solution to simulation of large-scale aerodynamic
+represented by their physical coordinates in the computa-           simulations without sacrificing accuracy.
+tional domain, SDF at these coordinates, normal vector from
+the center of mass of the domain, and surface normals (only
+                                                                    3.1. Problem setup
+if the point is on the surface). These input features are
+passed through a fully connected neural network, known              In this study, the DoMINO model is trained to predict vol-
+as the basis function neural network, where a latent vec-           ume and surface fields in the computational domain. The
+tor is computed representing these features for each of the         volume fields considered are, velocity vector, ⃗u, pressure, p
+points in the computational stencil. Each latent vector is          and turbulent viscosity, νt and the surface fields are pressure,
+concatenated with the local geometry encoding and passed            p, and the wall-shear-stress vector, ⃗τ . The input to the model
+through another set of fully-connected layers to predict a          is an STL of the car geometry which is a triangulated repre-
+solution vector on each of the points in the computational          sentation of the surface. The coordinates of the nodes of the
+stencil. The solution vector is averaged using an inverse           STL are used as input to learn the encoded geometry repre-
+distance weighing scheme to predict the final solution vector       sentation. In the aggregation network, the coordinates of the
+at the sampled point. A separate instance of the aggrega-           sampled points, SDF and the normal vector from the center
+tion network is used for each solution variable but the local       of mass of the car geometry are considered as input features.
+geometry representation across these remains the same.              When points are sampled on the surface of the car geometry,
+
+                                                                5
+                              DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+the surface normals at those points are also considered as           3.3. Model training
+part of the input features. Hidden representations learned
+                                                                     The DoMINO model is trained using the Adam optimizer. A
+from these input features, using neural networks, combined
+                                                                     reduce-on-plateau learning rate scheduler is used such that
+with the local encoded geometry representation are used to
+                                                                     the initial learning rate, 1e−3 , progressively drops down to
+predict the respective fields on the sampled points. If the
+                                                                     a final learning rate, 1e−6 , with the training epochs. The
+points are sampled on the surface, then the surface fields are
+                                                                     model is trained for a total of 500 epochs. Training is per-
+predicted and compared with ground-truth values available
+                                                                     formed in float-16 precision format using Automatic Mixed
+on those sampled points to calculate loss. On the other hand,
+                                                                     Precision (AMP). The loss function used for training in-
+if the points are sampled in the volume around the car geom-
+                                                                     cludes a mean-squared-error loss calculated on the sampled
+etry then the volume fields are computed and compared with
+                                                                     mesh points evaluated by the model on the surface of the car
+the corresponding ground truth values to calculate loss. The
+                                                                     geometry and in the volume around it. The loss is calculated
+computational domain is trimmed for training the DoMINO
+                                                                     separately on each solution variable and then added together.
+model such that 2 car lengths in the downstream flow di-
+                                                                     In addition a mean-squared-loss is calculated for the area-
+rection, 1 car length in the upstream direction and 1 car
+                                                                     weighted surface predictions for each surface variable and
+width and height in the other axial directions are considered.
+                                                                     added to the overall loss formulation. During each epoch
+Finally, it is important to note that the simulation data is
+                                                                     of training, the loss is calculated only on a subset of points
+used as is to train the model and is not down-sampled or
+                                                                     randomly sampled from the simulation mesh and a new set
+pre-processed in any manner.
+                                                                     is sampled each time. An area-weighted sampling algorithm
+                                                                     is used for the sampling points on the surface, whereas a
+3.2. Dataset
+                                                                     random uniform sampling algorithm is used for the volume
+In this study, we use the DrivAerML dataset, a publicly avail-       points. Similarly, nodes of the STL are also sampled using a
+able, high-fidelity dataset comprising of volume and surface         random uniform sampling algorithm for learning the geom-
+data for 500 geometrically morphed variants of the DrivAer           etry encoding. The number of points that can be sampled
+Notchback car (Ashton et al., 2024). Figure 4 shows dif-             every epoch is dependent on the GPU memory availability.
+ferent examples of the car geometry variations performed             Additional details related to the model hyperparameters and
+in this dataset. The simulations in this dataset were carried        training routine can be found in the Modulus Github repo
+out using the hybrid RANS/LES scale-resolving method.                (Contributors, 2023).
+The time-averaged data is stored in the form of VTP and
+VTU files for each geometry variant. The VTP files contain           4. Results and analysis
+the surface fields, namely pressure and wall-shear-stresses
+whereas the VTU files contain the volume fields, namely ve-          The trained DoMINO model is validated on a test set across
+locity, pressure and turbulent viscosity. The volume meshes          several metrics for both the surface and volume quanti-
+across the 500 simulations cases are of the order of 150             ties. The test set consists of both in-distribution and out-
+million elements and the surface meshes are of the order             of-distribution samples, and the categorization is carried
+10 million elements. We split the simulations into a train           out based on the minimum and maximum value of the drag
+and test set based on the drag force trends. 10% of the sam-         force in the training set. For example, if a test sample has a
+ples are reserved in the test set with about 20% of the test         drag force that falls within the min-max range of the training
+set consisting of out-of-distribution samples based on the           set, then it is considered an in-distribution sample and if
+ranges of the drag force. The out-of-distribution samples            outside, then it is an out-of-distribution sample. In addition
+contain the cases with some of the lowest and the highest            to the average error metrics and design trends, in this sec-
+drag forces and are not seen by the model during training.           tion, we will also present the contour and line plots for both
+                                                                     surface and volume quantities for 2 out-of-distribution test
+                                                                     samples, ids 419 and 439 from the dataset. These samples
+                                                                     correspond to designs resulting the smallest and largest drag
+                                                                     force in the complete DrivAerML dataset and are not a part
+                                                                     of the training set. It may be observed from Fig. 5 that there
+                                                                     is substantial geometric variation between these samples
+                                                                     resulting in around 300 N difference in the calculated drag
+                                                                     force.
+Figure 4: Examples of variation in geometry in simulation
+dataset                                                              4.1. Surface quantities
+                                                                     First we present the results on the prediction of surface
+                                                                     quantities. In Table 1 we show the relative l2 and area
+
+                                                                 6
+                                DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+                                                                       drag force for the various test designs. The dashed blue
+                                                                       line in the regression plot represents the ideal case where,
+                                                                       predictions match the true values perfectly. We conduct
+                                                                       this experiment with 2 scenarios, 1) solution fields, pressure
+                                                                       and x-wall-shear-stress are evaluated on the surface mesh
+                                                                       and integrated to calculate the drag force and 2) solution
+                                                                       fields, pressure and x-wall-shear-stress are evaluated on a
+                                                                       uniform point cloud with 10 million points generated on
+                                                                       the surface from the STL representation and integrated to
+                                                                       calculate the drag fore. Each point in the uniform point
+                                                                       cloud has the same surface area and the normals are de-
+                                                                       rived from the STL facets. In both the scenarios, it may be
+                                                                       observed that the coefficient of determination R2 is 0.96
+                                                                       indicating a reasonable match between simulated drag force
+                                                                       and DoMINO predictions. The design trends are calculated
+                                                                       by arranging the drag forces of the test designs in an as-
+                                                                       cending order and comparing them against the drag force
+                                                                       predictions for the same designs. The design trends are
+          Figure 5: Out-of-distribution test samples                   captured well, however smaller directional changes between
+                                                                       successive designs shows some oscillatory behavior in the
+                                                                       DoMINO predictions and resolving this will be a focus of
+                                                                       future efforts. Finally, this experiment shows the invariance
+weighted relative l2 errors for pressure and wall-shear stress         of the DoMINO model architecture to the spatial distribu-
+fields calculated on the surface of the car and averaged over          tion of points. In both scenarios, the predicted regression
+all the test cases. The relative l2 errors are calculated using        coefficient and the drag force trends match very closely. The
+Eq. 2.                     pP                                          independence and insensitivity between the model and the
+                                 yT2 − yP2                             spatial distribution of evaluation points is a an extremely im-
+                      ϵ=      pP                             (2)
+                                     yT2                               portant feature of this architecture especially for modeling
+                                                                       engineering simulations where meshing can be expensive.
+where, yT and yP correspond to the true and predicted fields
+on cell centers of surface elements. For area weighted errors
+the field values are multiplied by the corresponding facet             4.2. Volume quantities
+areas of the elements. The area-weighted relative errors are                Table 2: Average volume error metrics on test set
+lower for all solution variables indicating that most of the
+errors occur on surface facets with small areas. The relative
+errors for Y and Z wall-shear-stresses are comparatively                              F IELD               R EL . L-2
+worse than pressure and X wall-shear-stress because of their
+                                                                                      P RESSURE             0.2193
+small magnitudes. In Fig. 6 we present the surface con-                               X- VELOCITY           0.2397
+                                                                                      Y- VELOCITY           0.5025
+     Table 1: Average surface error metrics on test set                               Z- VELOCITY           0.4567
+                                                                                      T URB - VISCOSITY     0.2175
+
+ F IELD               R EL . L-2   A REA - WEIGHTED REL . L-2          Next, we present the volumetric results obtained from the
+ P RESSURE             0.1505                0.1181                    DoMINO model evaluated in a bounding box around the
+ X-WALL -S HEAR        0.2124                0.1279                    car. Table 2 shows the relative l2 errors, as described in 2,
+ Y-WALL -S HEAR        0.302                 0.2769                    observed between DoMINO predictions and the simulated
+ Z-WALL -S HEAR        0.3359                 0.229                    results averaged over the test set for different volume vari-
+                                                                       ables including, velocity, pressure and turbulent viscosity.
+tour comparisons between simulated results and DoMINO                  A higher relative error is observed for Y and Z velocity
+predictions and the error between them. It maybe observed              components due to their sparse distribution and lower mag-
+that both pressure and wall-shear-stress magnitude are cap-            nitudes in large parts of the computational domain. Fig
+tured reasonably well on different surfaces of both the test           8 shows the comparisons between simulated results and
+designs including the windshield, side mirrors, underbody              DoMINO predictions for the pressure, velocity magnitude
+etc. Fig. 7 shows the drag force design trends and the re-             and turbulent-viscosity fields plotted on the X-Z and X-Y
+gression plot between the simulated and DoMINO predicted               planes. The X-Y plane is cut through the center of the car (z
+
+                                                                   7
+                               DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+
+
+
+           (a) Surface contours for test sample id 419                        (b) Surface contours for test sample id 439
+
+                                             Figure 6: Surface contour comparisons
+
+
+
+
+Figure 7: Drag force design trends and regression, Left: predicted using a simulation surface mesh and Right: predicted
+using a uniform surface point cloud
+
+
+
+= 0) while the X-Z plane represents the flow dynamics in the         as the line plots that the predicted fields capture the flow
+region between the floor and the car underbody. Addition-            dynamics reasonably accurately, especially in regions of the
+ally in Fig. 9, we plot the predicted and simulated velocities       wake, underbody, and near the hood of the car. Moreover,
+at 5 locations, in the wake at downstream distances of x=4           sparse fields such as turbulent viscosity are also modeled
+and x=5, on the rear and front wheel and along the centerline        accurately in the wake downstream of the car. The contours
+through the car. It can be observed from the contours as well        for all fields show an odd behavior near the edges of the
+
+
+                                                                 8
+                               DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+
+
+
+                                            (a) Volume contours for test sample id 419
+
+
+
+
+                                            (b) Volume contours for test sample id 439
+
+                               Figure 8: Volume contour comparisons on X-Y and X-Z planes
+
+
+bounding box. Although this behavior does not affect the              5. Conclusion
+important regions near the car where the flow field predic-
+tions are reasonably accurate, the reason for it is not clearly       In this paper, we introduced a new ML-architecture
+understood and will be investigated further.                          DoMINO, designed to address key challenges in the use
+                                                                      of ML for large-scale numerical simulations. The model
+
+
+                                                                  9
+                             DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+
+
+
+              Figure 9: Velocity line plots at different locations (Sample 419 (top) vs Sample 439 (bottom)
+
+
+
+has several unique features that enable accurate modeling                 around it. A local stencil of points, similar to a fi-
+of large-scale numerical simulations.                                     nite volume or element method, is constructed around
+                                                                          each sampled point, processed using a basis function
+ 1. The model operates directly on point cloud representa-                neural network and aggregated to calculate the solu-
+    tions of geometries. It uses dynamic ball query kernels               tions on the sampled points. This enables capturing
+    implemented using NVIDIA Warp to represent geome-                     local information important for accurate learning of
+    try point clouds into global representations of geometry.             the solution fields.
+    NVIDIA Warp provides significant GPU acceleration
+                                                                       5. Finally, since the model can predict solutions on arbi-
+    as compared to using other PyTorch based alternatives.
+                                                                          trarily sampled points, it is not dependent on how these
+    Moreover, this makes the model very flexible in utility
+                                                                          points are sampled. For example, the sampled points
+    as it does not require generation of a mesh during in-
+                                                                          may be the nodes of a simulation mesh or randomly
+    ference as often times mesh generation is an expensive
+                                                                          sampled in the computational domain. Additionally,
+    process for large-scale industrial simulations.
+                                                                          the model evaluation is not limited in memory or com-
+ 2. A range of kernel sizes are used to propagate the geom-               pute by the number of sampled points as the evaluation
+    etry information into the computational domain using                  can happen in batches. As a result, the DoMINO model
+    an iterative process thereby enabling efficient modeling              can easily scale to large computational domains and
+    of both short- and long-range interactions.                           meshes.
+
+ 3. The global geometry representations are dense and                The DoMINO model is demonstrated on the external auto-
+    high-dimensional and cannot be used as is to accurately          motive aerodynamics use case, which is challenging because
+    predict solutions in all regions of the computational            of the large-scale nature of the simulations (meshes of the
+    domain. As a result, local geometry encodings are                order of hundreds of millions to billions), difficulty in rep-
+    extracted using dynamic ball query points around the             resenting finer features of car geometries and accurately
+    points where the solution is calculated. Additionally            modeling both surface and volume field quantities. The ex-
+    as these local geometry representations are learned              periments show that the model can accurately capture both
+    during training they extract the essential information           the flow fields on the volume and surface, as well as other
+    from the geometry required to accurately predict so-             engineering metrics such as drag force regression and de-
+    lution fields in different regions of the computational          sign trends. We also show the generalization of the model to
+    domain. For example, in predicting the flow fields in            prediction on out-of-distribution test samples and different
+    the wake, only the local geometry features required for          mesh or point-cloud configurations. Finally, the experiments
+    learning these are extracted from the global geometry            also showcase the model’s ability to scale to large meshes
+    encoding during training. The local geometry encoding            and point clouds with real time inference making it suitable
+    also improves the generality of the model to different           for other engineering applications.
+    geometries.
+                                                                     Future work will focus on extending the model architec-
+ 4. The solution at any point in the computational domain            ture to improving accuracy and performance, especially in
+    is heavily influenced by the local stencil of points             resolving the oscillatory predictions using smoothing con-
+
+                                                                10
+                              DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+straints in the design trends and line comparisons. We will            for accelerating scientific simulations and design. Nature
+also explore the impact of adding fixed point iterations in            Reviews Physics, pp. 1–9, 2024.
+our iterative learning strategy. The convergence of the fixed
+point iteration can depend on the ratio of the physical size         Bernaschi, M., Celestini, A., Vella, F., and D’Ambra, P.
+of the surface bounding box and computational domain                   A multi-gpu aggregation-based amg preconditioner for
+bounding box. If this ratio is too small then a multi-layered          iterative linear solvers. IEEE Transactions on Parallel
+approach can be used by adding bounding boxes of different             and Distributed Systems, 34(8):2365–2376, 2023.
+sizes between the surface and computational domain and               Chen, F. and Akasaka, K. 3d flow field estimation around a
+solving fixed point iterations between each transformation             vehicle using convolutional neural networks. In BMVC,
+similar to a multi-grid approach. Currently, the model relies          pp. 396, 2021.
+on fixed resolution latent spaces but in the future we would
+like to add multi-resolution latent spaces, in an attempt to         Contributors, M. Nvidia modulus: An open-source frame-
+better capture the finer features in the geometry as well as           work for physics-based deep learning in science and en-
+further improve the long-range interactions. Additionally,             gineering, 2023.
+we will explore the effect of hybrid training pipelines in-
+volving constraining the model training with PDE based               Elrefaie, M., Ahmed, F., and Dai, A. Drivaernet: A para-
+losses computed using automatic differentiation. Finally,              metric car dataset for data-driven aerodynamic design
+we would like to extend the model to transient problems and            and graph-based drag prediction. In International Design
+other large-scale applications in engineering simulation.              Engineering Technical Conferences and Computers and
+                                                                       Information in Engineering Conference, volume 88360,
+                                                                       pp. V03AT03A019. American Society of Mechanical En-
+References                                                             gineers, 2024.
+Allen, K. R., Guevara, T. L., Rubanova, Y., Stachenfeld,
+  K., Sanchez-Gonzalez, A., Battaglia, P., and Pfaff, T.             He, J., Koric, S., Abueidda, D., Najafi, A., and Jasiuk, I.
+  Graph network simulators can learn discontinuous, rigid              Geom-deeponet: A point-cloud-based deep operator net-
+  contact dynamics. In Conference on Robot Learning, pp.               work for field predictions on 3d parameterized geometries.
+  1157–1167. PMLR, 2023.                                               Computer Methods in Applied Mechanics and Engineer-
+                                                                       ing, 429:117130, 2024.
+Ananthan, V., Ashton, N., Chadwick, N., Lizarraga, M.,
+  Maddix, D., Maheswaran, S., Moreno, P. H., Shabestari,             Jacob, S. J., Mrosek, M., Othmer, C., and Köstler, H. Deep
+  P. M., Sovani, S., Subramanian, S., et al. Machine learn-            learning for real-time aerodynamic evaluations of arbi-
+  ing for road vehicle aerodynamics. Technical report, SAE             trary vehicle shapes. arXiv preprint arXiv:2108.05798,
+ Technical Paper, 2024.                                                2021.
+
+Angel, J. B., Ghate, A., Kenway, G., Wong, M. L., Kiris,             Jasak, H., Jemcov, A., Tukovic, Z., et al. Openfoam: A c++
+  C. C., and Ashton, N. Immersed boundary wall-modelled                library for complex physics simulations. In International
+  large eddy simulations for automotive aerodynamics. In               workshop on coupled methods in numerical dynamics,
+ AIAA Aviation Forum and Ascend 2024, pp. 4172, 2024.                  volume 1000, pp. 1–20. Dubrovnik, Croatia), 2007.
+
+Appa, J., Turner, M., and Ashton, N. Performance of cpu              Kakka, P., Nidhan, S., Ranade, R., and MacArt, J. F.
+  and gpu hpc architectures for off-design aircraft simula-            Sampling-based distributed training with message pass-
+  tions. In AIAA Scitech 2021 Forum, pp. 0141, 2021.                   ing neural network. arXiv preprint arXiv:2402.15106,
+                                                                       2024.
+Ashton, N., Mockett, C., Fuchs, M., Fliessbach, L., Het-
+  mann, H., Knacke, T., Schonwald, N., Skaperdas, V.,                LeVeque, R. J. Finite volume methods for hyperbolic prob-
+  Fotiadis, G., Walle, A., et al. Drivaerml: High-fidelity             lems, volume 31. Cambridge university press, 2002.
+  computational fluid dynamics dataset for road-car ex-
+  ternal aerodynamics. arXiv preprint arXiv:2408.11969,              LeVeque, R. J. Finite difference methods for ordinary
+  2024.                                                                and partial differential equations: steady-state and time-
+                                                                       dependent problems. SIAM, 2007.
+Ashton, N., Batten, P., Skaperdas, V., and Holst, K. R. High-
+  lift prediction workshop 5: Hybrid rans/les technology             Li, Y., Tarlow, D., Brockschmidt, M., and Zemel, R.
+  focus group summary. In AIAA SCITECH 2025 Forum,                     Gated graph sequence neural networks. arXiv preprint
+  pp. 0048, 2025.                                                      arXiv:1511.05493, 2015.
+
+Azizzadenesheli, K., Kovachki, N., Li, Z., Liu-Schiaffini,           Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhat-
+  M., Kossaifi, J., and Anandkumar, A. Neural operators                tacharya, K., Stuart, A., and Anandkumar, A. Fourier
+
+                                                                11
+                              DoMINO: A Decomposable Multi-scale Iterative Neural Operator
+
+  neural operator for parametric partial differential equa-          Sharma, K. V., Straka, R., and Tavares, F. W. Current status
+  tions. arXiv preprint arXiv:2010.08895, 2020a.                       of lattice boltzmann methods applied to aerodynamic,
+                                                                       aeroacoustic, and thermal flows. Progress in Aerospace
+Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Stuart,            Sciences, 115:100616, 2020.
+  A., Bhattacharya, K., and Anandkumar, A. Multipole
+  graph neural operator for parametric partial differential          Stone, C. P., Walden, A., Zubair, M., and Nielsen, E. J. Ac-
+  equations. Advances in Neural Information Processing                 celerating unstructured-grid cfd algorithms on nvidia and
+  Systems, 33:6755–6766, 2020b.                                        amd gpus. In 2021 IEEE/ACM 11th Workshop on Irregu-
+                                                                       lar Applications: Architectures and Algorithms (IA3), pp.
+Li, Z., Kovachki, N., Choy, C., Li, B., Kossaifi, J., Otta,            19–26. IEEE, 2021.
+  S., Nabian, M. A., Stadler, M., Hundt, C., Azizzade-
+  nesheli, K., et al. Geometry-informed neural operator              Xue, W., Wang, H., and Roy, C. J. Cpu–gpu heterogeneous
+  for large-scale 3d pdes. Advances in Neural Information              code acceleration of a finite volume computational fluid
+  Processing Systems, 36, 2024.                                        dynamics solver. Future Generation Computer Systems,
+                                                                      158:367–377, 2024.
+Lu, L., Jin, P., and Karniadakis, G. E. Deeponet: Learning
+  nonlinear operators for identifying differential equations         Zhong, W. and Meidani, H. Physics-informed geometry-
+  based on the universal approximation theorem of opera-               aware neural operator. Computer Methods in Applied
+  tors. arXiv preprint arXiv:1910.03193, 2019.                         Mechanics and Engineering, 434:117540, 2025.
+
+Nabian, M. A. X-meshgraphnet: Scalable multi-scale graph
+  neural networks for physics simulation. arXiv preprint
+  arXiv:2411.17164, 2024.
+
+Nastorg, M. Scalable GNN Solutions for CFD Simulations.
+  PhD thesis, Université Paris-Saclay, 2024.
+
+Park, J. and Kang, N. Point-deeponet: A deep operator
+  network integrating pointnet for nonlinear analysis of
+  non-parametric 3d geometries and load conditions. arXiv
+  preprint arXiv:2412.18362, 2024.
+
+Patel, R. G., Trask, N. A., Wood, M. A., and Cyr, E. C. A
+  physics-informed operator regression framework for ex-
+  tracting data-driven continuum models. Computer Meth-
+  ods in Applied Mechanics and Engineering, 373:113500,
+  2021.
+
+Pfaff, T., Fortunato, M., Sanchez-Gonzalez, A., and
+  Battaglia, P. W. Learning mesh-based simulation with
+  graph networks. arXiv preprint arXiv:2010.03409, 2020.
+
+Piscaglia, F. and Ghioldi, F. Gpu acceleration of cfd simula-
+  tions in openfoam. Aerospace, 10(9):792, 2023.
+
+Ronneberger, O., Fischer, P., and Brox, T. U-net: Con-
+  volutional networks for biomedical image segmenta-
+  tion. In Medical image computing and computer-assisted
+  intervention–MICCAI 2015: 18th international confer-
+  ence, Munich, Germany, October 5-9, 2015, proceedings,
+  part III 18, pp. 234–241. Springer, 2015.
+
+Sanchez-Gonzalez, A., Godwin, J., Pfaff, T., Ying, R.,
+  Leskovec, J., and Battaglia, P. Learning to simulate
+  complex physics with graph networks. In International
+  conference on machine learning, pp. 8459–8468. PMLR,
+  2020.
+
+                                                                12
+

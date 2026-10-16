@@ -1,0 +1,2095 @@
+                                                Crash Assessment via Mesh-Based Graph Neural
+                                                    Networks and Physics-Aware Attention
+                                          Gabriel Curtosia,∗, Carlos Manuel Ruiz Ruizb , Fabiola Cavalierea , Xabier
+                                                                      Larráyoz Izcaraa
+arXiv:2605.11784v1 [cs.CE] 12 May 2026
+
+
+
+
+                                                                        a
+                                                                       SEAT S.A., Barcelona, Spain
+                                                        b
+                                                            IDIADA Automotive Technology S.A., Santa Oliva, Spain
+
+
+
+
+                                         Abstract
+                                         Full-vehicle crash simulations are computationally expensive, limiting their
+                                         use in iterative design exploration. This work investigates learned hybrid sur-
+                                         rogate models (MeshTransolver, MeshGeoTransolver, and MeshGeoFLARE)
+                                         for predicting time-resolved structural deformation fields in an industrial
+                                         lateral pole-impact benchmark. We evaluate whether neural surrogates can
+                                         reproduce full-field crash kinematics with sufficient accuracy, spatial regular-
+                                         ity, and structural plausibility for engineering interpretation. The proposed
+                                         architectures combine local mesh message passing, geometry-aware global
+                                         attention, and sparse contact-aware correction for autoregressive crash rollout.
+                                             We compare mesh-based graph neural networks, attention-based geometric
+                                         models, and hybrid architectures under a common training and hyperparam-
+                                         eter configuration. The hybrid models capture both short-range structural
+                                         interactions and long-range deformation patterns, while a sparse contact-
+                                         aware variant assesses the effect of dynamic proximity interactions during
+                                         rollout.
+                                             On a 25-sample full-vehicle test set, the best hybrid model achieves
+                                         a temporal mean root-mean-square error of 3.20 mm. While geometry-
+                                         aware attention baselines are quantitatively competitive, qualitative side-view
+                                         inspection shows they can introduce local spatial noise and deformation
+                                         irregularities that complicate structural interpretation. In contrast, hybrid
+                                         mesh-attention models provide the best balance between scalar accuracy,
+                                         survival-space consistency, and physically interpretable displacement fields.
+
+                                           ∗
+                                               Corresponding author
+                                               Email address: gabriel.curtosi@seat.es (Gabriel Curtosi)
+    These results suggest that crash surrogate assessment should combine
+global error metrics with downstream safety-relevant quantities and qual-
+itative field inspection. The proposed methodology enables fast full-field
+predictions while preserving essential structural information for industrial
+crash-engineering analysis.
+Keywords: crash simulation surrogate, mesh-based graph neural networks,
+physics-aware attention, autoregressive rollout, vehicle safety, lateral pole
+impact
+
+
+1. Introduction
+     Vehicle structural safety is governed by stringent international standards,
+which require the preservation of occupant-compartment integrity under
+multiple crash configurations. In industrial practice, this requirement is
+addressed through extensive finite-element (FE) simulation campaigns using
+explicit solvers such as PAM-CRASH or LS-DYNA, complemented by physical
+testing for certification and correlation [1, 2]. Although simulation drives
+the development process and decision-making, each full-vehicle crash analysis
+remains expensive, which limits the number of design variants that can be
+explored within realistic project timelines.
+     Accurate prediction of vehicle structural response under impact is critical
+for safety assessment. Crash response is strongly nonlinear and typically
+involves large deformation, evolving contact, and long-range load transfer
+across the structure. These characteristics make crash simulation attractive
+for neural surrogates, but also challenging: the model must preserve local
+structural detail while remaining stable under closed-loop temporal prediction.
+In the present work, we focus on lateral pole impact as a representative full-
+vehicle load case that concentrates these difficulties in a severe and industrially
+relevant setting.
+     Neural surrogate models offer the potential for orders-of-magnitude ac-
+celeration, reducing evaluation time from hours to seconds during inference.
+Two main families have emerged for mesh-based physical simulation. Graph
+neural networks (GNNs) explicitly exploit mesh connectivity and provide
+strong local inductive bias [3, 4], but their locality can limit efficient prop-
+agation of long-range structural dependencies. Transformer-style scientific
+surrogates compress the state into latent tokens and model global interactions
+efficiently [5, 6], but often smooth out local deformation patterns when used
+
+                                        2
+without a mesh-based backbone. This trade-off motivates hybrid local-global
+architectures.
+    The proposed workflow in this paper is shown in Figure 1. A parameterised
+full-vehicle finite-element model is sampled with Latin hypercube sampling to
+generate a design-space dataset, which is then simulated with a high-fidelity
+crash solver. The resulting trajectories are used to train neural surrogates that
+operate under fully autoregressive rollout at inference time. The deployment
+objective is not only to reproduce nodal kinematics, but also to preserve
+downstream safety-relevant quantities such as occupant survival space.
+    A further challenge arises from contact. In crash simulation, important
+interactions are not fully described by the static structural mesh, because
+proximity relations evolve during impact. In a fully autoregressive surrogate,
+these dynamic interactions must be represented in a way that is informative
+enough to improve accuracy, yet sufficiently controlled to avoid destabilising
+the rollout. This is one of the main design problems addressed in the present
+work.
+    This paper makes the following contributions:
+   1. We formulate full-vehicle lateral pole-impact prediction as a fully autore-
+      gressive mesh-based surrogate problem and evaluate it on an industrial
+      DOE dataset with statistical split validation.
+   2. We introduce MeshTransolver and its contact-aware variants, which
+      combine local message passing with global physics-aware attention and
+      explicit contact handling for crash simulation.
+   3. We introduce an explicit generic sparse contact block for the autoregres-
+      sive hybrid architectures, injecting dynamic contact information before
+      the global processor while preserving mesh-only refinement afterwards.
+   4. We extend the hybrid formulation with geometry-aware global processors
+      and contact-aware injection, yielding MeshGeoTransolver and Mesh-
+      GeoFLARE, where FLARE provides a more efficient global-attention
+      layer.
+   5. We evaluate all models using both standard RMSE global field errors and
+      occupant survival space as a downstream safety-relevant industrial
+      metric.
+   The remainder of the paper is organised as follows. Section 2 formulates
+the prediction problem, autoregressive rollout, and downstream safety metric.
+Section 3 reviews the relevant background on local, global, and geometry-
+aware surrogate models. Section 4 presents the proposed hybrid architectures
+
+                                       3
+              Offline: data generation and training
+                                                                 FEM Model
+                                                   Pamcrash nonlinear crash simulation
+
+
+
+                                                                  DOE / LHS
+                                        Design of Experiments · Latin Hypercube Sampling
+
+
+
+                                                         FE Simulation Runs
+                                             N_sim runs × T frames × N nodes × 3 DOFs
+                                           positions, velocities, accelerations, contact flags
+
+
+
+                                       Training / Validation / Test Datasets
+                                       train/val/test split · normalisation · graph construction
+
+
+
+                                                         Surrogate Training
+                                               autoregressive rollout training (closed-loop)
+                                                            optimiser: AdamW
+
+
+                                                  Trained Surrogate Models
+                        MeshGraphNet · Transolver · MeshTransolver · MeshGeoTransolver · MeshGeoFLARE
+
+
+
+              Online: inference and evaluation
+                                        New Design / Scenario Parameters
+                                                    geometry variant, velocity condition
+
+
+
+                                           A   utoregressive Surrogate Rollout
+                        Encoder                   Hybrid Processor                Decoder          ntegrate
+                                                                                                   I
+                         x, v → H⁽⁰⁾
+                          t   t                MPNN + Contact + Global + MPNN       H⁽³⁾ → â
+                                                                                           t           x, v
+                                                                                                        t+1   t+1
+
+
+
+
+                                                      repeat T frames (autoregressive)
+
+
+
+
+                                                       Predicted Trajectory
+                                                x₀, x₁, …, xT ∈ ℝN×3(full crash sequence)
+
+
+
+
+                                                         Evaluation Metrics
+                                                     RMSE(x) · survival space
+                                       qualitative mesh comparison · deformation validation
+
+
+                                                    Design Decision / Triage
+                                               accept / refine geometry / adjust parameters
+
+
+
+
+                                        Speedup: ~350× vs. FE simulation
+
+
+
+
+Figure 1: End-to-end pipeline of the proposed framework. High-fidelity finite-element
+simulations are replaced by autoregressive neural surrogate inference, reducing evaluation
+time from hours to seconds while preserving safety-critical evaluation.
+
+
+
+
+                                                                          4
+and the sparse contact block. Section 5 describes the full-vehicle dataset,
+design space, split validation, and training protocol. Section 6 reports the
+full-vehicle results, including contact effects and occupant survival-space
+evaluation. Section 7 discusses the main architectural lessons and remaining
+limitations. Section 8 concludes the paper.
+
+2. Problem Formulation
+2.1. Mesh-based crash forecasting
+    Let G = (V, Emesh ) denote the structural mesh graph, where V is the set of
+mesh nodes and Emesh is the edge set derived from FE connectivity. At each
+timestep t ∈ {0, 1, . . . , T }, the state of the structure is described by nodal
+positions xt ∈ RN ×3 and velocities vt ∈ RN ×3 , with velocities estimated by
+finite differences,
+                                          xt − xt−1
+                                    vt =             .                        (1)
+                                               ∆t
+The surrogate model fθ predicts a normalised acceleration field from the
+current state,                                              
+                           āt = fθ xt , vt , ϕ, Emesh , C(t) ,               (2)
+where ϕ denotes static node features and C(t) denotes optional time-varying
+contact information.
+
+2.2. Autoregressive rollout
+    All models are trained and evaluated under closed-loop autoregressive
+rollout. After denormalisation, the predicted acceleration is integrated with a
+forward Euler update,
+
+                 vt+1 = vt + ∆t at ,       xt+1 = xt + ∆t vt+1 ,             (3)
+
+and the predicted state is fed back as input for the next timestep. This
+matches the intended deployment setting, where the surrogate replaces the
+FE solver over the whole crash horizon rather than performing isolated
+one-step prediction.
+    The rollout process used during training and inference is illustrated later
+in Figure 5. When contact-aware variants (detailed in Section 4) are used, the
+sparse contact representation is recomputed from the predicted configuration
+during the rollout itself.
+
+
+                                       5
+2.3. Training objective
+    The training objective is the mean-squared position error over deformable
+nodes and over the full rollout horizon,
+                                      T
+                                1     X X
+                                                              ∗  2
+                   Lpos =                            x̂n,t − xn,t ,         (4)
+                            |Vfree | T t=1 n∈Vfree               2
+
+
+        ∗
+where xn,t denotes the FE reference trajectory. Rigid nodes do not move
+during the simulation and are therefore excluded from both loss computation
+and state update, so Vfree ⊂ V contains only deformable nodes.
+
+2.4. Downstream safety metric: occupant survival space
+    In addition to nodal field errors, we evaluate a downstream safety-relevant
+metric derived from the predicted structural response. The occupant survival
+space is defined as the Euclidean distance between two reference nodes
+located on the inner B-pillar and the central tunnel, which serves as a proxy
+for occupant compartment intrusion. Let
+
+                              dt = xA,t − xB,t ,                            (5)
+                                                      2
+
+denote this distance at time t, where points A and B correspond to the inner
+B-pillar and central tunnel, respectively.
+   The survival-space error esurv
+                               t  is then defined as
+
+                              esurv
+                               t    = dpred
+                                       t    − dGT
+                                               t ,                          (6)
+
+where dpred
+         t    and dGT
+                   t   denote the predicted and finite-element ground-truth
+(GT) distances, respectively.
+    This quantity is not used as a training target, but as a downstream
+evaluation metric chosen for its industrial relevance. The sign of esurvt    is
+critical: positive values (esurv
+                            t    >  0) indicate that the surrogate  predicts  a
+larger residual survival distance than the FE reference, which may be non-
+conservative if interpreted as available occupant space. Conversely, negative
+values (esurv
+           t   < 0) correspond to a conservative overestimation of the true
+intrusion. Correct interpretation of this sign is essential for safety-critical
+design screening.
+
+
+
+
+                                          6
+3. Background and Related Work
+    This section summarises the main methodological ingredients that motivate
+the proposed architecture family. The objective is to clarify the complementary
+strengths and limitations of local mesh-based propagation, global token-based
+attention, geometry-aware attention mechanisms, and hybrid local-global
+processors for industrial crash-surrogate modelling.
+
+3.1. Graph neural networks for physical simulation
+    Graph neural networks (GNNs) have become a standard choice for learning
+on discretised physical systems because they operate directly on irregular
+domains and inherit a strong neighbourhood-based inductive bias. Sanchez-
+Gonzalez et al. [4] introduced Graph Network-based Simulators (GNS), show-
+ing that encode–process–decode GNNs with autoregressive rollout can learn
+high-quality dynamics for fluids, rigid bodies, and deformable materials from
+trajectory data. Pfaff et al. [3] extended this idea to mesh-based simulation
+with MeshGraphNet (MGN), which is the direct local-graph predecessor of
+the architectures considered in the present work.
+    MGN uses mesh connectivity as the graph structure and applies message-
+passing neural network (MPNN) blocks to propagate information along mesh
+edges. Each processor block performs an edge update followed by a node
+update:
+                                                             
+                        (ℓ+1)           (ℓ)       (ℓ)   (ℓ)
+                     mij        = fe hi , hj , eij ,                           (7)
+                                                                    
+                        (ℓ+1)           (ℓ) P                (ℓ+1)
+                      hi        = fn hi ,           j∈N (i) mij      ,         (8)
+
+        (ℓ)                                                              (ℓ)
+where hi denotes the latent state of node i at processor layer ℓ, eij denotes
+the latent edge feature associated with edge (i, j), N (i) is the neighbourhood
+of node i in the mesh graph, and fe and fn are learned update functions,
+typically implemented as MLPs with residual connections and normalisation.
+    For crash simulation, this locality is attractive because neighbouring FE
+elements directly constrain how deformation, force transfer, and structural
+interactions propagate through the body. As a result, the local mesh con-
+nectivity provides a strong structural prior that message-passing models can
+exploit effectively. This makes GNNs well suited to capturing short-range
+structural interactions, boundary effects, and local geometric detail.
+    At the same time, purely local propagation becomes less efficient when
+relevant information must travel across large graph diameters or when contact
+
+                                              7
+activates interactions between regions that were previously disconnected. In
+such settings, long-range dependencies must be recovered through multiple
+successive local updates, which can make learning more difficult. More
+generally, with L MPNN layers, each node can only aggregate information from
+its L-hop neighbourhood. For large industrial FE meshes with mesh diameter
+D ≫ L, global structural modes cannot propagate within a single forward
+pass without stacking many layers, which increases both computational cost
+and optimisation difficulty.
+    In summary, mesh-based MPNNs provide a strong local inductive bias
+and respect the structural adjacency encoded by the FE mesh, but their
+communication range is fundamentally limited by the number of message-
+passing steps.
+
+3.2. Global token-based attention on irregular domains
+    A complementary line of work replaces purely local mesh propagation with
+global token-based attention on irregular domains. Transolver [5] introduces
+Physics Attention as a scalable mechanism specifically designed for PDE
+learning on unstructured geometries. The central idea is to compress nodal
+states into a smaller set of learnable physics-aware tokens, perform global
+interaction in token space, and then map the updated representation back to
+the nodes.
+    Given a latent nodal matrix H ∈ RN ×d and a learned key matrix K ∈
+RM ×d , the slice weights and token matrix can be written as
+
+                       W = Softmax(HK⊤ ) ∈ RN ×M ,                          (9)
+                        T = W⊤ H ∈ RM ×d ,                                 (10)
+
+where N is the number of nodes, M ≪ N is the number of learned physics
+tokens, and d is the latent feature dimension. Self-attention is then applied
+on the M tokens to produce T,   e and the updated nodal representation is
+recovered through a deslicing step:
+
+                             H    e ∈ RN ×d .
+                             f = WT                                        (11)
+
+    By applying global interaction in token space rather than directly over all
+nodes, the method reduces the cost of dense communication while preserving
+access to long-range dependencies. This is attractive for large irregular
+domains, where many relevant couplings extend well beyond the receptive
+field of a shallow MPNN stack.
+
+                                      8
+    However, Transolver operates directly on nodal point sets rather than
+explicitly exploiting mesh connectivity. This removes the local structural
+prior provided by the FE mesh and can make it harder to preserve sharp
+neighbourhood-level detail at contact boundaries, interfaces, or highly lo-
+calised deformation patterns.
+    Transolver++ [7] further extends this family with more distinguishable
+latent states and a refined Physics-Attention parameterisation for large-scale
+geometries. In the present work, this sharper token-based formulation is used
+as the basis for all Transolver-based hybrid variants.
+    Thus, token-based physics attention offers a complementary route to large-
+scale communication on irregular domains, but without the explicit mesh-local
+inductive bias of graph-based processors.
+
+3.3. Geometry-aware and efficient attention variants
+    Recent extensions strengthen token-based attention in two directions that
+are particularly relevant to industrial CAE problems: improved sensitivity to
+geometry and operating context, and improved computational efficiency at
+large scale.
+    GeoTransolver [6] augments the Transolver backbone with Geometry-
+Aware Latent Embedding (GALE). Conceptually, GALE conditions token
+formation and latent interaction on learned geometry-aware context, so that
+the global processor becomes more sensitive to spatial configuration, load-
+ing location, and other global or boundary-condition information. This is
+especially relevant when the design space includes geometric variation and
+when the surrogate must remain responsive to changes in shape or structural
+layout.
+    Efficient attention variants such as FLARE [8] target a different limitation:
+the memory and compute burden of dense global interaction. Rather than
+forming full dense attention patterns, FLARE uses a more efficient routed
+or factorised latent interaction that preserves global communication while
+reducing the cost of attention on large irregular domains.
+    Accordingly, GeoTransolver corresponds to a geometry-aware token-
+based processor, whereas GeoFLARE in the present work preserves the
+same geometry-aware principle while replacing the global attention kernel
+with a more efficient FLARE-inspired factorisation.
+    These developments are relevant in the present setting because the full-
+vehicle design space includes both geometric and thickness variation, while
+
+
+                                       9
+the industrial mesh size makes scalability a practical limitation. Geometry-
+aware conditioning helps the global processor remain sensitive to spatial
+configuration, whereas efficient attention helps keep the method tractable at
+full-vehicle scale.
+
+3.4. Hybrid local-global architectures
+    Hybrid architectures seek to combine the advantages of both paradigms.
+A local mesh-based stage can preserve neighbourhood-level structure and
+encode contact-relevant features, whereas a global token-based stage can
+propagate information efficiently across the full structure. In principle, such
+a design is attractive for crash simulation, where both local contact-driven
+events and long-range structural coupling matter.
+    Recent concurrent work has reinforced this general direction in solid
+mechanics. In particular, MeshGraphNet-Transformer combines mesh-based
+local propagation with Transformer-style global processing while preserving
+a mesh-based graph representation [9]. That work explicitly identifies the
+limited long-range communication of standard MPNNs on large meshes as a
+central bottleneck and shows the value of combining geometric inductive bias
+with global attention for impact-type structural dynamics.
+    However, the relative role of local propagation, global attention, geometry
+conditioning, and explicit contact modelling remains insufficiently charac-
+terised on large industrial crash datasets. This is especially true in a fully
+autoregressive rollout setting, where local error accumulation, long-range
+coupling, and dynamic contact activation interact over time. This motivates
+the systematic comparison carried out in the present work.
+
+3.5. Crash-surrogate context
+    Recent crash-surrogate studies have shown that both MeshGraphNet-style
+models and Transolver-style processors are viable building blocks for auto-
+motive structural prediction, and that autoregressive rollout is important
+when the surrogate is intended for deployment rather than one-step forecast-
+ing [10]. The present work builds on that context, but focuses specifically
+on full-vehicle lateral pole impact, explicit sparse contact modelling, and
+downstream safety-relevant evaluation.
+    Taken together, the literature suggests that local mesh propagation, global
+token communication, geometry-aware conditioning, and efficient attention
+are all promising ingredients for learned structural simulation. What remains
+
+
+                                      10
+Architecture landscape for mesh-based crash surrogates                                                                             Prior work   Proposed
+Comparison by connectivity, attention mechanism, spatial scale, and processor structure.
+
+
+  Local topology                                         Global attention                                    Hybrid architectures
+
+   MeshGraphNet                                           Transolver                                           MeshTransolver                                     PROPOSED
+
+   Edges           Mesh                                   Edges         None                                   Edges        Mesh
+                                                                                                               Attention    Physics tokens
+   Attention       None                                   Attention     Physics tokens                         Scale        Hybrid
+   Scale           Local                                  Scale         Global                                 Core         Pre-MPNN + PhysicsAttn + Post-MPNN
+   Core            MPNN                                   Core          PhysicsAttn                                                                               PROPOSED
+                                                                                                               MeshTransolver + Contact
+                                                          GeoTransolver                                        Edges        Mesh + sparse contact
+                                                                                                               Attention    Physics tokens
+   Local message passing preserves mesh                   Edges         None                                   Scale        Hybrid
+   topology but does not provide efficient
+   global communication.                                  Attention     GALE                                   Core         Pre-MPNN + ContactBlock + PhysicsAttn + Post-MPNN
+                                                          Scale         Global + geometry                                                                         PROPOSED
+                                                                                                               MeshGeoTransolver
+                                                          Core          GALE attention
+                                                                                                               Edges                sparse contact
+                                                                                                                            Mesh++world
+                                                                                                                            Mesh
+                                                                                                               Attention    GALE
+                                                          FLARE                                                Scale        Hybrid + geometry
+                                                                                                               Core         Pre-MPNN + ContactBlock + GALE + Post-MPNN
+                                                          Edges         None
+                                                          Attention     FLARE                                  MeshGeoFLARE                                      PROPOSED
+                                                          Scale         Global                                 Edges        Mesh + sparse contact
+                                                          Core          Factored attention                     Attention    GALE + FLARE
+                                                                                                               Scale        Hybrid + geometry
+                                                                                                               Core         Pre-MPNN + ContactBlock + GALE-FLARE + Post-MPNN
+
+Proposed variants extend the hybrid processor with contact edges or geometry-aware attention while preserving mesh connectivity.
+
+
+
+Figure 2: Comparison of mesh-based surrogate architectures considered in this work. Local
+MPNN models operate directly on mesh connectivity, global-attention models rely on
+token- or geometry-aware attention without mesh edges, and hybrid architectures combine
+both mechanisms. Proposed variants extend the hybrid processor with contact edges or
+geometry-aware attention while preserving mesh connectivity.
+
+
+insufficiently understood is how these ingredients should be combined for large-
+scale industrial crash rollout, particularly when explicit contact activation
+and safety-relevant downstream metrics are part of the evaluation. This is
+the gap addressed in the present study.
+    Figure 2 summarises the architectural landscape considered in this work,
+highlighting differences in connectivity, attention mechanism, spatial scale,
+and processor design.
+
+4. Proposed Method
+   The proposed architectures are implemented within the NVIDIA Physic-
+sNeMo framework [11], building on its reference implementations of mesh-
+based graph neural networks and token-based scientific surrogate models,
+while extending them with hybrid local–global processors and explicit sparse
+contact modelling.
+
+4.1. Overview of the hybrid processor
+    All models follow an encoder–processor–decoder structure. The encoder
+maps nodal inputs to a latent feature space, the processor updates the latent
+
+                                                                                         11
+state through local and/or global operators, and the decoder predicts nodal
+accelerations used for rollout integration.
+    For the hybrid variants, the processor is organised as:
+                Pre-MPNN       Global processor   Post-MPNN
+          H(0) −−−−−−→ H(1) −−−−−−−−−→ H(2) −−−−−−−→ H(3) ,              (12)
+                  Emesh                              Emesh
+
+
+where H(ℓ) ∈ RN ×dh denotes the latent nodal representation and dh is the
+latent feature dimension.
+    This decomposition assigns distinct roles to each stage: local feature
+extraction on the mesh, global structural propagation, and final mesh-based
+refinement.
+
+4.2. Encoder and local message passing
+    Each node is embedded into a latent space of dimension dh using a node
+encoder MLP. For models that use a mesh graph, local interactions are
+processed through message-passing neural network (MPNN) blocks operating
+on Emesh .
+    These blocks preserve the FE neighbourhood structure and provide the
+inductive bias required to capture short-range deformation patterns, boundary
+effects, and local structural interactions.
+
+4.3. Global processors
+    Three global processors are considered. Transolver-style PhysicsAtten-
+tion [5] performs token-based global aggregation through learnable physics
+slices. The sharpened Transolver++ parametrisation [7] is used within the
+MeshTransolver family and is based on the PhysicsNeMo implementation.
+    GeoTransolver [6] extends this formulation with geometry-aware local
+embeddings (GALE), making the global processor sensitive to spatial configu-
+ration and loading location.
+    GeoFLARE is introduced in the present work by replacing the GeoTran-
+solver attention kernel with a FLARE-based factorised variant [8], reducing
+memory cost while preserving global communication.
+    The hybrid combination of these global processors with mesh-based propa-
+gation and explicit sparse contact modelling is introduced and systematically
+evaluated in the present work.
+
+
+
+
+                                      12
+4.4. Generic sparse contact block
+     For MeshTransolver, MeshGeoTransolver, and MeshGeoFLARE, we in-
+troduce an explicit generic sparse contact block. The processing sequence is
+summarised in Figure 4.
+     At each rollout step, sparse contact pairs are reconstructed from the
+current predicted geometry using proximity-based search, thickness-aware
+filtering, and top-k sparsification. The hybrid processor is modified as:
+        Pre-MPNN       ContactBlock        Global processor   Post-MPNN
+                             f(1) −−−−−−−−−→ H(2) −
+  H(0) −−−−−−→ H(1) −−−−−−−→ H                    −−−−−−→ H(3) ,
+          Emesh                                                 Emesh
+                                                                           (13)
+   The ContactBlock computes a residual latent correction:
+                          f(1) = H(1) + α ∆H
+                          H                                                (14)
+                                             contact ,
+
+
+where ∆Hcontact is computed from sparse contact pairs and α is a learnable
+scalar initialised near zero.
+    This formulation introduces contact explicitly while keeping the representa-
+tion sparse and bounded. The correction is injected before global propagation,
+and the final refinement stage remains restricted to the structural mesh.
+    Overall, the design captures informative contact interactions while prevent-
+ing rapidly changing proximity relations from destabilising the final mesh-level
+refinement stage.
+
+4.5. Model variants
+    Table 1 summarises the main architectural and hyperparameter choices.
+As introduced in previous sections, dh represents the latent feature dimension,
+M defines the number of global tokens used for long-range communication,
+and k controls the maximum number of active contact pairs per node. The
+column L blocks indicates the number of processing layers in each stage. For
+hybrid models, it is reported as Pre-MPNN + Global + Post-MPNN.
+    The column M tokens denotes the number of latent tokens used by the
+global processor (PhysicsAttention, GALE, or GALE_FA), which controls
+the capacity of global information aggregation.
+    The Contact column indicates whether the generic sparse contact block
+is used. When enabled, the contact configuration specifies the maximum
+number of active contact pairs per node (k), which bounds the computational
+cost of contact processing.
+
+
+                                      13
+Table 1: Hyperparameter summary for all evaluated architectures. dmodel = 128 for all
+models. Contact config indicates the sparse-contact settings used in the autoregressive
+hybrid variants.
+
+Model                    Processor                                             L blocks   M tokens   Contact        Contact config
+MeshGraphNet             Local MPNN                                              6           —        No                   —
+Transolver               PhysicsAttn                                             6          128       No                   —
+MeshTransolver           Pre-MPNN + PhysicsAttn++ + Post-MPNN                  1+6+2        128       No                   —
+MeshTransolver+Contact   Pre-MPNN + ContactBlock + PhysicsAttn++ + Post-MPNN   1+6+2        128       Yes      generic sparse block, k=32
+GeoTransolver            GALE attention                                          4          128       No                   —
+GeoFLARE                 GALE_FA attention                                       4          128       No                   —
+MeshGeoFLARE             Pre-MPNN + ContactBlock + GALE_FA + Post-MPNN         1+4+2        128       Yes      generic sparse block, k=16
+MeshGeoTransolver        Pre-MPNN + ContactBlock + GALE + Post-MPNN            1+4+2        128       Yes      generic sparse block, k=16
+
+
+
+
+    Geometry-aware models (GeoTransolver and GeoFLARE variants) use
+geometry conditioning (GALE), which augments token assignment with spatial
+embeddings derived from nodal positions.
+    MeshTransolver combines pre-MPNN, PhysicsAttention++ , and post-
+MPNN stages. Contact-aware variants incorporate the generic sparse contact
+block between local and global processing.
+    MeshGeoTransolver and MeshGeoFLARE preserve the same hybrid struc-
+ture while replacing the global processor with GALE and GALE_FA, respec-
+tively. This parameterisation highlights the trade-off between local depth,
+global capacity, and contact sparsity across the evaluated architectures.
+
+4.6. Autoregressive rollout
+    All models are trained and evaluated in closed-loop autoregressive mode.
+At each timestep, the model predicts nodal accelerations:
+
+                                                    at = fθ (xt , vt ),                                                          (15)
+
+which are integrated as:
+
+                                                vt+1 = vt + at ∆t,                                                               (16)
+                                                xt+1 = xt + vt+1 ∆t.                                                             (17)
+
+    The predicted state is fed back into the next step. In the contact-aware
+variants, sparse contact is recomputed from the predicted geometry at each
+rollout step.
+
+
+
+
+                                                               14
+                                                   xt ∈ ℝN×3, vt ∈ ℝN×3
+
+
+
+
+                                                      Node Encoder
+
+                                                      MLP: ℝdin → ℝdh
+
+
+                                                        H⁽⁰⁾ ∈ ℝN×dh
+
+
+
+
+                                                         Pre-MPNN
+
+                                                  εmesh edges · L₁ blocks
+
+
+
+                                                             H⁽¹⁾
+
+
+
+
+                                  HYBRID PROCESSOR
+            autoregressive loop
+
+
+
+
+                                                       ContactBlock
+
+                                                H⁽¹⁾ = H⁽¹⁾ + α · ΔHcontact
+
+                                            sparse pairs, α learnable (init ≈ 0)
+
+
+                                                             H⁽¹⁾
+
+
+
+
+                                                    Global Processor
+
+                                           PhysicsAttn⁺⁺ / GALE / GALE FLAREFA
+
+                                                    L₂ blocks · M tokens
+
+
+                                                             H⁽²⁾
+
+
+
+
+                                                        Post-MPNN
+
+                                                   εmesh only · L₃ blocks
+
+
+
+
+                                                             H⁽³⁾
+
+
+
+
+                                                      Node Decoder
+
+                                                       MLP: ℝdh → ℝ³
+
+
+
+
+                                                          ât ∈ ℝN×3
+
+
+
+
+                                                     Euler Integration
+
+                                            vt+1 = vt + ât Δt ; t+1 = xt + vt+1 Δt
+
+
+
+
+Figure 3: Hybrid processor structure. Local message passing extracts mesh-level features,
+the global processor propagates long-range interactions, and the final post-MPNN stage
+remains restricted to the structural mesh.
+
+
+
+
+                                                             15
+                                                                Generic Sparse Contact Block
+
+
+                         Pre-MPNN                              ContactBlock                   ~            Global Processor                      Post-MPNN
+  H⁽⁰⁾                                            H⁽¹⁾                                      H⁽¹⁾                                                                           H⁽³⁾
+                         ε_mesh edges                           sparse residual                              PhysAttn / GALE                     ε_mesh only
+
+
+
+
+            (a) Dynamic Contact Discovery                                                                  (b) ContactBlock Processing
+
+
+
+                                                                                     Step 1        Proximity search on predicted positions x
+
+                                                                                     Find neighbours within radius r. Filter by shell thickness.
+
+
+
+
+                                                                                     Step 2        Top-k sparsification per node
+
+                                                                                     Retain at most k closest contact pairs. Cost bounded at O(Nk).
+
+
+
+
+                                                                                     Step 3        Contact message passing on sparse edges
+
+                                                                                     Compute ΔH _contact via MLP on edge features (distance, normal).
+                                   contact zone
+
+
+
+
+                                                                                     Step 4        Residual latent injection
+
+
+                                                                                      H⁽¹⁾ = H⁽¹⁾ + α · ΔH _contact                        (α learnable, init ≈ 0)
+          Mesh node                   Contact-active node
+
+
+            Mesh edge                           Sparse contact edge
+
+
+
+
+                                                                            Key Design Properties
+
+
+
+                    Sparse and bounded                                            Pre-global injection                                     Mesh-only refinement
+
+         Top-k selection caps active pairs per node.              Contact corrects latent before global propagation.           Post-MPNN uses stable structural edges only.
+
+
+
+
+Figure 4: Generic sparse contact block. At each step, a proximity-based radius search
+identifies candidate interactions from the predicted geometry. These are filtered by thickness
+and sparsified to the top-k pairs to form the contact graph. The interactions are then
+converted into a bounded residual latent update and injected after the pre-MPNN and
+before the global processor. The final refinement stage remains restricted to the mesh.
+
+
+
+                                                             Autoregressive Surrogate Rollout
+
+
+                    x ∈ ℝ
+                     t       N×3
+
+
+
+
+                    v ∈ ℝ
+                     t       N×3
+
+
+
+
+                                                                                                                                 a ∈ ℝ
+                                                                                                                                   t       N×3
+
+
+
+
+                                         H⁽⁰⁾             Hybrid Processor                         H⁽³⁾                                â
+                                                                                                                                       t
+
+
+
+
+              Encoder                                                                                        Decoder                               Euler Integration
+                                                         MPNN + Contact + Global
+               x , v → H⁽⁰⁾
+                t        t                                                                                     H⁽³⁾ → ât                                predicted x , v
+                                                                                                                                                                     t+1   t+1
+
+
+
+
+                                                                H⁽⁰⁾ → H⁽³⁾
+
+
+
+
+                                                                repeat T timesteps (autoregressive)
+
+
+
+
+Figure 5: Autoregressive rollout. The model predicts acceleration from the current state,
+integrates forward in time, and feeds the predicted configuration back into the next step.
+Contact-aware variants recompute sparse contact at each step.
+
+
+
+                                                                                         16
+5. Experimental Setup
+    Disclaimer: Due to confidentiality restrictions, absolute numerical values
+for proprietary geometric parameters and specific performance metrics have
+been normalized in the figures.
+
+5.1. Full-vehicle dataset
+    The case study consists of explicit finite-element crash simulations of
+a parameterised full-vehicle model under a lateral pole-impact load case
+aligned with the Euro NCAP [1] pole-impact setup. The vehicle strikes a
+rigid cylindrical pole of 254 mm diameter at 33 km/h. This slightly exceeds
+the 32 km/h nominal speed specified by UN R135 and reflects a conservative
+internal validation protocol chosen to cover tolerance margins around the
+regulatory condition. The pole-impact reference configuration follows the
+standard oblique side-impact arrangement, with the impact reference line
+defined at 75◦ to the vehicle longitudinal centreline.
+    The structural response is recorded over 70 ms with outputs every 5 ms
+(T = 15). Figure 6 illustrates the temporal evolution of the benchmark.
+    The underlying FE model is a full-vehicle crash model including the main
+body structure and vehicle subsystems typically present in an industrial
+side-impact setup. However, the surrogate prediction target is restricted to
+the structural components retained in the learning graph. In other words,
+the complete simulation is used to generate the crash response, but only the
+structural domain is predicted by the neural surrogate after preprocessing and
+graph construction. Material rupture or tearing is not modelled in the present
+benchmark; the study focuses on large-deformation structural dynamics with
+contact.
+    After preprocessing and graph construction, the learning problem involves
+approximately 280,000 structural nodes per simulation.
+
+5.2. Parameterised design space
+    The dataset is generated with Latin Hypercube Sampling (LHS) [12] over
+an eight-dimensional design space combining crash kinematics, sheet-thickness
+variation, and geometric morphing. LHS is used because it provides broad
+coverage of the parameter space under a limited simulation budget, which is
+preferable to simple random sampling when building a representative DOE
+for expensive vehicle crash simulations. This LHS-derived DOE defines the
+
+
+
+                                     17
+  >1.00
+
+
+
+
+  0.90
+
+
+
+
+  0.80
+
+
+
+
+  0.70
+
+
+
+
+  0.60
+
+
+
+
+  0.50
+
+
+
+
+  0.40
+
+
+
+
+  0.30
+
+
+
+
+  0.20
+
+
+
+
+  0.10
+
+
+
+
+  0.00
+
+
+
+
+  >1.00
+
+
+
+
+  0.90
+
+
+
+
+  0.80
+
+
+
+
+  0.70
+
+
+
+
+  0.60
+
+
+
+
+  0.50
+
+
+
+
+  0.40
+
+
+
+
+  0.30
+
+
+
+
+  0.20
+
+
+
+
+  0.10
+
+
+
+
+  0.00
+
+
+
+
+  >1.00
+
+
+
+
+  0.90
+
+
+
+
+  0.80
+
+
+
+
+  0.70
+
+
+
+
+  0.60
+
+
+
+
+  0.50
+
+
+
+
+  0.40
+
+
+
+
+  0.30
+
+
+
+
+  0.20
+
+
+
+
+  0.10
+
+
+
+
+  0.00
+
+
+
+
+Figure 6: Temporal evolution of the lateral pole-impact benchmark at representative
+timesteps. The results correspond to the nominal (standard) values of the DOE design
+space. The sequence illustrates the progressive intrusion of the side structure and the global
+redistribution of deformation across the structure. The displacement fringe is normalized.
+
+
+sampled parameter space used throughout training, validation, and test split
+construction.
+   Table 2 lists the parameters and their ranges, while Figure 7 shows the
+corresponding geometric regions.
+
+5.3. DOE-aware split validation
+    The dataset contains 200 simulations, split into 150 training, 25 validation,
+and 25 test samples. The split is not random: it is constructed to preserve
+coverage of the DOE while avoiding pathological concentration of outliers in
+the test set. This is important because a biased split can make the benchmark
+either unrealistically easy or artificially pessimistic.
+    To assess representativeness, we validate the split using complementary
+distributional diagnostics over the design variables, including Wasserstein
+distance, Kolmogorov–Smirnov statistics, and coverage-oriented criteria in
+low-dimensional projections. Figure 8 illustrates the resulting overlap between
+training, validation, and test subsets in representative pairwise projections of
+the design space.
+
+                                             18
+Table 2: Parameterised design space (8 LHS variables). Standard: nominal production
+value. Low/High: sampling bounds.
+
+       Parameter                             Standard   Low    High   Unit
+       Pole position (x-axis)                    1203   953    1453   mm
+       Thickness, external sill                   1.5    1.2    1.8   mm
+       Thickness, external sill patch             1.2    0.8    1.6   mm
+       Depth section, front TAT                     0    −2      12   mm
+       Width, front TAT                             0    −7       7   mm
+       Section depth, external sill                 0   −10      10   mm
+       Radius curvature, external sill              0   −10       5   mm
+       Section depth, sill patch                    0   −25       0   mm
+
+
+5.4. Training details
+    All architectures were evaluated under a common training and hyperpa-
+rameter configuration to ensure a controlled comparison. This isolates the
+effect of the architectural components and establishes a fair shared baseline,
+although it formally leaves open the possibility that some configurations
+could be further optimized with model-specific tuning. The reported rankings
+should therefore be interpreted under this shared configuration rather than
+as the result of exhaustive per-model hyperparameter search.
+    We use AdamW [13] with cosine annealing [14], an initial learning rate of
+10−4 , mixed bfloat16 precision, activation checkpointing, and batch size 1 (one
+full rollout per optimisation step). Early stopping is applied on validation
+mean-squared error with a patience of approximately 15–20 epochs, and
+training is performed on 8 × NVIDIA H100 GPUs.
+
+5.5. Compared models
+    We evaluate eight architectures spanning three families: local mesh-based
+models, global attention models, and hybrid local–global variants. Their
+detailed definitions were introduced in Section 4, the main architecture
+hyperparameters are summarised in Table 3, and the corresponding model
+sizes and GPU memory consumption are summarised in Table 4.
+    Table 3 reports the main architectural settings. For hybrid models, Lpre ,
+Lattn , and Lpost denote the number of local pre-processing, global-processing,
+and mesh-only refinement blocks, respectively. M denotes the number of
+latent tokens or slices used by the global processor, dh is the hidden dimension,
+
+                                        19
+Table 3: Architecture hyperparameters per model. Lpre /Lpost : pre/post MPNN blocks.
+Lattn : attention blocks. M : number of tokens or slices. dh : hidden dimension. Dnode :
+input node-feature dimension before encoding.
+
+Model                    Attention            Lpre   Lattn   Lpost   M     dh    Dnode     Contact
+MGN                      —                      L = 6 MPNN            —    128     7          No
+Transolver               PhysicsAttention     —      6    —          128   128     5          No
+MeshTransolver           PhysicsAttention++   1      6    2          128   128    11          No
+MeshTransolver+Contact   PhysicsAttention++   1      6    2          128   128    11     Yes (k = 32)
+GeoTransolver            GALE                 —      4    —          128   128     5          No
+GeoFLARE                 GALE_FA              —      4    —          128   128    5           No
+MeshGeoFLARE             GALE_FA              1      4    2          128   128    11     Yes (k = 16)
+MeshGeoTransolver        GALE                 1      4    2          128   128    11     Yes (k = 16)
+
+
+Table 4: Representative model capacity and training duration for the configurations used
+in the reported full-vehicle comparison. Parameter counts are taken from the trained
+configurations summarised in the experiment logs. Epoch time corresponds to the average
+wall-clock time per training epoch for the reported configuration.
+
+Model                         Parameters      Max.memory per GPU [GB]              Time/epoch [s]
+MeshGraphNet                     994.5K                      17.56                        53.44
+Transolver                       774.6K                      24.55                        95.11
+MeshTransolver                   1.30M                       49.90                        205.0
+MeshTransolver+Contact           1.32M                       72.80                       246.86
+GeoTransolver                    1.72M                       35.82                       222.63
+GeoFLARE                         1.66M                       42.57                       206.74
+MeshGeoFLARE                     1.45M                       76.04                       155.89
+MeshGeoTransolver                1.41M                       44.38                       297.63
+
+
+and Dnode is the input node-feature dimension before encoding. The Contact
+column indicates whether the generic sparse contact block is enabled.
+
+5.6. Evaluation protocol
+    All reported metrics correspond to the 25-sample in-distribution test
+set under full autoregressive rollout over the complete 70 ms horizon. We
+report temporal mean RMSE, final-step RMSE, and final-step relative RMSE.
+We additionally report occupant survival-space error because deployment
+relevance is not fully captured by global nodal error alone. For contact-aware
+models, sparse contact is rebuilt from predicted positions at rollout time,
+ensuring that evaluation matches the intended deployment setting.
+
+
+
+
+                                              20
+Figure 7: Parameterised full-vehicle model used in the lateral pole-impact benchmark.
+The DOE includes thickness, geometry, and pole-position variation. Geometric labels are
+normalized.
+                                          21
+                                                       train          valid                  test
+
+                 1.8                                                             1.6
+                                                                                 1.5
+                 1.7
+                                                                                 1.4
+                 1.6
+                                                                                 1.3
+
+
+
+                                                                      th_psill
+       th_sill
+
+
+
+
+                 1.5                                                             1.2
+                                                                                 1.1
+                 1.4
+                                                                                 1.0
+                 1.3
+                                                                                 0.9
+                 1.2                                                             0.8
+                       900   1000   1100 1200 1300     1400    1500                    900          1000   1100 1200 1300        1400   1500
+                                      BARRIER_MOVE_X                                                         BARRIER_MOVE_X
+             10.0                                                                1.6
+                 7.5                                                             1.5
+                 5.0                                                             1.4
+                 2.5                                                             1.3
+Sill_depth
+
+
+
+
+                                                                      th_psill
+
+
+
+
+                 0.0                                                             1.2
+                 2.5                                                             1.1
+                 5.0                                                             1.0
+                 7.5                                                             0.9
+             10.0                                                                0.8
+                       900   1000   1100 1200 1300     1400    1500                    1.2          1.3    1.4    1.5      1.6   1.7    1.8
+                                      BARRIER_MOVE_X                                                             th_sill
+
+Figure 8: Pairwise distribution of selected design variables in the LHS design space. Training
+(blue), validation (orange), and test (green) splits exhibit consistent coverage across loading,
+thickness, and geometric parameters. Diagonal panels show marginal distributions, whereas
+off-diagonal panels illustrate joint coverage. For clarity, only a representative subset of
+variables is shown. Distribution axes are normalized.
+
+
+
+
+                                                                 22
+6. Results: Full-Vehicle Crash Benchmark
+   Results are reported on the 25-sample in-distribution test set evaluated
+under fully autoregressive rollout. The displacement root-mean-square error
+(RMSE) for a given timestep t and test sample k is defined as:
+                           v
+                           u  N
+                           u1 X
+                       (k)                  pred(k)       GT(k) 2
+                   RMSE = t
+                         t                 ui,t       − ui,t           ,   (18)
+                                 N i=1                             2
+
+
+where N is the number of nodes, and ui,t is the nodal displacement vector.
+   From this, we define the primary metric, the temporal mean RMSE
+(RMSEµ ), as the average over all T rollout steps and all K test samples:
+                                K     T
+                                                               !
+                             1 X   1X        (k)
+                     RMSEµ =             RMSEt   .                         (19)
+                             K k=1 T t=1
+
+   Similarly, the final-step relative RMSE (Rel. RMSE) normalises the final-
+step error by the ground-truth displacement magnitude at t = T , averaged
+over the test set:
+                                 K                       (k)
+                              1 X      RMSET
+                  Rel. RMSE =      r                  .                    (20)
+                              K k=1 1 N       GT(k) 2
+                                            u
+                                       P
+                                     N  i=1  i,T                   2
+
+6.1. In-distribution accuracy
+    Table 5 summarises the global field accuracy for all eight evaluated archi-
+tectures. Note that metric aggregation formats are tailored to their purpose:
+RMSEµ and Rel. RMSE are reported as single dataset-wide mean values
+to provide concise overall rankings, whereas the absolute final-step error
+(RMSEfinal ) is reported as the test-set mean ± standard deviation to explicitly
+illustrate the dispersion of absolute predictions at the most challenging point
+of the rollout.
+    MeshGeoFLARE attains the lowest error among all models (RMSEµ =
+3.20 mm, final-step relative error = 0.0137), followed by MeshGeoTransolver
+and GeoFLARE. This ranking suggests that while geometry-aware global
+attention is effective, combining it with local mesh-based propagation in a
+hybrid design provides the strongest quantitative accuracy for the present
+benchmark.
+    Pure geometry-conditioned attention models (GeoTransolver and Ge-
+oFLARE) achieve competitive temporal mean errors (RMSEµ between 3.8
+
+                                      23
+and 4.2 mm), indicating that geometry-aware global attention can capture
+the dominant global crash kinematics under the shared hyperparameter con-
+figuration. However, as discussed in Section 6.3, these models can exhibit
+higher local spatial noise compared to the hybrid variants. The comparison
+therefore suggests that, for this benchmark and configuration, the best quan-
+titative performance is obtained by combining mesh-based local propagation
+with a global processor, with additional gains from geometry-aware global
+aggregation.
+
+Table 5: In-distribution test results on the 25-sample full-vehicle test set. RMSEµ denotes
+the temporal mean over the 15 rollout steps, and RMSEfinal denotes the final timestep at
+70 ms. Bold indicates the best value in each column.
+
+Model                            RMSEµ (mm)           RMSEfinal (mm)         Rel. RMSE
+MeshGeoFLARE                           3.20              5.95 ± 1.34           0.0137
+MeshGeoTransolver                      3.43              5.98 ± 1.24           0.0137
+GeoFLARE                               3.88              6.89 ± 1.14           0.0158
+GeoTransolver                          4.12              7.40 ± 1.13           0.0170
+MeshTransolver+Contact                 4.13              7.92 ± 2.20           0.0183
+Transolver                             4.88              9.15 ± 2.07           0.0211
+MeshTransolver                         13.60            27.92 ± 10.41          0.0637
+MeshGraphNet                           16.23            32.90 ± 12.39          0.0756
+
+   Figure 9 shows that hybrid architectures accumulate error more gradually
+and remain much more stable over time.
+
+6.2. Temporal behaviour and effect of contact modelling
+    Within the Hybrid mesh–attention models, the most consequential ar-
+chitectural change is the introduction of explicit sparse contact modelling.
+Comparing the contact-free MeshTransolver with the contact-aware variant
+reduces RMSEµ from 13.60 to 4.13 mm, corresponding to a 3.29× improve-
+ment.
+    Figure 10 makes this temporal behaviour explicit. The largest benefit
+appears when contact first becomes dynamically important, which is consistent
+with the intended role of the generic sparse contact block: to inject interaction
+information that is absent from the static mesh before the global processor
+propagates the disturbance through the structure.
+
+
+                                            24
+                                              Per-timestep RMSE            ID Test (n=25)
+                      MeshGeoFLARE            Transolver
+                      MeshGeoTransolver       MeshTransolver+Contact
+                      GeoFLARE                MeshTransolver
+                 40   GeoTransolver           MeshGraphNet
+
+
+
+                 30
+Mean RMSE (mm)
+
+
+
+
+                 20
+
+
+                 10
+
+
+                  0
+                          2               4           6                8               10   12   14
+                                                       Rollout timestep (×5 ms)
+
+Figure 9: Per-timestep RMSE for selected local, global, and hybrid models. Hybrid models
+exhibit the most stable error growth over the 70 ms rollout horizon.
+
+
+    A useful interpretation is to assign separate roles to the three stages of
+the contact-aware hybrid processor. The pre-MPNN stage extracts a locally
+structured latent state on the mesh, the sparse contact block injects contact-
+dependent corrections into that representation, and the global processor
+propagates their effect across the structure. The final post-MPNN stage then
+refines the deformation on the stable structural mesh only. This interpretation
+is consistent with the implementation described in Section 4.4 and does not
+require dynamic contact pairs to remain active during the final refinement
+stage.
+
+6.3. Qualitative deformation examples
+    The quantitative ranking is consistent with the qualitative behaviour of the
+predicted deformation fields. Figure 11 provides a representative comparison
+at the final timestep (t = 70 ms), showing both the predicted displacement
+fields and the corresponding error fields with respect to the ground truth.
+    The error field is defined as the nodal Euclidean displacement difference:
+
+                                                 ei = uipred − uiGT                ,
+                                                                               2
+
+                                                               25
+                               Car-structure contact ablation over rollout
+                     t=2                    MeshTransolver+Contact                final
+            35                              MeshTransolver
+
+            30
+
+            25
+RMSE (mm)
+
+
+
+
+            20
+
+            15
+
+            10
+
+             5
+
+             0
+                 2         4           6            8            10          12    14
+                                            Rollout timestep
+
+Figure 10: Temporal effect of explicit sparse contact modelling within the MeshTransolver
+family. The largest gain appears during the early-impact regime, where dynamic interactions
+first become structurally relevant.
+
+
+where ui denotes the displacement vector at node i. This definition captures
+both magnitude and directional discrepancies in the predicted deformation.
+    To ensure a fair visual comparison across architectures, all displacement
+fields share a common color scale, and all error fields share a separate common
+scale. This avoids misleading visual differences caused by automatic rescaling
+and allows consistent assessment of spatial error patterns. GeoTransolver and
+GeoFLARE are omitted from this qualitative panel to focus the comparison
+on models that preserve high field regularity; although they reach compet-
+itive quantitative RMSE, their displacement fields exhibit localized spatial
+irregularities that are further analyzed in Figure 12.
+    The strongest hybrid models preserve both the global structural motion
+and the local deformation patterns, including sharp folding regions and high-
+gradient zones near contact interfaces. At the same time, geometry-only
+attention models can achieve competitive global error metrics, but their
+displacement fields may exhibit localised spatial irregularities and higher
+noise in some structural regions, as analysed further in Figure 12. In the
+error fields, hybrid models exhibit more localised and lower-magnitude error
+distributions, consistent with their stronger local inductive bias.
+
+
+                                               26
+Table 6: Occupant survival-space error over the 25 in-distribution test samples. Mean error
+quantifies systematic bias, while standard deviation reflects consistency across the test set.
+
+          Model                           Mean error (mm)        Std error (mm)
+          GeoTransolver                           −0.9                  10.3
+          GeoFLARE                                −1.3                  10.6
+          Transolver                              −2.8                  11.5
+          MeshTransolver+Contact                  −3.9                  11.7
+          MeshGeoFLARE                            −4.2                  10.1
+          MeshGeoTransolver                       −4.3                  10.6
+          MeshGraphNet                            −5.6                  50.5
+          MeshTransolver                          +46.0                 15.2
+
+
+    A critical industrial observation is that scalar RMSE alone does not fully
+characterize the usability of a crash surrogate. Although GeoTransolver and
+GeoFLARE are quantitatively competitive, side-view inspection reveals higher
+levels of spatial noise and local deformation irregularities in the predicted
+displacement field. In contrast, MeshGeoTransolver and MeshGeoFLARE
+combine competitive scalar accuracy with smoother and more physically
+interpretable deformation fields. This highlights the value of combining
+mesh-local propagation with geometry-aware global attention to ensure both
+quantitative precision and structural plausibility.
+
+6.4. Occupant survival space
+    Occupant survival space is used here as a downstream evaluation metric
+rather than as a training target. It measures whether the surrogate preserves
+a safety-relevant quantity derived from the predicted structural response. In
+this context, the sign of the error matters: positive values indicate that the
+surrogate predicts a larger residual survival distance than the FE reference
+(non-conservative underestimation of intrusion), whereas negative values
+correspond to a conservative overestimation.
+    Figure 13 shows predicted and ground-truth survival-distance histories for
+a representative test case. The strongest models reproduce not only the overall
+level of the signal, but also its temporal evolution through the compression
+and rebound phases. Table 6 summarises the survival-space error statistics
+over the full 25-sample test set.
+    The strongest hybrid models, MeshGeoFLARE and MeshGeoTransolver,
+achieve moderate negative bias (−4.2 and −4.3 mm, respectively) with the
+
+                                             27
+lowest standard deviation among all models (∼10 mm), indicating strong con-
+sistency across the test set. Transolver also performs well on this downstream
+metric, which is consistent with its strong global field accuracy.
+    A particularly informative comparison is the one between MeshTran-
+solver and MeshTransolver+Contact. Without explicit contact modelling,
+MeshTransolver exhibits a large positive bias (+46.0 mm), meaning that it
+systematically predicts more residual occupant opening than the FE reference.
+This behavior is non-conservative from a safety perspective and is clearly
+inaccurate. Introducing the sparse contact block reduces the mean error to
+−3.9 mm and also lowers the spread, indicating that explicit contact modelling
+substantially improves the preservation of this downstream quantity.
+    MeshGraphNet shows a mean error close to zero on average, but a much
+larger standard deviation than the strongest hybrid models. This indicates
+that average agreement alone is not sufficient: consistency across design
+variants is equally important when the metric is used for design screening.
+    Figure 14 further illustrates the agreement through predicted-versus-
+reference final survival distance. The strongest models cluster more closely
+around the diagonal, whereas weaker models exhibit larger dispersion away
+from the ideal agreement line. From an industrial perspective, this is important
+because both the magnitude and the sign of the survival-space error affect
+how intrusion is interpreted during DOE screening.
+
+6.5. Computational efficiency
+    A key practical advantage of the proposed surrogate models is the drastic
+reduction in evaluation time. Once trained, the surrogate performs a full
+autoregressive rollout of the crash sequence in approximately 2.6 seconds per
+design on a single GPU.
+    For the reduced benchmark model considered in this work, a corresponding
+high-fidelity FE simulation using PAM-CRASH requires approximately 15
+minutes on an HPC CPU setup. This already represents a speedup of
+approximately 350×.
+    More importantly, for full-scale industrial vehicle models, a single FE
+simulation typically requires on the order of 10–15 hours, depending on mesh
+resolution and solver configuration. In this regime, the surrogate achieves
+speedups of up to 2 × 104 , reducing evaluation time from hours to seconds.
+    This difference in computational cost is what enables large-scale design-
+space exploration. While FE-based workflows are inherently limited in the
+
+
+                                      28
+Table 7: Approximate computational cost per design. Surrogate runtime corresponds to a
+full autoregressive rollout.
+
+   Method                                Time per design           Hardware
+   FE simulation (reduced model)              ∼15 min         HPC CPU cluster
+   FE simulation (full vehicle)               ∼10–15 h        HPC CPU cluster
+   Neural surrogate inference                   2.6 s            1× GPU
+   Speedup (reduced model)                   ∼350×                     –
+   Speedup (full vehicle)                 ∼ 104 –2 × 104               –
+
+
+number of designs that can be evaluated, the surrogate allows rapid screening
+of hundreds or thousands of design variants within practical time constraints.
+    The reported runtime corresponds to a full autoregressive rollout over the
+complete crash sequence for a single design (batch size = 1), including all
+predicted timesteps.
+
+
+
+
+                                         29
+                                      Comparative Visualization of Displacement and Error Fields
+
+                     Architecture                  Displacement                            Error
+                                                       Field                               Field
+
+                                                                       Displacement
+               Error [mm]
+                                                                             [-]
+
+
+                     Ground Truth
+
+
+
+
+                                                                                 >1.00                     >50
+
+
+
+
+                    MeshGeoFLARE
+
+
+                                                                                 0.90                       45
+
+
+
+
+                    MeshGeoTransolver
+                                                                                 0.80                       40
+
+
+
+
+                                                                                 0.70                       35
+
+                       GeoFlare
+
+
+
+
+                                                                                 0.60                       30
+
+
+
+
+                     Geotransolver
+
+
+
+                                                                                 0.50                       25
+
+
+
+
+                     MeshTransolver
+                          +                                                      0.40                       20
+                       Contact
+
+
+
+
+                                                                                 0.30                       15
+
+                       Transolver
+
+
+
+
+                                                                                 0.20                       10
+
+
+
+
+                     MeshTransolver
+
+
+                                                                                 0.10                       5
+
+
+
+
+                     MeshGraphNet                                                0.00                       0
+
+
+
+
+Figure 11: Ground-truth and predicted deformation fields at the final timestep (70 ms) for
+a representative test case. GeoTransolver and GeoFLARE are omitted for compactness,
+and are instead compared in the side-view analysis of Figure 12. The shown hybrid models
+reproduce both global and local deformation patterns faithfully. The displacement field
+and error fringes are normalized to the maximum observed range.
+
+
+                                                                  30
+                                         (a) GeoTransolver                                  (b) MeshGeoTransolver
+
+Figure 12: Zoomed side-view comparison of the predicted deformation field at 70 ms.
+The pure attention model (GeoTransolver) achieves competitive scalar error but shows
+higher local spatial noise (irregularities). The hybrid variant (MeshGeoTransolver) better
+preserves field regularity and structural plausibility. Displacement fields are normalized.
+
+
+
+
+                                                              Survival space history (run_89)
+                               1.0                                                                    Ground truth
+                                                                                                      MeshGeoFLARE: R2=0.994
+                                                                                                      MeshGeoTransolver: R2=0.992
+                                                                                                      GeoFLARE: R2=0.995
+                                                                                                      GeoTransolver: R2=0.996
+                               0.8
+Survival Space Index (norm.)
+
+
+
+
+                                                                                                      Transolver: R2=0.993
+                                                                                                      MeshTransolver+Contact: R2=0.994
+                                                                                                      MeshTransolver: R2=0.623
+                                                                                                      MeshGraphNet: R2=0.853
+                               0.6
+
+
+                               0.4
+
+
+                               0.2
+
+
+                               0.0
+                                     0      10           20         30               40          50                60                    70
+                                                                         Time (ms)
+
+Figure 13: Occupant survival-space distance over time for a representative test case. The
+strongest models track the temporal evolution of the downstream metric closely, including
+both compression and rebound. The survival distance axis is normalized.
+
+
+
+                                                                         31
+                     Final-timestep survival-space identity plots: all architecture models
+              Pred final Survival Space Index (norm.)                MeshGeoFLARE                                                                             MeshGeoTransolver
+
+
+
+
+                                                                                                        Pred final Survival Space Index (norm.)
+                                                                       R2=0.951                                                                                   R2=0.955
+                                                        1.0                                                                                       1.0
+
+                                                        0.8                                                                                       0.8
+
+                                                        0.6                                                                                       0.6
+
+                                                        0.4                                                                                       0.4
+
+                                                        0.2                                                                                       0.2
+
+                                                        0.0                                                                                       0.0
+                                                              0.0   0.2    0.4   0.6   0.8   1.0                                                        0.0   0.2   0.4   0.6   0.8   1.0
+                                                        GT final Survival Space Index (norm.)                                                     GT final Survival Space Index (norm.)
+                                                                          GeoFLARE                                                                              GeoTransolver
+              Pred final Survival Space Index (norm.)
+
+
+
+
+                                                                                                        Pred final Survival Space Index (norm.)
+                                                                          R2=0.955                                                                                R2=0.958
+                                                        1.0                                                                                       1.0
+
+                                                        0.8                                                                                       0.8
+
+                                                        0.6                                                                                       0.6
+
+                                                        0.4                                                                                       0.4
+
+                                                        0.2                                                                                       0.2
+
+                                                        0.0                                                                                       0.0
+                                                              0.0   0.2    0.4   0.6   0.8   1.0                                                        0.0   0.2   0.4   0.6   0.8   1.0
+                                                        GT final Survival Space Index (norm.)                                                     GT final Survival Space Index (norm.)
+                                                                          Transolver                                                                     MeshTransolver+Contact
+              Pred final Survival Space Index (norm.)
+
+
+
+
+                                                                                                        Pred final Survival Space Index (norm.)
+
+
+
+
+                                                                          R2=0.946                                                                             R2=0.951
+                                                        1.0                                                                                       1.0
+
+                                                        0.8                                                                                       0.8
+
+                                                        0.6                                                                                       0.6
+
+                                                        0.4                                                                                       0.4
+
+                                                        0.2                                                                                       0.2
+
+                                                        0.0                                                                                       0.0
+                                                              0.0   0.2    0.4   0.6   0.8   1.0                                                        0.0   0.2   0.4   0.6   0.8   1.0
+                                                        GT final Survival Space Index (norm.)                                                     GT final Survival Space Index (norm.)
+                                                                     MeshTransolver                                                                             MeshGraphNet
+              Pred final Survival Space Index (norm.)
+
+
+
+
+                                                                                                        Pred final Survival Space Index (norm.)
+
+
+
+
+                                                                       R2=0.062                                                                                  R2=-0.012
+                                                        1.0                                                                                       1.0
+
+                                                        0.8                                                                                       0.8
+
+                                                        0.6                                                                                       0.6
+
+                                                        0.4                                                                                       0.4
+
+                                                        0.2                                                                                       0.2
+
+                                                        0.0                                                                                       0.0
+                                                              0.0   0.2    0.4   0.6   0.8   1.0                                                        0.0   0.2   0.4   0.6   0.8   1.0
+                                                        GT final Survival Space Index (norm.)                                                     GT final Survival Space Index (norm.)
+
+Figure 14: Predicted versus reference final survival distance for the 25 in-distribution test
+samples. Stronger models remain closer to the diagonal, indicating lower bias and lower
+dispersion in the downstream safety metric. The survival distance axes are normalized.
+
+
+
+
+                                                                                                   32
+7. Discussion
+    The benchmark supports three main empirical observations. First, under
+the present benchmark and training protocol, hybrid mesh–attention archi-
+tectures form the strongest-performing group. Second, within the evaluated
+hybrid family, explicit sparse contact modelling produces the largest ob-
+served improvement. Third, downstream safety-relevant evaluation provides
+information that is not fully captured by global nodal error alone.
+
+7.1. What hybrid mesh–attention architectures contribute
+    The ranking in Table 5 and the temporal behaviour in Figure 9 indicate
+that local and global processing play complementary roles. Mesh-based
+propagation preserves neighbourhood-level structural detail, whereas the
+token-based global processor enables efficient long-range information exchange
+across the full vehicle. Under the evaluated configuration, the strongest-
+performing models are those that retain both mechanisms.
+    The geometry-aware hybrids, especially MeshGeoFLARE, further suggest
+that geometric conditioning is most useful when embedded within a mesh-
+based backbone. In contrast to earlier iterations, the updated results indicate
+that geometry-aware attention alone can capture the dominant global crash
+kinematics under the shared hyperparameter configuration. GeoTransolver
+and GeoFLARE therefore achieve competitive scalar RMSE and survival-
+space bias. However, qualitative side-view comparisons (Figure 12) show
+that these models can introduce higher spatial noise and local deformation
+irregularities. This suggests that global tokenisation benefits from an explicit
+local mesh inductive bias when the objective is not only scalar accuracy, but
+also field regularity and structural interpretability for industrial crash analysis.
+For the present benchmark and configuration, the hybrid models provide
+the best balance of temporal accuracy, final-step precision, and physically
+interpretable displacement fields.
+
+7.2. Role and limits of contact modelling
+    The temporal ablation in Figure 10 shows that within the MeshTransolver
+comparison, explicit sparse contact modelling improves both overall rollout
+accuracy and, more importantly, the early-impact regime. The largest gain
+appears when contact first becomes dynamically important, which is consistent
+with the intended role of the generic sparse contact block: to introduce
+
+
+
+                                        33
+interaction information that is not encoded by the static mesh before the
+global processor propagates the disturbance through the structure.
+    What can be stated robustly is that the sparse contact block provides
+a useful and scalable representation of evolving interactions in the present
+full-vehicle setting. The results are also consistent with the architectural
+interpretation adopted in this work: pre-MPNN extracts a locally structured
+latent state on the mesh, the contact block injects contact-dependent correc-
+tions, the global processor propagates their effect across the structure, and
+the final post-MPNN stage refines the response on the stable structural mesh
+only.
+    At the same time, the present study does not claim to fully isolate all
+mechanisms behind the observed gain. The main conclusion is therefore
+empirical rather than mechanistic: sparse contact injection before global
+propagation is an effective design choice for autoregressive full-vehicle crash
+prediction under the current benchmark.
+
+7.3. Industrial interpretation of survival-space evaluation
+     Occupant survival space should be interpreted as a downstream indus-
+trial metric rather than as part of the training objective. This distinction
+matters because a model can exhibit acceptable average nodal error while
+still producing undesirable bias or variability in a safety-relevant quantity. In
+particular, with the present definition, positive survival-space errors indicate
+that the surrogate predicts a larger residual survival distance than the FE
+reference, corresponding to a non-conservative underestimation of intrusion.
+Negative errors indicate a smaller predicted survival distance and are therefore
+conservative.
+     The present results show that the strongest hybrid models not only achieve
+low global field error, but also maintain low bias and relatively low dispersion in
+survival-space error. This is an important result from an industrial perspective,
+because downstream design screening depends not only on average agreement
+with the FE reference, but also on whether the surrogate preserves the sign
+and consistency of the safety-relevant metric across design variants.
+     These observations also clarify why downstream evaluation is necessary in
+crash surrogates. Standard field-level metrics remain important, but they are
+not sufficient on their own when the intended use case is design assessment
+rather than visual field reconstruction only.
+
+
+
+                                        34
+7.4. Architectural capacity and computational cost
+    The analysis of the evaluated architectures reveals a clear trade-off be-
+tween model capacity, training cost, and final accuracy. As shown in Table 4,
+incorporating explicit geometry-aware global attention and sparse contact
+modelling increases the model capacity and the corresponding computational
+cost per epoch. The MeshGeoFLARE and MeshGeoTransolver variants, while
+more parameter-intensive, consistently achieve the lowest temporal evaluation
+error and best survival-space preservation. This indicates a representative
+accuracy–capacity trade-off within the architecture family, where a practi-
+tioner can choose between a more compact hybrid and a larger geometry- and
+contact-aware variant depending on production latency constraints and the
+required precision of the downstream evaluation criteria.
+    The contact block itself adds only a modest parameter overhead in the
+evaluated hybrids (for example, about 20K parameters in the base MeshTran-
+solver comparison), which is small relative to the total model size. This is
+consistent with the intended design: the contact block acts as a lightweight
+correction mechanism rather than as a structurally dominant component.
+    In addition to parameter count and number of training epochs, the effective
+training cost is also influenced by the per-epoch computational cost of each
+architecture. As reported in Table 4, the wall-clock time per epoch varies
+significantly across model families.
+    Importantly, this cost does not scale directly with parameter count alone.
+Instead, it is strongly affected by the structure of the processor. In particular,
+token-based global attention introduces additional overhead due to slice–
+deslice operations and token interaction, while contact-aware hybrids incur
+extra cost from dynamic contact graph construction at each rollout step.
+    For example, although GeoFLARE and GeoTransolver have comparable
+parameter counts, their per-epoch training time differs noticeably, reflecting
+differences in the underlying attention mechanism. Similarly, hybrid models
+exhibit higher per-epoch cost than pure mesh-based models, but compensate
+for this through the improved field regularity and structural plausibility
+demonstrated in the qualitative analysis.
+    From a practical perspective, the relevant quantity is therefore the to-
+tal time-to-solution. Under the common training protocol used here, the
+MeshTransolver family achieves a favourable balance by combining moderate
+per-epoch cost with competitive accuracy, while larger geometry- and contact-
+aware variants trade higher computational cost for improved final precision
+and safety-metric preservation.
+
+                                       35
+7.5. Challenges and future work
+    Several challenges remain. The current study focuses on a single load case,
+namely full-vehicle lateral pole impact.
+    In addition, the present evaluation is restricted to an in-distribution
+design-space-aware split, so broader out-of-distribution assessment remains an
+important next step. Figure 15 summarises the overall ranking and reinforces
+the same conclusion drawn from the main results table: hybrid mesh–attention
+architectures form the strongest group, while geometry-only attention models
+remain competitive in terms of scalar metrics but are qualitatively distinct in
+terms of field regularity.
+    Future work should therefore address additional crash scenarios, stronger
+out-of-distribution evaluation, safety-aware training objectives, uncertainty
+quantification, and further refinement of contact modelling under more severe
+distribution shift.
+    A further design choice in this study is to prioritise a controlled common
+training protocol over exhaustive per-model hyperparameter optimization.
+This improves comparability across architecture families and avoids confound-
+ing architectural effects with unequal tuning budgets. Therefore, the reported
+results should be interpreted as a fixed-protocol architectural comparison
+rather than as an exhaustive per-model optimized leaderboard.
+
+
+
+
+                                      36
+                                              Mean Mean RMSE (mm)      ID Test (n=25)
+
+        MeshGeoFLARE          3.199
+
+
+     MeshGeoTransolver        3.433
+
+
+             GeoFLARE           3.878
+
+
+          GeoTransolver          4.120
+
+
+ MeshTransolver+Contact             4.129
+
+
+             Transolver               4.482
+
+
+         MeshTransolver                                                      13.597
+
+
+         MeshGraphNet                                                                   16.227
+
+                          0     5                   10            15              20             25
+                                                         Mean RMSE (mm)
+
+Figure 15: Summary ranking of the evaluated models on the full-vehicle benchmark, ordered
+by RMSEµ . Hybrid mesh–attention architectures occupy the top positions, combining
+strong quantitative performance with the field regularity shown in Figure 12.
+
+
+8. Conclusion
+    This work presented and evaluated fully autoregressive neural surrogates
+for full-vehicle lateral pole-impact simulation. On the present benchmark,
+the strongest-performing models are hybrid mesh–attention architectures
+that combine local mesh-based propagation with a global token-based pro-
+cessor, with the best results obtained by the geometry-aware hybrid variant
+MeshGeoFLARE.
+    Within the evaluated architecture family, explicit sparse contact injection
+substantially improves autoregressive prediction, particularly in the early-
+impact regime. Beyond global field errors, the study also shows that occupant
+survival space provides a meaningful downstream safety-relevant metric for
+assessing practical utility in crash-engineering workflows.
+    Taken together, the results suggest that combining mesh-local structure,
+global latent communication, and contact-aware correction is a promising
+design direction for industrial crash surrogates. Under the shared hyperpa-
+
+
+                                                   37
+rameter configuration used in this study, geometry-aware attention baselines
+achieve competitive quantitative accuracy, while hybrid mesh–attention mod-
+els remain preferable for industrial deployment as they better preserve field
+regularity and physically interpretable deformation patterns. At the same
+time, these conclusions are established on a single-load-case, in-distribution
+DOE-aware benchmark; broader out-of-distribution evaluation and model-
+specific hyperparameter tuning remain important directions for future work.
+    Overall, the proposed framework advances crash-surrogate modelling
+toward deployment-oriented design-space screening by combining fully autore-
+gressive rollout, scalable hybrid architectures, and downstream safety-relevant
+evaluation.
+
+Acknowledgements
+    The authors gratefully acknowledge SEAT S.A. for providing access to
+the full-vehicle structural FE model and simulation infrastructure, as well as
+for the use of its high-performance computing resources.
+    Part of this work was developed using the NVIDIA PhysicsNeMo open-
+source framework [11]. The authors also thank Willian Patrick Da Silva
+Rodrigues for his valuable support in preparing the vehicle-crash dataset.
+
+Funding
+   This research did not receive any specific grant from funding agencies in
+the public, commercial, or not-for-profit sectors. Structural FE models and
+HPC resources were provided internally by SEAT S.A.
+
+Data availability
+    The full structural finite-element models and raw simulation datasets used
+in this work are proprietary and confidential and cannot be publicly shared.
+
+Declaration of generative AI and AI-assisted technologies in the
+manuscript preparation process
+   During the preparation of this work, the authors used ChatGPT 5.4 and
+Claude Opus 4.6 to support language editing, technical proofreading, and
+readability improvement of the manuscript. After using these tools, the
+authors reviewed and edited all generated content as needed and take full
+responsibility for the final content of the publication.
+
+                                      38
+Declaration of competing interests
+   The authors declare that they have no known competing financial interests
+or personal relationships that could have appeared to influence the work
+reported in this paper.
+
+References
+ [1] EURO NCAP, EURO NCAP lateral pole test protocol, v10.1, https:
+     //www.euroncap.com (2023).
+
+ [2] National Highway Traffic Safety Administration, FMVSS 214 side impact
+     protection standard, Tech. rep., NHTSA (2022).
+
+ [3] T. Pfaff, M. Fortunato, A. Sanchez-Gonzalez, P. W. Battaglia, Learning
+     mesh-based simulation with graph networks, international Conference
+     on Learning Representations (ICLR) (2021).
+
+ [4] A. Sanchez-Gonzalez, J. Godwin, T. Pfaff, R. Ying, J. Leskovec,
+     P. Battaglia, Learning to simulate complex physics with graph networks,
+     in: International Conference on Machine Learning (ICML), PMLR, 2020,
+     pp. 8459–8468.
+
+ [5] H. Wu, H. Luo, H. Wang, J. Wang, M. Long, Transolver: A fast trans-
+     former solver for PDEs on general geometries, in: Proceedings of the
+     International Conference on Machine Learning (ICML), 2024.
+
+ [6] C. Adams, R. Ranade, R. Cherukuri, S. Choudhry, Geotransolver: Learn-
+     ing physics on irregular domains using multi-scale geometry-aware physics
+     attention transformer, arXiv preprint arXiv:2512.20399 (2025).
+
+ [7] H. Luo, H. Wu, H. Zhou, L. Xing, Y. Di, J. Wang, M. Long, Transolver++:
+     An accurate neural solver for PDEs on million-scale geometries, in: Pro-
+     ceedings of the International Conference on Machine Learning (ICML),
+     2025.
+
+ [8] V. Puri, A. Joglekar, K. Ferguson, Y.-h. Chen, Y. J. Zhang, L. B.
+     Kara, FLARE: Fast low-rank attention routing engine, arXiv preprint
+     arXiv:2508.12594 (2025).
+
+
+
+                                     39
+ [9] M. M. Iparraguirre, I. Alfaro, D. González, E. Cueto, MeshGraphNet-
+     Transformer: Scalable mesh-based learned simulation for solid mechanics,
+     arXiv preprint arXiv:2601.23177 (2026).
+
+[10] M. A. Nabian, S. Chavare, D. Akhare, R. Ranade, R. Cherukuri, S. Tade-
+     palli, Automotive crash dynamics modeling accelerated with machine
+     learning, arXiv preprint arXiv:2510.15201 (2025).
+
+[11] NVIDIA, PhysicsNeMo:       Open-source framework for physics-
+     ai model development, https://docs.nvidia.com/physicsnemo/
+     latest/overview.html, accessed: 2026-04-08 (2025).
+
+[12] M. D. McKay, R. J. Beckman, W. J. Conover, A comparison of three
+     methods for selecting values of input variables in the analysis of output
+     from a computer code, Technometrics 21 (2) (1979) 239–245.
+
+[13] I. Loshchilov, F. Hutter, Decoupled weight decay regularization, interna-
+     tional Conference on Learning Representations (ICLR) (2019).
+
+[14] I. Loshchilov, F. Hutter, SGDR: Stochastic gradient descent with warm
+     restarts, international Conference on Learning Representations (ICLR)
+     (2017).
+
+
+
+
+                                     40
+

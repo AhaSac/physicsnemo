@@ -1,0 +1,1173 @@
+                                                         C OUPLED O CEAN -ATMOSPHERE DYNAMICS IN A M ACHINE
+                                                                   L EARNING E ARTH S YSTEM M ODEL
+
+
+                                                            Chenggong Wang ∗†              Michael S. Pritchard ∗           Noah Brenowitz              Yair Cohen
+arXiv:2406.08632v1 [physics.ao-ph] 12 Jun 2024
+
+
+
+
+                                                            Princeton University                NVIDIA                         NVIDIA                    NVIDIA
+
+
+                                                             Boris Bonev           Thorsten Kurth                  Dale Durran                    Jaideep Pathak ∗
+                                                              NVIDIA                  NVIDIA                  University of Washington                NVIDIA
+                                                                                                                      NVIDIA
+
+
+                                                                                                         June 14, 2024
+
+                                                                                                        A BSTRACT
+                                                             Seasonal climate forecasts are socioeconomically important for managing the impacts of extreme
+                                                             weather events and for planning in sectors like agriculture and energy. Climate predictability on
+                                                             seasonal timescales is tied to boundary effects of the ocean on the atmosphere and coupled interactions
+                                                             in the ocean-atmosphere system. We present the Ocean-linked-atmosphere (Ola) model, a high-
+                                                             resolution (0.25◦ ) Artificial Intelligence/ Machine Learning (AI/ML) coupled earth-system model
+                                                             which separately models the ocean and atmosphere dynamics using an autoregressive Spherical
+                                                             Fourier Neural Operator architecture, with a view towards enabling fast, accurate, large ensemble
+                                                             forecasts on the seasonal timescale. We find that Ola exhibits learned characteristics of ocean-
+                                                             atmosphere coupled dynamics including tropical oceanic waves with appropriate phase speeds, and
+                                                             an internally generated El Niño/Southern Oscillation (ENSO) having realistic amplitude, geographic
+                                                             structure, and vertical structure within the ocean mixed layer. We present initial evidence of skill
+                                                             in forecasting the ENSO which compares favorably to the SPEAR model of the Geophysical Fluid
+                                                             Dynamics Laboratory.
+
+                                                 Keywords Machine learning · Weather and climate · Coupled atmosphere-ocean modeling
+
+                                                 Significance
+                                                 Artificial Intelligence/Machine Learning (AI/ML) emulators of weather forecast models are faster than traditional
+                                                 numerical models by a factor of 10,000 or more. Our work is the first AI/ML emulator that explicitly emulates both
+                                                 the atmosphere and the upper ocean thermal structure. Our coupled ocean-atmosphere Earth System Model (ESM),
+                                                 named Ola, is able to capture characteristic ocean-atmosphere interactions which strongly influence seasonal outlooks
+                                                 of weather. Our work demonstrates a pathway towards accurate forecasts of long-range seasonal climate and uncertainty
+                                                 using AI models. Our model captures the seasonal oscillation known as El Niño/ Southern Oscillation (ENSO) which
+                                                 has a large impact on global weather and is a key source of long-range predictability.
+
+                                                 1       Introduction
+                                                 Over the past few years, data-driven ML models have demonstrated remarkable predictive skill for medium-range,
+                                                 whole-atmosphere weather forecasting [1, 2, 3, 4, 5, 6, 7]. Several autoregressive ML models now rival or surpass the
+                                                     ∗
+                                                         Correspondence to c.wang@princeton.edu, mpritchard@nvidia.com, jpathak@nvidia.com
+                                                     †
+                                                         Work done during an internship at NVIDIA
+                                                                                            A PREPRINT - J UNE 14, 2024
+
+
+performance of the leading physics-based numerical weather prediction (NWP) models used by top meteorological
+organizations worldwide [8, 9]. This advancement has prompted the European Center for Medium-Range Weather
+Forecasting (ECMWF) to develop the AIFS [10], an experimental AI/ML companion to its Integrated Forecasting
+System (IFS) model. Once trained, such ML models are orders of magnitude faster and more energy efficient than
+traditional NWP. They also usefully sidestep the uncertainties intrinsic to subgrid-scale parameterization.
+A next important step for this technology is successful interactive ocean-atmosphere coupling, which is essential
+for its use beyond medium-range weather prediction to applications of subseasonal-to-seasonal (S2S) forecasting,
+seasonal forecasting, and climate prediction. Seasonal forecasting, in particular, requires solving a boundary value
+problem for the atmosphere coupled with an initial value problem for the ocean. Ocean dynamics, which change slowly,
+provide boundary conditions for the atmosphere [11]. The El Niño / Southern Oscillation (ENSO), characterized by
+quasi-periodic warming and cooling of the equatorial Pacific, is a leading source of predictability on seasonal timescales,
+and influences large-scale atmospheric circulation and hydrological cycle changes [12, 13]. Successfully predicting
+ENSO, which relies on ocean-atmosphere interactions and tropical oceanic wave dynamics [14, 15], tests the capability
+of any global simulation method to capture realistic atmosphere-ocean interactions. Indeed the ability to simulate
+ENSO in physical climate models was first enabled by early efforts to couple oceanic and atmospheric components in
+the 1980s[16, 17].
+It is a ripe time to explore coupled atmosphere-ocean ML forecasting. Atmosphere emulators have progressed from
+generating forecasts spanning weeks to those covering many months [18, 1, 19] and even decades[20, 21]. Meanwhile,
+there has been significant progress in the creation of ocean emulators on both global [22] and regional [23, 24] scales.
+Currently, there are only limited results from fully integrated ML-based coupled atmosphere and ocean forecasting
+systems – Cresswell-Clay et al. (in preparation) introduces a parsimonious coupled ocean-atmosphere model that
+uses a sparse oceanic state vector, including sea surface temperature (SST) and sea surface height (SSH), capable of
+supporting multi-decadal forecasts. No coupled ML forecasting system has yet attempted to include subsurface ocean
+state information in its training.
+This paper assesses the feasibility of coupled ML prediction systems with sub-surface ocean state information. We
+introduce the Ocean-linked-atmosphere (Ola) coupled ocean-atmosphere model that uses the Spherical Fourier Neural
+Operator (SFNO) architecture to explicitly model ocean dynamics. Its ocean component represents conditions spanning
+the Eastern Pacific thermocline, from the surface down to 300 meters. These ocean dynamics are conditioned on
+atmospheric winds, pressure and temperature, and are linked to an SFNO atmosphere model, which is in turn conditioned
+on sea surface temperature.
+The structure of this paper is organized as follows. In Sec. 2, we assess the model’s capacity to produce ENSO dynamics
+by exploring its predictability on seasonal timescales, assessing its geographic structure, and analyzing the dynamic
+signatures of internally generated tropical oceanic waves. Our objective is to assess whether our model includes coupled
+ocean-atmosphere interactions that align with the current theoretical understanding of the physical processes driving the
+onset and demise of ENSO. Sec. 3 concludes with a discussion of the current model’s limitations and potential areas for
+future development. The coupled ML model configuration, training, and inference methodology are presented in Sec. 4
+
+
+2   Results
+
+All results in this section use the out-of-sample validation set from years 2017-2022.
+Our first main finding is that Ola generates realistic amounts of Central Tropical Pacific SST variability in the 5-year
+validation period (Figure 1). Much like the physics-based baseline–SPEAR model developed at Geophysical Fluid
+Dynamics Laboratory (GFDL-SPEAR), 6-month Ola forecasts can internally generate both El Niño and La Niña states
+from a neutral state as well as return to a neutral state when initialized in an El Niño or La Niña state. An exception
+occurred after the two consecutive La Niña events (winter of 2020/2021 and 2021/2022) when Ola predicted a shift
+from a La Niña to a neutral state, whereas La Niña persisted in reality. Notably, this triple-dip La Niña was also hard
+to predict for most operational process-based dynamics and statistics models (see the archived 2021 Nov. forecasts:
+https://iri.columbia.edu/our-expertise/climate/forecasts/enso/2021-November-quick-look). It
+is important to caution that the limited evaluation period – necessitated by the need for a sufficiently large training period
+and limited duration of the UFS Replay dataset – does not allow us to draw quantitative predictability comparisons
+between these models. But the finding of qualitatively reasonable SST variability in the Central Pacific is an encouraging
+initial sign that ML models like Ola may be capable of producing ENSO variability.
+Unlike GFDL-SPEAR, Ola produces less of a time-mean cold bias in the Niño 3.4 region (5◦ N to 5◦ S, 170◦ -120◦ W).
+This drift towards systematic equatorial “cold tongue” biases is a well-documented issue in many process-based coupled
+ocean-atmosphere models, including operational seasonal forecast models (e.g. [25, 26, 27]) and climate models
+
+
+                                                              2
+                                                                                                        A PREPRINT - J UNE 14, 2024
+
+
+
+                                                                                                                      ERA5
+                                                                                                                      Deterministic
+                       1                                                                                              Ensemble Mean
+                                                                                                                      GFDL SPEAR
+ Nino3.4 SST anomaly
+
+
+
+                       0
+
+                       1
+
+                       2
+
+                       3
+                           -01
+
+                                 -07
+
+                                        -01
+
+                                                  -07
+
+                                                           -01
+
+                                                                     -07
+
+                                                                              -01
+
+                                                                                        -07
+
+                                                                                                  -01
+
+                                                                                                           -07
+
+                                                                                                                  -01
+                           17
+
+                                 17
+
+                                       18
+
+                                                18
+
+                                                         19
+
+                                                                   19
+
+                                                                             20
+
+                                                                                      20
+
+                                                                                                21
+
+                                                                                                         21
+
+                                                                                                                 22
+                       20
+
+                                20
+
+                                      20
+
+                                              20
+
+                                                       20
+
+                                                                 20
+
+                                                                             20
+
+                                                                                    20
+
+                                                                                              20
+
+                                                                                                       20
+
+                                                                                                                 20
+Figure 1: Sea Surface Temperature (SST) anomaly in the Niño 3.4 region of the Pacific Ocean (5◦ N to 5◦ S, 170◦ -120◦ W)
+from 6-month ensemble forecasts generated by the coupled AI/ML ESM Ola(light red lines) and the physics-based
+model GFDL-SPEAR (light purple lines). Lagged Ensemble Forecasts (see Sec. 4.4 for details) are generated at the
+beginning of every month and run out to 6 months. The ensemble mean for the 12 ensemble forecasts is indicated by
+corresponding bold lines. The observed ERA5 re-analysis (ground truth) is indicated by the bold black line.
+
+
+[28, 29]. Such biases are linked to the spin-up of the “double-ITCZ” rainfall bias in these models, which is influenced
+by decisions in sub-grid parameterization [30, 31]. Although postprocessing often tries to mitigate these biases, they
+tend to degrade ENSO forecasts [32] and lead to associated biases in large-scale atmosphere circulation [33] and the
+hydrological cycle [34, 29]. Interestingly, the absence of tropical drift in Ola suggests that machine learning models
+may offer new ways to avoid these biases by circumventing subgrid parameterizations, like convection and boundary
+layer schemes [35, 36], an approach that holds promising potential.
+We next ask whether our coupled model generates oceanic equatorial Kelvin and Rossby waves, since their dynamics
+are critical to ENSO[37, 38]. This can be assessed qualitatively via the longitude-time evolution of the sea surface
+height (SSH) anomaly during out-of-sample years. The top row in Figure 2 shows a single representative example
+forecast of the SSH from an arbitrary3 initial date using the coupled ML model visualized in three different latitudinal
+bands straddling and in the vicinity the equator. The corresponding UFS-replay ground truth for the same period
+is shown in the bottom row of Figure 2. Reassuringly, for the latitude band centered on the equator, we observe
+eastward propagating SSH anomalies having basin crossing timescales of approximately 2 months — both initialized
+and spontaneously generated throughout the 6-month simulation (Figure 2 (a)). The direction and phase speed of
+these waves appear to be consistent with observations (Figure 2 (d)) and the theory of equatorial trapped Kelvin waves
+for the first baroclinic mode in the ocean [39]. Off the equator, significantly slower, westward-moving disturbances
+should be expected, as regulated by Rossby wave dynamics due to the meridional gradient of the Coriolis parameter.
+Encouragingly, both north (5◦ N-10◦ N; Figure 2 (b)) and south ( 5◦ S-10◦ S; in Figure 2 (c)) of the equator, westward
+propagating SSH anomalies are found that propagate with the observed phase speed. Overall, Figure 2 provides strong
+evidence that our coupled ML model has learned to predict qualitatively realistic equatorial oceanic wave dynamics,
+which is a necessary condition to produce realistic ENSO signals.
+We now investigate to what extent Ola’s simulated ENSO ocean temperature anomalies exhibit realistic three-
+dimensional thermal structure. Fig 3 shows the averaged SST anomaly and the upper ocean temperature anomaly in
+the equatorial Pacific from the hundreds of El Niño and La Niña events simulated by the Ola model in month 4 after
+initialization. For comparison, the corresponding El Niño and La Niña composites were generated from the ERA5 and
+UFS-replay datasets (ground truth) during the same out-of-sample validations years 2017 to 2021.
+
+          3
+              The same analysis is repeated across several time periods in the out-of-sample set in Appendix B
+
+
+                                                                         3
+                                                                                        A PREPRINT - J UNE 14, 2024
+
+
+
+
+Figure 2: Longitude-time diagrams show the simulations (top row) and corresponding ground truth (UFS-replay dataset)
+verification (bottom row) of equatorial Kelvin and Rossby waves in the Ola ML ESM initialized on January 1 2018 and
+simulated out to 6 months. The left column ((a), (d)) shows the SSH anomaly averaged from 2◦ N to 2◦ S. The middle
+column ((b), (e)) and right columns ((c), (f)) shows the SSH anomaly averaged from 5◦ to 10◦ in Southern and Northern
+Hemisphere. In each panel, the annual mean climatology is subtracted at each grid point to compute the SSH anomaly.
+
+
+Within the equatorial Pacific, realistic ENSO composites are found. The horizontal extent and the magnitude of the
+SST anomaly in modeled El Niño and La Nina events (Figure 3 (a), (b)) resemble the observations (Figure 3(c), (d)).
+This includes the predominance of the Central Pacific category of El Nino during the past decade. Beneath the ocean
+surface the simulated (Figure 3 (e), (f)) vertical and zonal locations and extents of the potential temperature anomalies
+associated with ENSO also skillfully resemble the observations (Figure 3 (g), (h)). For instance during El Nino, whereas
+ocean surface temperature anomalies maximize in the Central Pacific, sub-surface temperature anomalies at a depth of
+50 m maximize in the Eastern Pacific, consistent with the location of the thermocline and implicitly learned shoaling
+dynamics in the vicinity of its time-mean depth.
+Some apparent biases of Ola are also evident in the ENSO composite. Within the Pacific, its El Nino and La Nina
+SST anomalies could be viewed as too heavily weighted towards the Central Pacific than the observations, consistent
+with too much subtropical control relative to tropical control. Beyond the tropical Pacific, opposite signed Atlantic
+and Indian Ocean SST anomalies are also apparent (Figure 3 (b) and (d)). However, it is difficult to fairly assess these
+long-range teleconnections associated with ENSO, which are inherently noisy compared to their tropical origins, such
+that the difference in sampling of the many simulated vs. relatively few observed ENSO events becomes an increasingly
+confounding factor (shown by the insignificant/unhatched region in Figure 3 (d)). That is, there are hundreds of
+simulated ENSO events yet only a handful observed events in the comparison.
+Nonetheless, shorter-range teleconnections from the Central Pacific to the Western US appear potentially realistic
+during the El Nino phase - as evidenced by appropriate SST anomalies to the US Southwest corridor and the Pacific
+Northwest Aleutian Low. This hypothesis deserves further scrutiny.
+It is important to investigate whether the atmospheric state is appropriately consistent with the oceanic state during
+ENSO extrema. Within the atmosphere, we visualize the composite Mean Sea Level Pressure (MSLP) during the El
+Niño and La Niña phases from simulations of the Ola model (Figure 4). During the El Niño phase, Ola reproduces
+the expected zonal MSLP gradient with a high-pressure anomaly in the equatorial Indo-Pacific and a corresponding
+low-pressure anomaly in the Eastern Pacific, and vice versa during La Nina, consistent with the classical Southern
+Oscillation. We caution that the atmosphere composites are noisy and thus harder to interpret given the short evaluation
+period of 5 years.
+
+
+                                                           4
+                                                                                                                                    A PREPRINT - J UNE 14, 2024
+
+
+
+               0°          60°E     120°E    180°   120°W 60°W                        0°              60°E    120°E    180°   120°W 60°W
+           40°N                                                                   40°N
+           20°N                                                                   20°N                                                               3
+             0°                                                                     0°                                                               2
+           20°S                                                                   20°S
+
+
+
+
+                                                                                                                                                         SST anom. [K]
+                                                                                                                                                     1
+           40°S                                                                   40°S
+                                                                                                                                                     0
+           40°N                                                                   40°N
+           20°N                                                                   20°N                                                                   1
+             0°                                                                     0°                                                                   2
+           20°S                                                                   20°S                                                                   3
+           40°S                                                                   40°S
+
+               100                                                                    100                                                            1.5
+   Depth [m]
+
+
+
+
+                                                                          Depth [m]
+               200                                                                    200                                                            1.0
+
+
+
+
+                                                                                                                                                                Temp anom. [K]
+                                                                                                                                                     0.5
+               300                                                                    300
+                     140     160     180      200   220     240     260                         140     160     180     200   220     240   260      0.0
+                                                                                                                                                       0.5
+               100                                                                    100
+   Depth [m]
+
+
+
+
+                                                                          Depth [m]
+                                                                                                                                                       1.0
+               200                                                                    200                                                              1.5
+               300                                                                    300
+                     140     160     180       200 220      240     260                         140     160     180      200 220      240   260
+                                            Longitude                                                                 Longitude
+
+Figure 3: Composite Sea Surface Temperature (a-d) and upper ocean temperature (e-h) anomaly visualizations during
+El Niño and La Niña events from the Ola coupled ML model ensemble simulations ((a), (b), (e), (f)) at a 4-month lead
+time and the observed ground truth record ((c), (d), (g), (h)). Ensemble forecasts were generated from the coupled ML
+model every month from 2017 to 2021 with 12 ensembles at each initialization providing a total of 720 model runs (see
+Sec. 4.4 for detail). The Ola model forecasts were bias corrected by computing a lead-time dependant model bias from
+simulations in the training period of 1994-2016 (see Appendix C for bias correction details). The criteria for El Niño
+and La Niña conditions were defined as the SST monthly anomaly in the Niño 3.4 region exceeding 0.5K. There were
+136 months with El Niño states and 187 months with La Niña states at a lead time of 4 months in the 720 ensemble
+simulations while the observed record during the period from 2017 to 2021 had 13 months with El Niño states and 14
+months with La Niña states. The hatching indicates statistically significant differences between El Nino/La Nina states
+and Neutral states indicated by a two-sample T-test with a significance threshold of 0.05.
+
+
+          0°           60°E        120°E     180°   120°W    60°W                  0°             60°E        120°E    180°   120°W     60°W
+      40°N                                                                     40°N
+      20°N                                                                     20°N                                                                      3
+               0°                                                                     0°                                                                 2
+       20°S                                                                    20°S
+                                                                                                                                                         1
+                                                                                                                                                               msl anom. [hPa]
+
+
+
+
+       40°S                                                                    40°S
+                                                                                                                                                         0
+      40°N                                                                     40°N
+                                                                                                                                                              1
+      20°N                                                                     20°N
+               0°                                                                     0°                                                                      2
+       20°S                                                                    20°S                                                                           3
+       40°S                                                                    40°S
+           0°          60°E        120°E     180°   120°W    60°W                  0°             60°E        120°E    180°   120°W     60°W
+
+Figure 4: Same as Figure 3 but for Mean Sea Level Pressure (MSLP) anomaly during El Niño and La Niña events. The
+top row (a,b) shows the average MSLP anomaly from the Ola coupled ESM at a lead time of 4 months, and the bottom
+row (c,d) shows the groud truth (ERA5).
+
+
+
+                                                                                            5
+                                                                                         A PREPRINT - J UNE 14, 2024
+
+
+Finally, to qualitatively study the transient dynamics in the Ola coupled ESM, we look at two case studies, one showing
+the onset of the El Niño event starting in May 2018 and another showing the onset of a La Niña event starting in July
+2020. Recall from Figure 1 that for these initialization dates, Ola predictions tended to generally agree on ENSO
+phase transition dynamics, within the ensemble spread, such that ensemble averaging is warranted to get a sense of
+the composite unsteady evolution of each event. Some disagreement is to be expected even in a perfect forecasting
+system given that one realization of nature is compared to a composite of predicted events, such that our assessment is
+mostly on the plausibility of the transient evolution in Ola, and whether a reasonably diverse range of ENSO dynamical
+pathways, including a mixture of tropical vs. subtropical control, can be simulated.
+Figure 5 shows the development of 2018/2019 El Niño and compares the ensemble mean Ola simulation to the
+observation. Five months ahead of El Niño, a preceding warm anomaly occurs in the subsurface of the equatorial central
+Pacific region (Figure 5(c) vs. (d); 200-230 deg E), consistent with the arrival from the west of a Kelvin wave that often
+precedes the onset of El Nino (Figure 2 and Figure B6). This equatorial warm water volume has been understood as an
+important predictor for El Niño events according to the recharge oscillator theory [40, 41] and can be viewed as part of
+the “tropical control” on El Nino dynamics. The tilted thermal anomaly in the depth-longitude plane is a signal that the
+associated displacement of the thermocline is captured by the modeling system. Meanwhile, at the surface, another
+potential control on ENSO is evident via subtropical influence, via the anomalous warm SST that stretches from the
+southwestern coast of North America to the Central Pacific (Figure 5(a,b)). This “subtropical control” can sometimes
+overwhelm the influence of tropical control leading to a Central Pacific type of El Niño rather than the Eastern Pacific
+type of El Niño [42]. The Central Pacific type of El Niño features more warming in the Central Pacific than the Eastern
+Pacific, which is different from the Eastern Pacific type of El Niño.
+Encouragingly, five months later (6 months into the coupled simulations) a mixture of both tropical and subtropical
+control can be seen to have played a role in Ola (Figure 5(e)), as also occurred in the observed event (Figure 5(f)). In
+the Ola composite, the subtropical pathway happened to produce an especially strong influence for this event, consistent
+with larger subsurface anomalies in the Central Pacific relative to what was observed (Figure 5(g)&(h)), overwhelming
+tropical control and leading to a strongly Central Pacific type of El Nino event.
+Ola also predicted the 2020/2021 La Niña with a smaller amplitude for the forecast initiated in July 2020 (Fig-
+ure 6(a)&(b)). Similar to El Niño, before the onset of La Niña, there is also a clear subsurface anomaly but in the
+opposite sign (Figure 5(c)&(d)). In this case, a cold anomaly forms in the eastern equatorial region and extends to the
+central Pacific in both the simulation and observation (Figure 5(g)&(h)). Compared to the observation, Ola simulated
+La Niña event at the 6-month lead time is weaker than the observation (Figure 5(e)&(f)). The simulated largest signal is
+more towards the central Pacific than the observation. We are not certain about the cause of biases in the Ola simulation.
+One possibility is the lack of ocean currents in this data-driven model, which is critical for the ENSO development [43].
+
+
+3   Discussion, Limitations, and Future Work
+
+We present the Ola model, a pioneering AI/ML coupled Earth System Model. Our model can generate a 6-month
+forecast of the coupled atmosphere-ocean system in less than 1 minute with one A100 GPU. This offers a significant
+speed-up of several orders of magnitude compared with process-based numerical weather and climate models.
+By coupling the ML atmosphere model and the ML ocean model, the Ola model is able to produce convincing
+simulations and forecasts of ENSO, the dominant interannual variability in Earth’s climate and the leading source of
+the predictability in seasonal to interannual time scale. Analysis of Ola suggests learned oceanic and coupled physics
+on seasonal timescales, as evidenced by correct subsurface potential temperature vertical and horizontal structures
+associated with ENSO anomalies, oceanic equatorial waves that propagate at appropriate phases across a range of
+tropical latitude bands, and overall ENSO variability within the Pacific Basin. We encourage formal tests of the
+hypothesis that models like Ola can learn coupled and ocean dynamics, as has been done for atmosphere-only ML
+models [44].
+Fortuitously, within the limited evaluation performed, the Ola model exhibits substantially smaller systematic biases in
+the tropics compared to a conventional process-based coupled model, GFDL-SPEAR. Indeed, the lack of tropical drift
+in Ola is remarkable and one of the enticing reasons to explore ML simulation, given that physically based coupled
+modeling systems have been prone to stubborn biases such as the double ITCZ and equatorial cold tongue for decades
+[34, 28, 45, 29]
+An important limitation of our current model is the occurrence of substantial drifts at higher latitudes (see Appendix
+C), despite the absence of tropical drift. These drifts cause dynamical instabilities for rollout periods longer than six
+months.. We do not view this as an inherent limitation of coupled ML models in general or the SFNO in particular.
+Previous studies, such as [20], have demonstrated that stable simulations as long as a century are feasible with ML
+
+
+                                                            6
+                                                                                                                                 A PREPRINT - J UNE 14, 2024
+
+
+
+
+                       Case study of 2018-05-01 initialized ensemble forecasts, 12 ensemble members
+                                      Lead Time: 1 month
+                 0°           60°E    120°E   180°   120°W 60°W                     0°              60°E    120°E   180°   120°W 60°W
+             20°N                                                               20°N                                                             3
+
+
+
+
+                                                                                                                                                     SST anom. [K]
+             10°N                                                               10°N                                                             2
+                                                                                                                                                 1
+               0°                                                                 0°                                                             0
+             10°S                                                               10°S                                                                 1
+             20°S                                                               20°S                                                                 2
+                                                                                                                                                     3
+
+
+
+
+                                                                                                                                                           Temp anom. [K]
+                                                                                                                                                 1.5
+                                                                                                                                                 1.0
+     Depth [m]
+
+
+
+
+                                                                        Depth [m]
+                 100                                                                100                                                          0.5
+                                                                                                                                                 0.0
+                 200                                                                200                                                            0.5
+                                                                                                                                                   1.0
+                                                                                                                                                   1.5
+                 300                                                                300
+                        140     160     180   200    220    240   260                         140     160    180    200    220     240   260
+                                      Lead Time: 6 months
+             20°N                                                               20°N                                                             3
+
+
+
+
+                                                                                                                                                     SST anom. [K]
+             10°N                                                               10°N                                                             2
+                                                                                                                                                 1
+               0°                                                                 0°                                                             0
+             10°S                                                               10°S                                                                 1
+             20°S                                                               20°S                                                                 2
+                                                                                                                                                     3
+
+
+
+
+                                                                                                                                                           Temp anom. [K]
+                                                                                                                                                 1.5
+                                                                                                                                                 1.0
+     Depth [m]
+
+
+
+
+                                                                        Depth [m]
+                 100                                                                100                                                          0.5
+                                                                                                                                                 0.0
+                 200                                                                200                                                            0.5
+                                                                                                                                                   1.0
+                                                                                                                                                   1.5
+                 300                                                                300
+                        140     160     180   200    220    240   260                         140     160    180    200    220     240   260
+
+Figure 5: The ensemble mean reforecasts by Ola initialized in 2018/05. (a) and (c) show the SST and equatorial Pacific
+upper ocean temperature anomalies at one month lead time, while (e) and (g) show the same variables but at 6 months
+lead time. The results are averaged over 12 ensembles initialized with LEF method (see details in Sec. 4.4) with biases
+correction (see details in Sec. C). The corresponding observational records ((b), (d), (f) and (h)) are shown in the right
+column for comparison.
+
+
+
+                       Case study of 2020-07-01 initialized ensemble forecasts, 12 ensemble members
+                                      Lead Time: 1 month
+                 0°           60°E    120°E   180°   120°W 60°W                     0°              60°E    120°E   180°   120°W 60°W
+             20°N                                                               20°N                                                             3
+
+
+                                                                                                                                                     SST anom. [K]
+             10°N                                                               10°N                                                             2
+                                                                                                                                                 1
+               0°                                                                 0°                                                             0
+             10°S                                                               10°S                                                                 1
+             20°S                                                               20°S                                                                 2
+                                                                                                                                                     3     Temp anom. [K]
+                                                                                                                                                 1.5
+                                                                                                                                                 1.0
+     Depth [m]
+
+
+
+
+                                                                        Depth [m]
+
+
+
+
+                 100                                                                100                                                          0.5
+                                                                                                                                                 0.0
+                 200                                                                200                                                            0.5
+                                                                                                                                                   1.0
+                                                                                                                                                   1.5
+                 300                                                                300
+                        140     160     180   200    220    240   260                         140     160    180    200    220     240   260
+                                      Lead Time: 6 months
+             20°N                                                               20°N                                                             3
+                                                                                                                                                     SST anom. [K]
+
+
+
+
+             10°N                                                               10°N                                                             2
+                                                                                                                                                 1
+               0°                                                                 0°                                                             0
+             10°S                                                               10°S                                                                 1
+             20°S                                                               20°S                                                                 2
+                                                                                                                                                     3
+                                                                                                                                                           Temp anom. [K]
+
+
+
+
+                                                                                                                                                 1.5
+                                                                                                                                                 1.0
+     Depth [m]
+
+
+
+
+                                                                        Depth [m]
+
+
+
+
+                 100                                                                100                                                          0.5
+                                                                                                                                                 0.0
+                 200                                                                200                                                            0.5
+                                                                                                                                                   1.0
+                                                                                                                                                   1.5
+                 300                                                                300
+                        140     160     180   200    220    240   260                         140     160    180    200    220     240   260
+
+                                       Figure 6: Same as Figure 5 but for reforecasts initialized in 2020/07.
+
+
+
+                                                                                          7
+                                                                                          A PREPRINT - J UNE 14, 2024
+
+
+models, given adequate data and sufficient tuning. Understanding the origins of such long-term drift attractors in
+autoregressive ML, and how to control them, is an open area deserving of systematic empirical testing.
+While such a comprehensive survey is beyond the scope of this proof-of-concept study, we acknowledge that some of
+our empirical ML choices, such as the timestep of our atmospheric model, did have an influence on controlling the
+severity of our long-term coupled bias attractor. Early approaches in this research attempted to couple an SST-only
+based ocean to a default SFNO atmosphere analogous to that in [1], which used a 6-hour timestep, but this resulted in a
+model that unsatisfyingly converged to a permanent El Niño state within 6 model months. Whether this is a meaningful
+signal or an effect of empirical ML noise is unknown. Contrary to our experience, Creswell-Clay and colleagues
+(personal communications) have observed initial stabilizing effects from similar ocean coupling attempts with their
+SST-based ocean ML model and a DLWP-HPX atmosphere[18] even when using a 6-hour atmospheric model time step.
+This suggests significant empirical variability, and the need for systematic model intercomparisons to fully understand
+and optimize long-term mean state drift, an important topic towards advancing coupled ML towards climate simulation.
+Meanwhile, it is clear that coupled atmosphere-ocean ML/AI simulation is already possible on seasonal timescales,
+with exciting potential and obvious extensions worthy of further work. It would be worth training future iterations of
+this model with increasingly ambitious ocean state vectors that better resolve oceanic physics. The UFS-replay and
+publicly available ocean reanalysis datasets have a short period of record beginning in 1994 due to historical limitations
+of observing systems. This presents an impediment to training ML models, which typically improve when trained on
+more data. We encourage the use of future datasets with climate model simulations for pre-training ML models and
+using historical re-analysis data for finetuning. For extensions to future climate prediction, it is logical to expect that
+vast training libraries will eventually become necessary, comprising many thousands of years of ocean simulation output
+to sample the internal variability and forced dynamics of slower than seasonal components of the ocean circulation,
+such as subtropical gyres and the Atlantic meridional overturning circulation. We are encouraged that hybrid AI/physics
+climate modeling thought leaders are actively lobbying national simulation centers to develop and publish such datasets
+in formats easily accessible to the community (Laure Zanna and Chris Bretherton; personal communication).
+Meanwhile, we present this model as a part of a research effort towards extending the capabilities of AI/ML models
+beyond medium-range, atmosphere-only weather forecasting. We acknowledge that more rigorous evaluation and
+further development are necessary before the model can provide useful operational seasonal forecasts. We hope that
+our work provides some benchmarks and helps inform the development of such AI/ML models at operational NWP
+centers. Towards this end, we intend to make our training and inference code publicly available along with trained
+model weights and data.
+
+4         Data and Methods
+4.1        Data-driven Atmosphere and Ocean Model with SFNO
+
+We separately develop the ocean and atmosphere components of the Ola coupled ESM based on the Spherical Fourier
+Neural Operator architecture. This architecture has previously been used to develop an atmospheric model exhibiting
+competitive medium-range forecast skill relative to SOTA ML and NWP models [1]. Moreover, the architecture exhibits
+long-term stable dynamics for 10 to 100 years when trained on a sufficient quantity of data [20]. We use the publicly
+available NVIDIA modulus-makani 4 package to train our atmosphere and ocean models with appropriate modifications
+for accommodating an ocean state vector.
+Let At and Ot represent the instantaneous states of the atmosphere and the ocean at time t respectively. The states are
+composed of stacked 2-dimensional atmospheric and oceanic variables which sample the 3-dimensional and multivariate
+structure of the atmosphere and the ocean. We define ML atmosphere model (F A ) and ocean model (F O ) with the
+SFNO architecture such that
+
+                                                                 h            i
+                                                     At+∆t ≈ F A At , Õt , Zt ,                                        (1)
+                                                                  h             i
+                                                     Ot+∆t′ ≈ F O Ot , Ãt , Zt                                         (2)
+
+where Ãt (⊆ At ) and Õt (⊆ Ot ), which are a subset of variables contained in atmospheric states (At ) and oceanic states
+Ot , are used as the boundary conditions for the ocean and atmosphere model (Figure 7). The variables for the state
+vectors and boundary conditions are listed in the Appendix A. Both models also use an internally computed estimate
+      4
+          https://github.com/NVIDIA/modulus-makani
+
+
+                                                                  8
+                                                                                                                            A PREPRINT - J UNE 14, 2024
+
+
+
+
+                    …                                                                             Atmos.                         …
+                                                   Atmos.                                                                              "!"#$%
+             "!
+                                                 SFNO (24h)                                     SFNO (24h)
+                              "#!                 F #(&" , #)" '!)                            F #(&"$%&' , #)" , '"$%&' )
+
+
+
+
+                              !$!
+
+              !!                                                       Ocean                                                           !!"#$%
+                                                                     SFNO (48h)
+                                                                      ! ! (#" , &% " , '" )
+
+
+
+
+Figure 7: Our coupled ESM consists of separately trained atmosphere and ocean models. The atmosphere and ocean
+models are based on an SFNO architecture. The atmosphere model uses a timestep of 24 hours and the ocean model
+uses a timestep of 48 hours.
+
+
+
+of the cosine of the solar zenith angle at each grid point at time t denoted Zt . The solar zenith angle provides the
+models with contextual information about the annual cycle. We first train the F A and F O separately using assimilated
+observation datasets (see Sec. 4.2) and a mean-squared loss function defined appropriately on the sphere. Then, the
+atmosphere and ocean models (F A and F O ) are coupled to perform the forecast (see Sec. 4.3).
+
+
+
+4.2   Training Data
+
+For the atmosphere, we keep convention with recent literature by training on the ERA5 reanalysis dataset [46], a
+gridded estimate of the observed atmospheric state, at its native (0.25◦ latitude × 0.25◦ longitude) resolution. Of the
+137 pressure levels available at hourly frequency, we train the atmosphere component of the model (F A ) using a subset
+of variables at 13 different pressure levels spanning the surface to the top of the troposphere (see Appendix A for a
+list of the atmospheric state variables). The ERA5 fields are temporally sampled using an interval of 6 hours at 0000,
+0600 1200 and 1800 UTC for all days in the training period which is chosen to be from 1980 to 2016. The timestep
+for training is 24 hours for the atmosphere model. A few samples from 2017 were used for validation during training
+wherein the 1-step validation loss was calculated to visualize convergence of training. Since our evaluation protocol
+looks at very long rollouts of 100s of steps, we do not exclude 2017 from the evaluation set. We use the data from 2017
+onwards for testing.
+The ocean component of the model F O is trained on the UFS-replay dataset [47] developed by the National Oceanic
+and Atmosphere Administration (NOAA) using their next-generation Unified Forecast System (UFS) model and a
+nudging procedure that synchronizes the oceanic model to the ERA5 historical record. The UFS-replay dataset offers a
+good high-resolution, densely sampled historical record of the ocean system. The reanalysis-like UFS-replay dataset
+incorporates a physical prior from the modern UFS model with a publicly accessible analysis-ready cloud-optimized
+store. We utilize only a fraction of the prognostic ocean variables contained in the UFS-replay dataset to train our model.
+Specifically, we choose to include the Sea Surface Temperature (SST), the Sea Surface Height (SSH), and the potential
+temperature at eight vertical levels from 0.5m below the surface to 300m below the surface (see Appendix A for a list
+of all the ocean state variables used for training). The UFS-replay fields are temporally sampled with an interval of 6
+hours at 0000, 0600, 1200, 1800 UTC for all days in the training period which is chosen to be from 1994 to 2016. The
+data from 2017 onwards is reserved for testing.
+Since the ocean variables are undefined over land, we utilize a binary mask appropriate to each ocean level at the
+input and within the training loss function. For any ocean vector in the input, we apply the binary mask which sets
+all undefined values to zero before passing the vector to the model. For all predicted ocean fields that appear in the
+output of a model, we apply the binary mask to the model output and the target before computing the mean-squared
+loss function.
+
+
+                                                                       9
+                                                                                         A PREPRINT - J UNE 14, 2024
+
+
+4.3        Coupling procedure
+
+We model the interaction between the ocean and atmosphere as being mediated by a handful of surface and near-surface
+variables. In Eqs. 1 the atmosphere model is forced by the subset Õ of the ocean state vector consisting of only the sea
+surface temperature (SST). This recognizes that the main role of ocean-to-atmosphere coupling in tropical atmospheric
+dynamics is through the local modulation of surface fluxes, like latent heat fluxes, and of flow from horizontal pressure
+gradients, which are primarily tied to SST in the ocean component.
+The ocean model is forced by a subset Ã of the atmospheric variables consisting of the near-surface zonal and meridional
+wind velocities ( 10u, 10v ), the 2 meter temperature (2t), and the mean sea-level pressure (mslp). This recognizes
+that the ocean is mechanically forced by atmospheric surface winds, and that the surface wind and surface temperature
+contrast are the first-order controls on latent and sensible heat fluxes, which are modeled implicitly as in both the
+atmospheric and oceanic components.
+We also choose different timesteps for the atmosphere and ocean components. The atmosphere model is trained with a
+timestep of 24 hours while the ocean model is trained with a timestep of 48 hours. Figure 7 illustrates our coupling
+strategy for running the models in autoregressive coupled inference mode. At t = 0, the models are initialized using
+reanalysis data from UFS-replay and ERA5. The ocean and atmosphere states are then updated autoregressively
+following Eqs (1, 2) with the ocean state being updated at a timestep of 48 hours and the atmosphere state updated using
+a timestep of 24 hours. We use the tooling provided by the earth2mip project5 for orchestrating the coupled inference
+and conveniently saving the required outputs for analysis.
+
+4.4        Forecast with lagged ensembles
+
+Ensemble forecasts are crucial for assessing the variability in weather forecasts due to the chaotic physics of the
+atmosphere-ocean system. Physics-based NWP models generate ensemble forecasts by perturbing the initial con-
+ditions and model parameters to obtain a Monte Carlo sample of forecasts from a given initial condition. Finding
+optimal perturbations to correctly sample the uncertainty in initial conditions and also promote dispersion in modeled
+dynamics towards well-calibrated probabilistic predictions is a very involved problem that requires much tuning and
+experimentation, beyond the scope of this proof of concept.
+We adopt the Lagged Ensemble Forecasting (LEF) method [48] to generate long-range ensemble forecasts with the
+Ola model. LEF forms an ensemble based on a series of unperturbed deterministic forecasts spawned at varying initial
+times but assessed at a common validation time. In this work, we initialize the model every month allowing the model
+to evolve freely for 6 months following initialization. The model is initialized every 6 hours in the first 3 days of each
+month to create 12 ensemble members for every forecast. While LEF was superseded with other modern, parametrized
+methods, it has many advantages. it allows efficient sampling of the probabilistic character of prototype forecast
+models in a parameter-free manner with minimal experimentation and avoiding confounding factors that allow a clean
+comparison to an operational baseline [9]. LEF has been used for ensemble generation in recent work on S2S and
+seasonal forecasting research [49, 50].
+
+
+Acknowledgments
+
+We thank Nathaniel Cresswell-Clay for sharing his coupled ML Atmosphere-Ocean model. We thank Prof. Laure Zanna
+for helpful comments. We thank Prof. Jin-Yi Yu for helpful guidance on ENSO evaluation. We thank the NVIDIA
+Modulus team for software support. We thank the ECMWF and NCEP/NOAA for open sharing of data and fundamental
+research which enabled our work. We acknowledge the agencies that support the NMME-Phase II system, and we thank
+the climate modeling groups (Environment Canada, NASA, NCAR, NOAA/GFDL, NOAA/NCEP, and University of
+Miami) for producing and making available their model output. NOAA/NCEP, NOAA/CTB, and NOAA/CPO jointly
+provided coordinating support and led development of the NMME-Phase II system.
+
+
+References
+
+ [1] Boris Bonev, Thorsten Kurth, Christian Hundt, Jaideep Pathak, Maximilian Baust, Karthik Kashinath, and Anima
+     Anandkumar. Spherical fourier neural operators: Learning stable dynamics on the sphere. In International
+     conference on machine learning, pages 2806–2823. PMLR, 2023.
+      5
+          https://github.com/NVIDIA/earth2mip
+
+
+                                                           10
+                                                                                     A PREPRINT - J UNE 14, 2024
+
+
+ [2] Kaifeng Bi, Lingxi Xie, Hengheng Zhang, Xin Chen, Xiaotao Gu, and Qi Tian. Accurate medium-range global
+     weather forecasting with 3d neural networks. Nature, 619(7970):533–538, 2023.
+ [3] Remi Lam, Alvaro Sanchez-Gonzalez, Matthew Willson, Peter Wirnsberger, Meire Fortunato, Ferran Alet, Suman
+     Ravuri, Timo Ewalds, Zach Eaton-Rosen, Weihua Hu, et al. Graphcast: Learning skillful medium-range global
+     weather forecasting. arXiv preprint arXiv:2212.12794, 2022.
+ [4] Jaideep Pathak, Shashank Subramanian, Peter Harrington, Sanjeev Raja, Ashesh Chattopadhyay, Morteza Mardani,
+     Thorsten Kurth, David Hall, Zongyi Li, Kamyar Azizzadenesheli, et al. Fourcastnet: A global data-driven high-
+     resolution weather model using adaptive fourier neural operators. arXiv preprint arXiv:2202.11214, 2022.
+ [5] Matthias Karlbauer, Nathaniel Cresswell-Clay, Dale R Durran, Raul A Moreno, Thorsten Kurth, and Martin V
+     Butz. Advancing parsimonious deep learning weather prediction using the healpix mes. Authorea Preprints, 2023.
+ [6] Kang Chen, Tao Han, Junchao Gong, Lei Bai, Fenghua Ling, Jing-Jia Luo, Xi Chen, Leiming Ma, Tianning
+     Zhang, Rui Su, et al. Fengwu: Pushing the skillful global medium-range weather forecast beyond 10 days lead.
+     arXiv preprint arXiv:2304.02948, 2023.
+ [7] Ryan Keisler. Forecasting global weather with graph neural networks. arXiv preprint arXiv:2202.07575, 2022.
+ [8] Stephan Rasp, Stephan Hoyer, Alexander Merose, Ian Langmore, Peter Battaglia, Tyler Russel, Alvaro Sanchez-
+     Gonzalez, Vivian Yang, Rob Carver, Shreya Agrawal, et al. Weatherbench 2: A benchmark for the next generation
+     of data-driven global weather models. arXiv preprint arXiv:2308.15560, 2023.
+ [9] Noah D Brenowitz, Yair Cohen, Jaideep Pathak, Ankur Mahesh, Boris Bonev, Thorsten Kurth, Dale R Durran,
+     Peter Harrington, and Michael S Pritchard. A practical probabilistic benchmark for ai weather models. arXiv
+     preprint arXiv:2401.15305, 2024.
+[10] Zied Ben Bouallegue, Mihai Alexe, Matthew Chantry, Mariana Clare, Jesper Dramsch, Simon Lang, Christian
+     Lessig, Linus Magnusson, Ana Prieto Nemesio, Florian Pinault, et al. Aifs–ecmwf’s data-driven probabilistic
+     forecasting. Technical report, Copernicus Meetings, 2024.
+[11] Čedomir Branković, TN Palmer, and L Ferranti. Predictability of seasonal atmospheric variations. Journal of
+     Climate, 7(2):217–237, 1994.
+[12] GT WALKER. Correlation in seasonal variations of weather. ix: A preliminary study of world-weather. Mem.
+     Indian Meteor. Dep., 24:275–332, 1924.
+[13] Michael J McPhaden, Stephen E Zebiak, and Michael H Glantz. Enso as an integrating concept in earth science.
+     science, 314(5806):1740–1745, 2006.
+[14] Jakob Bjerknes. Atmospheric teleconnections from the equatorial pacific. Monthly weather review, 97(3):163–172,
+     1969.
+[15] Mark A Cane. The evolution of el niño, past and future. Earth and Planetary Science Letters, 230(3-4):227–240,
+     2005.
+[16] Mark A Cane and Stephen E Zebiak. A theory for el niño and the southern oscillation. Science, 228(4703):1085–
+     1087, 1985.
+[17] Mark A Cane, Stephen E Zebiak, and Sean C Dolan. Experimental forecasts of el nino. Nature, 321(6073):827–832,
+     1986.
+[18] Jonathan A Weyn, Dale R Durran, Rich Caruana, and Nathaniel Cresswell-Clay. Sub-seasonal forecasting with a
+     large ensemble of deep-learning weather prediction models. Journal of Advances in Modeling Earth Systems,
+     13(7):e2021MS002502, 2021.
+[19] Troy Arcomano, Istvan Szunyogh, Alexander Wikner, Jaideep Pathak, Brian R Hunt, and Edward Ott. A hybrid
+     approach to atmospheric modeling that combines machine learning with a physics-based numerical model. Journal
+     of Advances in Modeling Earth Systems, 14(3):e2021MS002712, 2022.
+[20] Oliver Watt-Meyer, Gideon Dresdner, Jeremy McGibbon, Spencer K Clark, Brian Henn, James Duncan, Noah D
+     Brenowitz, Karthik Kashinath, Michael S Pritchard, Boris Bonev, et al. Ace: A fast, skillful learned global
+     atmospheric model for climate prediction. arXiv preprint arXiv:2310.02074, 2023.
+[21] Dmitrii Kochkov, Janni Yuval, Ian Langmore, Peter Norgaard, Jamie Smith, Griffin Mooers, James Lottes, Stephan
+     Rasp, Peter Düben, Milan Klöwer, et al. Neural general circulation models. arXiv preprint arXiv:2311.07222,
+     2023.
+[22] Wei Xiong, Yanfei Xiang, Hao Wu, Shuyi Zhou, Yuze Sun, Muyuan Ma, and Xiaomeng Huang. Ai-goms: Large
+     ai-driven global ocean modeling system. arXiv preprint arXiv:2308.03152, 2023.
+[23] Adam Subel and Laure Zanna. Building ocean climate emulators. arXiv preprint arXiv:2402.04342, 2024.
+
+
+                                                        11
+                                                                                      A PREPRINT - J UNE 14, 2024
+
+
+[24] Ashesh Chattopadhyay, Michael Gray, Tianning Wu, Anna B Lowe, and Ruoying He. Oceannet: A principled
+     neural operator-based digital twin for regional oceans. arXiv preprint arXiv:2310.00813, 2023.
+[25] Suranjana Saha, Shrinivas Moorthi, Xingren Wu, Jiande Wang, Sudhir Nadiga, Patrick Tripp, David Behringer,
+     Yu-Tai Hou, Hui-ya Chuang, Mark Iredell, et al. The ncep climate forecast system version 2. Journal of climate,
+     27(6):2185–2208, 2014.
+[26] Stephanie J Johnson, Timothy N Stockdale, Laura Ferranti, Magdalena A Balmaseda, Franco Molteni, Linus
+     Magnusson, Steffen Tietsche, Damien Decremer, Antje Weisheimer, Gianpaolo Balsamo, et al. Seas5: the new
+     ecmwf seasonal forecast system. Geoscientific Model Development, 12(3):1087–1117, 2019.
+[27] Feiyu Lu, Matthew J Harrison, Anthony Rosati, Thomas L Delworth, Xiaosong Yang, William F Cooke, Liwei
+     Jia, Colleen McHugh, Nathaniel C Johnson, Mitchell Bushuk, et al. Gfdl’s spear seasonal prediction system:
+     Initialization and ocean tendency adjustment (ota) for coupled model predictions. Journal of Advances in Modeling
+     Earth Systems, 12(12):e2020MS002149, 2020.
+[28] Chen Chen, Mark A Cane, Andrew T Wittenberg, and Dake Chen. Enso in the cmip5 simulations: Life cycles,
+     diversity, and responses to climate change. Journal of Climate, 30(2):775–801, 2017.
+[29] Gen Li and Shang-Ping Xie. Tropical biases in cmip5 multimodel ensemble: The excessive equatorial pacific cold
+     tongue and double itcz problems. Journal of Climate, 27(4):1765–1780, 2014.
+[30] Jin-Yi Yu and Carlos R Mechoso. Links between annual variations of peruvian stratocumulus clouds and of sst in
+     the eastern equatorial pacific. Journal of Climate, 12(11):3305–3318, 1999.
+[31] Xiaoliang Song and Guang Jun Zhang. Convection parameterization, tropical pacific double itcz, and upper-ocean
+     biases in the ncar ccsm3. part i: Climatology and atmospheric feedback. Journal of Climate, 22(16):4299–4315,
+     2009.
+[32] Xian Wu, Yuko M. Okumura, Pedro N. DiNezio, Stephen G. Yeager, and Clara Deser. The equatorial pacific cold
+     tongue bias in cesm1 and its influence on enso forecasts. Journal of Climate, 35(11):3261 – 3277, 2022.
+[33] Chenggong Wang, Yongyun Hu, Xinyu Wen, Chen Zhou, and Jiping Liu. Inter-model spread of the climatological
+     annual mean hadley circulation and its relationship with the double itcz bias in cmip5. Climate Dynamics,
+     55:2823–2834, 2020.
+[34] Baijun Tian and Xinyu Dong. The double-itcz bias in cmip3, cmip5, and cmip6 models based on annual mean
+     precipitation. Geophysical Research Letters, 47(8):e2020GL087232, 2020.
+[35] Xiaoliang Song and Guang J Zhang. The roles of convection parameterization in the formation of double
+     itcz syndrome in the ncar cesm: I. atmospheric processes. Journal of Advances in Modeling Earth Systems,
+     10(3):842–866, 2018.
+[36] MD Woelfle, CS Bretherton, C Hannay, and R Neale. Evolution of the double-itcz bias through cesm2 development.
+     Journal of Advances in Modeling Earth Systems, 11(7):1873–1893, 2019.
+[37] Janet Sprintall, Sophie Cravatte, Boris Dewitte, Yan Du, and Alexander Sen Gupta. ENSO Oceanic Teleconnections,
+     chapter 15, pages 337–359. American Geophysical Union (AGU), 2020.
+[38] Chunzai Wang. A unified oscillator model for the el niño–southern oscillation. Journal of Climate, 14(1):98–115,
+     2001.
+[39] G. K. Vallis. Atmospheric and Oceanic Fluid Dynamics. Cambridge University Press, Cambridge, U.K., 2006.
+[40] Fei-Fei Jin. An equatorial ocean recharge paradigm for enso. part ii: A stripped-down coupled model. Journal of
+     the Atmospheric Sciences, 54(7):830–847, 1997.
+[41] Christopher S Meinen and Michael J McPhaden. Observations of warm water volume changes in the equatorial
+     pacific and their relationship to el niño and la niña. Journal of Climate, 13(20):3551–3559, 2000.
+[42] Jin-Yi Yu and Seon Tae Kim. Identifying the types of major el niño events since 1870. International journal of
+     climatology, 33(8):2105–2112, 2013.
+[43] Jingzhi Su, Renhe Zhang, Tim Li, Xinyao Rong, J-S. Kug, and Chi-Cherng Hong. Causes of the El Niño and La
+     Niña Amplitude Asymmetry in the Equatorial Eastern Pacific. Journal of Climate, 23(3):605–617, 2010.
+[44] Gregory J Hakim and Sanjit Masanam. Dynamical tests of a deep-learning weather prediction model. arXiv
+     preprint arXiv:2309.10867, 2023.
+[45] Antonietta Capotondi, Y Ham, Andrew Wittenberg, and J Kug. Climate model biases and el niño southern
+     oscillation (enso) simulation. US CLIVAR Variations, 2015.
+
+
+                                                         12
+                                                                                       A PREPRINT - J UNE 14, 2024
+
+
+[46] Hans Hersbach, Bill Bell, Paul Berrisford, Shoji Hirahara, András Horányi, Joaquín Muñoz-Sabater, Julien
+     Nicolas, Carole Peubey, Raluca Radu, Dinand Schepers, et al. The era5 global reanalysis. Quarterly Journal of
+     the Royal Meteorological Society, 146(730):1999–2049, 2020.
+[47] Noaa unified forecast system replay reanalysis. https://noaa-ufs-gefsv13replay-pds.s3.amazonaws.
+     com/index.html. Accessed: March 2024.
+[48] Ross N Hoffman and Eugenia Kalnay. Lagged average forecasting, an alternative to monte carlo forecasting.
+     Tellus A, 35A(2):100–118, March 1983.
+[49] Frédéric Vitart and Yuhei Takaya. Lagged ensembles in sub-seasonal predictions. Quarterly Journal of the Royal
+     Meteorological Society, 147(739):3227–3242, 2021.
+[50] L Trenary, T DelSole, MK Tippett, and K Pegion. Monthly enso forecast skill and lagged ensemble size. Journal
+     of Advances in Modeling Earth Systems, 10(4):1074–1086, 2018.
+
+Appendix A: Atmospheric and Oceanic Fields
+List of prognostic variables in the atmosphere and ocean models.
+
+     1. Atmosphere
+          • Surface/single level: 10m zonal wind, 10m meridional wind, 2m temperature, surface pressure, total
+            column of integrated water vapor, mean sea level pressure.
+          • Pressure level: Zonal wind (u), Meridional wind (v) Geopotential (z), Temperature (t), Specific Humidity
+            (q) at the following pressure levels in hPa: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925,
+            1000]
+     2. Ocean
+          • Surface: Sea Surface Temperature (SST), Sea Surface Height (SSH)
+          • Ocean Depth: Potential temperature at the following depths in meters: [0.5, 9.8, 47.3, 97.2, 200.3, 301.7 ]
+
+Appendix B: Ocean wave dynamics
+Simulations showing equatorial ocean wave dynamics in the model evaluation period from 2017 to 2021.
+
+
+
+
+                   Figure B1: Same as Figure 2 but for forecast initialized at 2018/01/01-00UTC
+
+
+                                                         13
+                                                                 A PREPRINT - J UNE 14, 2024
+
+
+
+
+Figure B2: Same as Figure 2 but for forecast initialized at 2017/04/01-00UTC
+
+
+
+
+Figure B3: Same as Figure 2 but for forecast initialized at 2017/07/01-00UTC
+
+
+
+
+                                    14
+                                                                 A PREPRINT - J UNE 14, 2024
+
+
+
+
+Figure B4: Same as Figure 2 but for forecast initialized at 2017/10/01-00UTC
+
+
+
+
+Figure B5: Same as Figure 2 but for forecast initialized at 2018/01/01-00UTC
+
+
+
+
+                                    15
+                                                                 A PREPRINT - J UNE 14, 2024
+
+
+
+
+Figure B6: Same as Figure 2 but for forecast initialized at 2018/04/01-00UTC
+
+
+
+
+Figure B7: Same as Figure 2 but for forecast initialized at 2018/07/01-00UTC
+
+
+
+
+                                    16
+                                                                 A PREPRINT - J UNE 14, 2024
+
+
+
+
+Figure B8: Same as Figure 2 but for forecast initialized at 2018/10/01-00UTC
+
+
+
+
+Figure B9: Same as Figure 2 but for forecast initialized at 2019/01/01-00UTC
+
+
+
+
+                                    17
+                                                                 A PREPRINT - J UNE 14, 2024
+
+
+
+
+Figure B10: Same as Figure 2 but for forecast initialized at 2019/04/01-00UTC
+
+
+
+
+Figure B11: Same as Figure 2 but for forecast initialized at 2019/07/01-00UTC
+
+
+
+
+                                     18
+                                                                 A PREPRINT - J UNE 14, 2024
+
+
+
+
+Figure B12: Same as Figure 2 but for forecast initialized at 2019/10/01-00UTC
+
+
+
+
+                                     19
+                                                                                                    A PREPRINT - J UNE 14, 2024
+
+
+Appendix C
+Lead-time dependant model biases are computed using the monthly hindcast initialized from 1994 to 2016, the same
+period used to train the model. The same LEF method is used to generate 3312 forecasts in total. Then, we compute
+model biases by subtracting the ensemble mean and initialization mean of the simulated results from the truth (training
+data) on lead-time and spatial dimensions for all variables. When applying the bias correction on the out-of-sample
+years (2017-2021), we remove the pre-computed biases from the results.
+
+                                 1 month lead sst bias                      2 month lead sst bias
+                   50                                        50
+                   0                                         0                                              1.5
+                   50                                        50
+                                                                                                            1.0
+                        0   50   100 150 200 250 300 350          0    50   100 150 200 250 300 350
+                                 3 month lead sst bias                      4 month lead sst bias
+                                                                                                            0.5
+                   50                                        50
+                   0                                         0                                              0.0
+                   50                                        50
+                                                                                                             0.5
+                        0   50   100 150 200 250 300 350          0    50   100 150 200 250 300 350
+                                 5 month lead sst bias                      6 month lead sst bias
+                                                                                                             1.0
+                   50                                        50
+                   0                                         0                                               1.5
+                   50                                        50
+
+                        0   50   100 150 200 250 300 350          0    50   100 150 200 250 300 350
+
+                                              Figure C1: Lead time bias of SST [K].
+
+
+
+
+                                 1 month lead msl bias                      2 month lead msl bias
+                   50                                        50
+                   0                                         0
+                                                                                                            4.5
+                   50                                        50
+
+                        0   50   100 150 200 250 300 350          0    50   100 150 200 250 300 350         3.0
+                                 3 month lead msl bias                      4 month lead msl bias
+                                                                                                            1.5
+                   50                                        50
+                   0                                         0                                              0.0
+                   50                                        50
+                                                                                                             1.5
+                        0   50   100 150 200 250 300 350          0    50   100 150 200 250 300 350
+                                 5 month lead msl bias                      6 month lead msl bias            3.0
+                   50                                        50
+                                                                                                             4.5
+                   0                                         0
+                   50                                        50
+
+                        0   50   100 150 200 250 300 350          0    50   100 150 200 250 300 350
+
+                                            Figure C2: Lead time bias of MSLP[hPa].
+
+
+                                                                  20
+                                                                                               A PREPRINT - J UNE 14, 2024
+
+
+
+
+             1 month lead ocean temp. bias                     2 month lead ocean temp. bias
+
+100                                                100
+                                                                                                       1.5
+200                                                200
+
+300                                                300                                                 1.0
+       140    160   180   200   220   240    260         140    160   180   200   220   240    260
+             3 month lead ocean temp. bias                     4 month lead ocean temp. bias
+                                                                                                       0.5
+100                                                100
+                                                                                                       0.0
+200                                                200
+
+300                                                300                                                  0.5
+       140    160   180   200   220   240    260         140    160   180   200   220   240    260
+             5 month lead ocean temp. bias                     6 month lead ocean temp. bias
+                                                                                                        1.0
+100                                                100
+                                                                                                        1.5
+200                                                200
+
+300                                                300
+       140    160   180   200   220   240    260         140    160   180   200   220   240    260
+
+      Figure C3: Lead time bias of equatorial Pacific upper ocean temperature [K].
+
+
+
+
+                                                         21
+                                                                           A PREPRINT - J UNE 14, 2024
+
+
+Appendix D
+Ocean El Niño and La Niña composites
+
+
+
+
+                                 Figure D1: Forecast lead time: 1 month
+
+
+
+
+                                 Figure D2: Forecast lead time: 2 months
+
+
+                                                   22
+                                          A PREPRINT - J UNE 14, 2024
+
+
+
+
+Figure D3: Forecast lead time: 3 months
+
+
+
+
+Figure D4: Forecast lead time: 4 months
+
+
+
+
+                  23
+                                          A PREPRINT - J UNE 14, 2024
+
+
+
+
+Figure D5: Forecast lead time: 5 months
+
+
+
+
+Figure D6: Forecast lead time: 6 months
+
+
+
+
+                  24
+

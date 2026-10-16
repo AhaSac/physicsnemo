@@ -1,0 +1,2351 @@
+                                                   Fluid Intelligence: A Forward Look on AI Foundation
+                                                         Models in Computational Fluid Dynamics
+
+
+                                                                       Neil Ashton                           Johannes Brandstetter
+arXiv:2511.20455v1 [physics.flu-dyn] 25 Nov 2025
+
+
+
+
+                                                                        NVIDIA                                      Emmi AI
+                                                                       Santa Clara                    Johannes Kepler University (JKU) Linz
+                                                                  California, US, 95051                          Linz, Austria
+                                                                 nashton@nvidia.com                           johannes@emmi.ai
+
+                                                                                           Siddhartha Mishra
+                                                                                     Seminar for Applied Mathematics
+                                                                                  D-Math and ETH AI Center, ETH Zurich
+                                                                                               Switzerland
+                                                                                 siddhartha.mishra@sam.math.ethz.ch
+
+
+
+                                                                                                  Abstract
+                                                               Driven by the advancement of GPUs and AI, the field of Computational Fluid
+                                                               Dynamics (CFD) is undergoing significant transformations. This paper bridges
+                                                               the gap between the machine learning and CFD communities by deconstructing
+                                                               industrial-scale CFD simulations into their core components. Our main contribution
+                                                               is to propose the first scaling law that incorporates CFD inputs for both data
+                                                               generation and model training to outline the unique challenges of developing and
+                                                               deploying these next-generation AI models for complex fluid dynamics problems.
+                                                               Using our new scaling law, we establish quantitative estimates for the large-scale
+                                                               limit, distinguishing between regimes where the cost of data generation is the
+                                                               dominant factor in total compute versus where the cost of model training prevails.
+                                                               We conclude that the incorporation of high-fidelity transient data provides the
+                                                               optimum route to a foundation model. We constrain our theory with concrete
+                                                               numbers, providing the first public estimates on the computational cost and time to
+                                                               build a foundation model for CFD.
+
+
+
+
+                                                   Preprint.
+Contents
+
+1   Introduction                                                                                       3
+
+2   Deconstructing the CFD process                                                                     3
+    2.1   Inputs . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .     4
+          2.1.1    Geometry . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .      4
+          2.1.2    Geometry pre-processing and clean-up . . . . . . . . . . . . . . . . . . .          4
+          2.1.3    Physics modeling . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .      4
+          2.1.4    Meshing    . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .    6
+          2.1.5    Numerical method and discretization . . . . . . . . . . . . . . . . . . . .         6
+          2.1.6    Initial and boundary conditions . . . . . . . . . . . . . . . . . . . . . . .       7
+    2.2   Compute engine . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .       7
+          2.2.1    Hardware architectures . . . . . . . . . . . . . . . . . . . . . . . . . . . .      7
+          2.2.2    Mixed precision . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .       8
+    2.3   Outputs . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .      9
+          2.3.1    Steady-state, time-averaged, and instantaneous quantities . . . . . . . . . .       9
+    2.4   Summary . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .        9
+
+3 AI surrogate modeling for CFD                                                                        9
+    3.1   AI fundamentals . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .     10
+    3.2   Conditional and joint distributions when modeling CFD . . . . . . . . . . . . . . .         11
+    3.3   Additional data beyond CFD . . . . . . . . . . . . . . . . . . . . . . . . . . . . .        11
+    3.4   AI surrogate modeling for CFD . . . . . . . . . . . . . . . . . . . . . . . . . . . .       12
+          3.4.1    Primer on current surrogate modeling paradigms. . . . . . . . . . . . . . .        13
+
+4   From LLM scaling laws to CFD, analogies and differences                                           13
+    4.1   Motivation: Empirical power laws for LLMs . . . . . . . . . . . . . . . . . . . . .         13
+    4.2   CFD is not language . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .       15
+
+5 A new scaling law for CFD foundation models                                                         16
+    5.1   Low-fidelity RANS simulator . . . . . . . . . . . . . . . . . . . . . . . . . . . . .       16
+    5.2   High-fidelity LES simulator . . . . . . . . . . . . . . . . . . . . . . . . . . . . .       18
+    5.3   Implications of the scaling laws. . . . . . . . . . . . . . . . . . . . . . . . . . . .     18
+    5.4   High-fidelity transient LES simulations . . . . . . . . . . . . . . . . . . . . . . .       19
+
+6   Constraining the theory with concrete numbers                                                     20
+    6.1   Explicit compute for representative configurations. . . . . . . . . . . . . . . . . .       20
+    6.2   Assessing scaling behavior . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .      23
+
+7   Open questions and future work for the community                                                  26
+
+8   Conclusions                                                                                       26
+
+
+                                                   2
+1   Introduction
+
+Computational Fluid Dynamics (CFD) is omnipresent, influencing nearly every aspect of modern life.
+From the design of cars (Ashton et al., 2018) and airplanes (Clark et al., 2025), to the simulation of
+blood flow in human bodies (Khalafvand et al., 2011), CFD plays a critical role. Today, this field
+is undergoing a disruptive transformation, moving from expert-driven, human-intensive workflows
+toward a future shaped by AI (Lino et al., 2023; Duraisamy et al., 2018). Historically, the assumption
+was that increasing High-Performance Computing (HPC) resources would be the primary driver of
+progress, enabling a gradual transition to higher-fidelity simulations like Large-Eddy Simulation
+(LES) and Direct Numerical Simulation (DNS). Whilst GPU-accelerated CFD have typically provided
+an order of magnitude reduction in runtime (Appa et al., 2021; Nielsen et al.; Hosseinverdi et al.,
+2025), the rise of AI, exemplified by the widespread impact of ChatGPT (Achiam et al., 2023), has
+introduced a new paradigm. This technological shift, largely absent from CFD discourse (Slotnick
+et al., 2014; Spalart & Venkatakrishnan, 2016) until recently, forces a re-evaluation of how we
+approach complex simulations.
+One of the most promising uses of AI within CFD is the development of AI surrogate models. The
+key advantage of AI surrogate models, trained on prior CFD simulation data, is their ability to make
+real-time predictions. Generating results in under a second on a modest GPU, they are orders of
+magnitude faster and more cost-effective than conventional CFD solvers. Whilst state-of-the-art
+models (Alkin et al., 2025; Wu et al., 2024; Ranade et al., 2025) are approaching the accuracy of
+conventional solvers for specific use-cases, their generalizability remains a key question. To date,
+most industrially relevant publications have utilized small datasets, each tailored to a single use case
+(e.g., road-car aerodynamics) and a specific CFD simulation setup.
+A key question to the CFD and ML communities is whether the development of a foundation model
+for CFD is possible, just like it has been for general purposes AI (ChatGPT (Achiam et al., 2023),
+Gemini (Team et al., 2023)), computer vision (Kirillov et al., 2023; Rombach et al., 2022), protein
+folding (Jumper et al., 2021; Abramson et al., 2024), material design (Merchant et al., 2023; Zeni
+et al., 2025; Yang et al., 2024), or weather/climate (Aurora (Bodnar et al., 2024)). A more specific
+question is “How can foundation models best be framed for CFD?”. This paper aims to answer this
+question.
+We firstly bridge the gap between the machine learning and CFD communities by deconstructing the
+CFD process into its fundamental elements and modeling challenges. This part is written as go-to
+reference for the ML community to understand better the challenges of the CFD community.
+The main contribution of this paper is a novel scaling law that incorporates CFD inputs, providing
+a roadmap for developing and deploying robust foundation models for complex fluid dynamics
+problems from a dataset and model training perspective. We discuss for which parameters the cost
+of data generation is the dominant factor in total compute versus where the cost of model training
+prevails. We conclude that the incorporation of high-fidelity transient data provides the optimum
+route to a CFD foundation model. We also pose open questions regarding optimized data generation,
+online timing, data compression and the co-design of ML and CFD codes.
+
+
+2   Deconstructing the CFD process
+
+An industry-scale CFD simulation is a three-stage computational pipeline that transforms a high-
+dimensional problem definition into low-dimensional engineering insights. This pipeline consists of
+three core elements:
+
+      1. Inputs: This phase translates a physical problem – defined by its geometry, physics models,
+         and boundary conditions – into a discrete mathematical system. The continuous domain is
+         discretized into a computational grid through meshing, and the choice of numerical methods
+         transforms the governing partial differential equations (PDEs) into a large-scale, non-linear
+         system of algebraic equations.
+      2. Compute engine: This is the most resource-intensive phase, dedicated to solving the
+         algebraic system. It typically involves iteratively linearizing the problem and repeatedly
+         solving a large, sparse linear system of the form Ax = b. The choice of algorithm
+
+
+                                                   3
+           (e.g., Krylov subspace methods, Multigrid) is tightly coupled to the underlying hardware
+           architecture (e.g., CPUs or GPUs).
+        3. Outputs: The compute engine yields a high-dimensional raw solution vector. Final quan-
+           tities of interest; such as aerodynamic forces (CL , CD ) or heat transfer coefficients – are
+           extracted by applying post-processing operators, often integrals over a surface or volume.
+           This step distills terabyte-scale raw data into the scalar values that drive engineering deci-
+           sions.
+
+We now detail these steps to highlight the vast input space of a CFD problem, which informs our
+later discussion on foundation models.
+
+2.1     Inputs
+
+2.1.1    Geometry
+In CFD, a physical object is represented as a bounded domain, Ω ⊂ R3 , typically created in a
+Computer-Aided Design (CAD) package (Coons, 1967). The industry standard for encoding Ω is the
+Boundary Representation (B-Rep), which defines the domain by precisely describing its boundary,
+∂Ω. This boundary is decomposed into vertices, edges, and faces, whose geometry is most commonly
+defined using Non-Uniform Rational B-Splines (NURBS) (Piegl & Tiller, 2012).
+For design exploration, the geometry can be further parameterized by a vector of d design variables,
+δ ∈ Rd . In this case, the domain becomes a function Ω(δ), where changes to δ (e.g., airfoil chord or
+pipe radius etc) smoothly deform the geometry by modifying the underlying NURBS control points
+or weights.
+
+2.1.2    Geometry pre-processing and clean-up
+A critical stage in industrial CFD is geometry pre-processing. A raw CAD assembly rarely forms a
+valid computational domain boundary because its boundary, ∂Ω, must be a closed, orientable, “water-
+tight” 2-manifold without self-intersections. Raw CAD models frequently violate these requirements
+with defects like gaps, self-intersections, and non-manifold topology. Resolving these defects is a
+laborious manual process that can take weeks.
+To mitigate this, automated “shrink-wrapping” techniques (Seo et al., 2005) generate a new, approxi-
+mate surface, ∂Ω′ , by projecting a discrete mesh onto the original CAD model. While this yields
+a usable, closed surface, it introduces geometric error and often adds a serial bottleneck into the
+computational process. Consequently, moving from a complex CAD model to a high-fidelity CFD
+simulation without significant manual intervention or geometric approximation remains a major
+challenge and is often not GPU accelerated. This reliance on an exact boundary representation is a
+notable difference from standard computer vision tasks, where representations are often discrete (e.g.,
+pixels or voxels) and the goal is often invariant to geometric transformations.
+
+2.1.3    Physics modeling
+While often framed as solving the Navier-Stokes equations, industrial CFD practice is more complex.
+For flows at high Reynolds numbers (Re), the non-linear convective term leads to turbulence, a
+chaotic state with a vast range of spatial and temporal scales. Directly resolving all these scales via
+DNS is computationally prohibitive, with costs scaling as O(Re3 ), thus making the DNS of complex
+geometries at realistic Reynolds numbers unachievable even with the largest supercomputers available
+today. This necessitates turbulence models, which fundamentally alter the system of equations being
+solved and typically introduce an effective error term between real-life and simulation.
+For a Newtonian fluid with constant density ρ, dynamic viscosity µ, and external force f⃗, these
+equations govern the evolution of the velocity field ⃗u(⃗x, t) and pressure p(⃗x, t):
+                                               
+                                ∂⃗u
+                            ρ       + (⃗u · ∇)⃗u = −∇p + µ∇2 ⃗u + f⃗                         (1)
+                                ∂t
+                                            ∇ · ⃗u = 0 .                                     (2)
+
+
+                                                    4
+Reynolds-averaged Navier-Stokes (RANS). The industrial standard, RANS, decomposes flow
+quantities (ϕ) into mean (ϕ̄) and fluctuating components (ϕ′ )
+
+                                         ϕ(⃗x, t) = ϕ̄(⃗x) + ϕ′ (⃗x, t) .                                  (3)
+
+This introduces an unclosed term, the Reynolds stress tensor, which is modeled – often using the
+Boussinesq hypothesis that relates the Reynolds stress tensor u′i u′j to the mean strain rate via a
+turbulent “eddy” viscosity µt (Launder & Sandham, 2002). The full relationship used to model the
+Reynolds stress tensor is:
+                                                          
+                                             ∂ ūi   ∂ ūj    2
+                            −ρu′i u′j = µt         +         − ρkδij ,                          (4)
+                                             ∂xj     ∂xi      3
+where indices i, j indicate the spatial components of ū(⃗x). Alternatively, RANS can be closed by
+directly modeling each of the Reynolds stresses and a length scale quantity (Launder et al., 1975).
+RANS is computationally affordable but its steady-state approach limits accuracy in flows with
+massive separation (Ashton et al., 2016, 2023) or highly anisotropic flows.
+
+Scale-resolving simulations: LES and hybrid methods. To achieve higher fidelity, LES directly
+resolves large turbulent eddies and models only the smaller sub-grid scales (SGS). This is achieved by
+applying a spatial filter (denoted by e· ) to the Navier-Stokes equations, which isolates the unresolved
+sub-grid scale stress tensor, Tij . Similar to RANS, this unclosed term is most commonly modeled
+using a Boussinesq-like hypothesis, relating it to the filtered strain-rate tensor Tij :
+                                                                               
+                                                                ∂ ũi   ∂ ũj        2
+                               i uj − ũi ũj ) = µsgs
+                     Tij ≡ −ρ(ug                                      +             − ρksgs δij .          (5)
+                                                                ∂xj     ∂xi          3
+
+Here, µsgs is the SGS (eddy) viscosity and ksgs is the SGS kinetic energy, both of which must
+themselves be modeled.
+A common algebraic closure for the SGS viscosity is the Smagorinsky-Lilly model (Smagorinsky,
+1963). This model links µsgs to the local filtered strain rate and the filter size:
+
+                                            µsgs = ρ(Cs ∆)2 |S̃| ,                                         (6)
+
+where:
+
+         • Cs is the Smagorinsky coefficient, a dimensionless model constant (typically ≈ 0.1 − 0.2).
+         • ∆ is the filter width, a length scale related to the grid cell size (e.g., ∆ = (∆x∆y∆z)1/3 ).
+         • |S̃| is the magnitude of the filtered strain-rate tensor, S̃ij .
+
+The filtered strain-rate tensor and its magnitude are defined as:
+                                                                 
+                                               1 ∂ ũi      ∂ ũj
+                                        S̃ij =          +                                                  (7)
+                                               2 ∂xj        ∂xi
+                                               q
+                                        |S̃| = 2S̃ij S̃ij .                                                (8)
+
+The cost is orders of magnitude higher than RANS, particularly for Wall-Resolved LES (WR-
+LES), which requires extremely fine near-wall meshes (y + ≈ 11 ). To mitigate this, strategies like
+Wall-Modeled LES (WMLES) (Larsson et al., 2015) and Hybrid RANS-LES (most commonly the
+Detached-Eddy simulation (DES) variant (Spalart, 2009)) are used that reduces the need for spatial
+   1
+      The parameter y + (pronounced “y-plus”) is a dimensionless distance used to measure the distance of the
+first computational mesh cell center away from a wall. y + ≈ 1 is the viscous sublayer, where the model must
+resolve the strong velocity gradients right at the wall, demanding a very fine mesh near the wall. On the other
+hand, 30 < y + < 100 allows for a wall function approach, where the mesh is coarse near the wall, and the
+model jumps over the viscous sublayer by applying an empirical law-of-the-wall. This is used in many RANS
+and Wall-Modeled LES (WMLES) applications.
+
+
+                                                        5
+resolution (and associated lower time-step choice) in the inner boundary layer. These transient
+simulations require massive meshes (billions of cells) and small time-steps (Kiris et al., 2023).
+The central point is that the engineer’s choice of turbulence model (RANS, LES) and any additional
+physics (e.g., transition, chemistry) results in a different system of PDEs. There is no universal PDE
+for industrial CFD, a fact with profound implications for developing AI surrogates, which must be
+conditioned on these modeling choices.
+
+2.1.4   Meshing
+
+Meshing discretizes the continuous fluid domain Ω into a computational mesh. This step is foun-
+dational for numerical methods and is tightly coupled with the physics and numerical schemes
+chosen.
+The primary methods in CFD – Finite Difference (FDM), Finite Volume (FVM), and Finite Element
+(FEM) – impose different requirements. FDM typically uses structured grids, which are efficient
+but struggle with complex geometries. FVM, the dominant approach in commercial codes, uses an
+integral form of the conservation laws on unstructured cells (e.g., tetrahedra, polyhedra), ensuring
+conservation and geometric flexibility. FEM offers a rigorous mathematical foundation enabling
+high-order methods that achieve high accuracy by increasing the polynomial degree of basis functions
+within elements. However, these methods often require complex, curved meshes to maintain accuracy
+on curved domains.
+Mesh quality, measured by metrics like skewness and orthogonality, directly impacts simulation
+accuracy and stability. Engineers refine meshes in regions of high gradients (e.g., boundary layers,
+shock waves), leading to modern simulations using meshes with hundreds of millions to billions
+of cells. Mesh and discretization convergence assures that these errors tend toward zero as the
+resolution increases. Consequently, the impact of the mesh and the numerical discretization can be
+removed. However, finer meshes are computationally expensive and often infeasible, thus leading
+mesh resolution and design to be a key CFD simulation input. The generation of these massive,
+high-quality meshes is a significant, often CPU-limited, bottleneck.
+
+Mesh-free and Particle-based methods. To circumvent the bottlenecks of grid generation, particu-
+larly for complex, moving geometries or free-surface flows, Lagrangian or particle-based methods
+offer an alternative paradigm. Methods such as Smoothed Particle Hydrodynamics (SPH) (Monaghan,
+1992) or the Lattice Boltzmann Method (LBM) (Chen & Doolen, 1998) (which, while Eulerian,
+utilizes a Cartesian lattice that avoids body-fitted meshing) fundamentally alter the input phase. In
+these frameworks, the domain Ω is discretized into a collection of particles or lattice nodes rather
+than a contiguous mesh. This eliminates the topological constraints of ensuring a watertight, non-
+intersecting grid, effectively removing the mesh generation bottleneck. However, these methods
+introduce their own trade-offs, often requiring significantly higher particle counts to resolve boundary
+layers compared to the stretched cells of a body-fitted RANS mesh.
+
+2.1.5   Numerical method and discretization
+
+Linked to meshing is the choice of a numerical framework to solve the governing equations. This
+requires selecting methods for spatial and temporal discretization. The choice of a spatial scheme for
+fluxes is crucial for stability and accuracy, ranging from simple central differencing to more robust
+upwind schemes. Higher-order schemes (e.g., MUSCL, WENO) are used to achieve greater spatial
+accuracy (Brehm et al., 2015). For temporal integration, the semi-discrete system is solved using
+either:
+
+        • Explicit schemes: Computationally cheap per step but limited by the strict Courant-
+          Friedrichs-Lewy (CFL) stability condition, often requiring millions of time steps for fine-grid
+          simulations. Well suited for WMLES or WRLES methods.
+
+        • Implicit schemes: Unconditionally stable, allowing larger time steps, but requiring the
+          solution of a large non-linear system at each step, making them more computationally
+          intensive per step. Well suited for RANS.
+
+
+                                                    6
+2.1.6    Initial and boundary conditions
+A well-posed system requires a complete set of boundary and initial conditions, which also serve as
+the primary interface for user-driven engineering studies.
+
+Boundary conditions. These prescribe the solution’s behavior on the domain boundary, ∂Ω.
+Common types include Dirichlet (specifying a variable’s value), Neumann (specifying its normal
+derivative), and Robin (specifying a linear combination of the two). Proper specification is critical for
+the solution’s existence and uniqueness. Practically speaking for any given geometry there may be
+hundreds or thousands of potential boundary condition variables e.g an aerodynamic database of an
+aircraft flight envelope.
+
+Initial conditions. For time-dependent problems, the system’s state must be defined at t = 0. A
+good initial condition can significantly accelerate convergence, while a poor one can lead to instability.
+For systems with multiple stable states, the initial condition can determine which solution is found,
+making it a critical parameter for capturing path-dependent phenomena.
+
+2.2     Compute engine
+
+The preceding stages culminate in a large-scale system of coupled, non-linear algebraic equations.
+Solving this system is the most computationally intensive phase of the CFD workflow. For a steady-
+state problem, the goal is to find a state vector Q that satisfies R(Q) = 0. E.g., for an incompressible
+flow the state vector Q = [ux , uy , uz , p]T comprises the velocity vector ⃗u and the scalar pressure p.
+The function R takes the current approximation of Q as input. If Q perfectly satisfies the conservation
+laws (mass, momentum, and energy) in every cell, then R(Q) is zero. In practice, the solver starts
+with a poor guess for Q, and R(Q) is large. The value of R(Q) represents the error or imbalance of
+the conservative flux across each cell boundary. This non-linear system is typically linearized using a
+Newton-like method, which requires iteratively solving a large, sparse linear system. Key iterative
+solvers include:
+
+         • Krylov subspace methods: Krylov subspace methods are the workhorses of modern
+           CFD, including Conjugate Gradient (CG) for symmetric systems and Generalized Minimal
+           Residual (GMRES) or BiCGSTAB for non-symmetric systems.
+         • Multigrid methods (MG): MG methods achieve optimal O(N ) complexity by accelerating
+           convergence using a hierarchy of coarser grids to efficiently damp low-frequency errors.
+
+2.2.1    Hardware architectures
+The co-design of numerical solvers and hardware architecture is critical for performance. The
+evolution from latency-optimized CPU architectures to throughput-oriented GPUs necessitates a
+re-evaluation of algorithmic strategies to maximize computational efficiency (Witherden et al., 2013).
+The suitability of a numerical algorithm for a given hardware architecture can be quantified by its
+arithmetic intensity, I, defined as the ratio of floating-point operations (FLOPs) to the bytes of data
+moved from memory:
+                                                    FLOPs
+                                              I=           .
+                                                     Bytes
+CPU architectures, designed for low-latency execution of serial or complex conditional logic, are
+effective for algorithms with low arithmetic intensity. In contrast, GPU architectures are designed
+to maximize throughput for highly parallel computations. Their performance is most pronounced
+on “compute-bound” algorithms, where I is high and the primary performance limiter is the raw
+floating-point capability of the processor. This relationship is often visualized using a Roofline model
+(Williams et al., 2009), which plots attainable performance (GFLOP/s) against arithmetic intensity.
+This architectural dichotomy directly influences solver selection. Explicit methods on structured
+grids, characterized by local stencil-based operations, exhibit high data locality and high arithmetic
+intensity. High-order methods, even on unstructured grids are dominated by S/DGEMM (single
+or double general matrix-multiplication) operations, which are largely compute bound (Witherden
+et al., 2013; Vermeire et al., 2017). These properties map well to the Single Instruction, Multiple
+Threads (SIMT) execution model of GPUs. This is particularly true for particle-based methods (e.g.,
+
+
+                                                    7
+Figure 1: A Roofline model illustrating the performance regimes for compute-bound and memory-
+bound algorithms on different architectures.
+
+
+
+SPH/LBM), where the absence of a fixed topology and the reliance on local neighbor searches results
+in extremely high arithmetic intensity, often allowing these solvers to utilize the full floating-point
+capability of modern hardware.
+Conversely, implicit solvers present a more complex challenge. Methods like the Generalized Minimal
+Residual Method (GMRES) or Multigrid often involve global reduction operations (e.g., dot products)
+that can be “memory-bound” on GPUs, where the performance is limited by memory bandwidth
+rather than computational speed. However, modern GPU hardware mitigates this bottleneck through
+features such as high-bandwidth memory (HBM) and high-speed interconnects (e.g., NVLink). These
+hardware advancements, combined with the development of communication-avoiding algorithms
+that restructure computations to minimize data movement, have made implicit methods increasingly
+efficient on GPU platforms.
+
+
+2.2.2   Mixed precision
+
+Modern GPUs incorporate specialized hardware, such as Tensor Cores, that offers substantial per-
+formance gains by utilizing mixed-precision arithmetic. There is considerable research at present
+on how best to combine (e.g., FP16 or FP32) with higher precision (FP64) to ensure both numerical
+stability, accuracy and efficiency (Siklósi et al., 2025). In general utilizing lower precision technique
+effectively increases the arithmetic intensity of the algorithm, shifting its position on the Roofline
+plot from the memory-bound to the compute-bound regime.
+In addition, lower precision analysis yields compounding efficiency gains. While traditionally
+applied to error-resilient components like linear solvers, careful implementation of lower precision
+arithmetic can yield acceptable accuracy for a broad spectrum of CFD numerics. Reducing the
+storage requirement per grid element allows for addressing larger computational domains or finer
+meshes without exceeding hardware memory capacities. This reduction also lowers the demand
+on memory bandwidth, effectively shifting operational intensity towards faster tiers of the memory
+hierarchy (e.g., maximizing L1/L2 cache hits versus accessing DRAM). Moreover, this approach
+aligns with the architectural design of modern GPUs, which typically prioritize single precision
+(FP32) performance. Since double precision (FP64) throughput is often a fraction of the FP32 peak
+FLOPS depending on the architecture, avoiding FP64 where possible prevents severe hardware
+underutilization. In scenarios where high precision is strictly required, techniques such as Dekker’s
+method can be employed to improve accuracy, effectively emulating higher precision on standard
+hardware to maintain numerical fidelity
+The result of this hardware-software synergy is a significant increase in computational capability.
+For suitable problems, performance gains exceeding an order of magnitude over CPU-based imple-
+mentations are frequently reported in the literature (Turner et al., 2021; Appa et al., 2021; Nielsen
+et al.; Hosseinverdi et al., 2025). This level of acceleration makes high-fidelity simulations, such as
+WMLES, computationally tractable for routine engineering analysis.
+
+
+                                                   8
+2.3     Outputs
+
+The final stage is post-processing, where the solver’s raw, high-dimensional output is analyzed to
+extract key engineering metrics.
+
+        • Integrated quantities: Metrics like lift (CL ) and drag (CD ) coefficients are calculated by
+          integrating pressure and viscous forces over a surface.
+        • Field data: Analysis often focuses on boundary data like surface pressure distribution or
+          2D cross-sections. 3D flow structures are visualized with iso-surfaces and streamlines.
+        • Higher-order statistics: For scale-resolving simulations like LES, statistics like velocity
+          derivatives and turbulent fluctuations are captured.
+
+High-fidelity methods like WMLES on billion-cell grids create a severe data bottleneck, as saving
+thousands of multi-gigabyte time steps is impractical. The field is increasingly adopting in-situ
+visualization, a co-processing paradigm where analysis and rendering occurs concurrently with the
+simulation, operating directly on data in memory. Only the much smaller, post-processed results
+are saved, enabling analysis of petascale simulations and inspiring the online training of AI models
+which is discussed later in the paper.
+
+2.3.1    Steady-state, time-averaged, and instantaneous quantities
+A critical distinction for generating AI training data is the nature of the CFD solution:
+
+        • A steady-state solution, u(⃗x), is the converged, time-invariant goal of a typical RANS
+          simulation.
+        • An instantaneous solution, u(⃗x, t), is the direct output of a time-accurate simulation like
+          LES.
+        • Time-averaged solutions, ⟨u⟩(⃗x), are generated for scale-resolving simulations by integrating
+          instantaneous data over time, yielding mean performance metrics analogous to steady-state
+          but with the accuracy from the underlying LES-like methods.
+
+The majority of AI surrogate developments have typically only trained on time-averaged or steady-
+state data. This topic will be major focus of our later discussion.
+
+2.4     Summary
+
+In the preceding sections, we’ve systematically detailed the extensive inputs required for a single
+CFD simulation, spanning from the initial geometric definition and meshing, through the choices of
+physics models and numerical methods, to the specification of boundary and initial conditions. Each
+of these elements represents a dimension in the vast conditional space that governs the simulation’s
+outcome. This detailed overview serves to highlight the sheer scale of the challenge and informs our
+subsequent discussion on how foundation models can be structured to navigate this high-dimensional
+input space and learn the intricate mapping from problem definition to engineering insight.
+
+3     AI surrogate modeling for CFD
+AI represents a new disruptive technology that has potential use cases across the input, compute
+engine and output phases of a typical CFD simulation. It can be used in:
+
+        • Development of improved turbulence, transition or chemistry models that plug within a
+          conventional CFD solver
+        • Initialization of CFD solutions to speed up the time to reach a converged or time-averaged
+          solution using an AI surrogate model prediction
+        • Extraction and/or analysis of flow-features using vision models.
+        • Super-resolution tasks e.g map from RANS to LES fields or coarse to fine meshes
+        • AI surrogate models to replace conventional solvers and predict CFD outputs from an input
+          geometry and/or boundary and initial conditions
+
+
+                                                   9
+Whilst all have the potential to improve upon existing CFD methods (see Appendix A for further
+discussion), the use-case with the greatest potential for runtime and cost savings are AI surrogate
+models. When these surrogates are trained with a broad enough training dataset, they are frequently
+referred to foundation models for CFD 2 . This paper is dedicated to helping frame the discussion
+around the development of these models and to provide open key questions to the community.
+
+3.1       AI fundamentals
+
+More traditional machine learning (ML) paradigms, particularly supervised learning tasks, are
+centered on the objective of learning a conditional probability distribution, P (w|v), where v and w
+are sampled from random input and output variables, V and W , respectively. The objective is to
+minimize a loss function L over a fixed dataset D = {vi , wi }N
+                                                              i=1 , such that
+                                    minE(v,w)∼D [L(fθ )(v, w)] ,
+                                          θ
+where fθ is the model parameterized by parameters θ. In stark contrast, foundation models represent
+a paradigm shift, operating on a fundamentally different principle. Instead of being trained to learn a
+specific conditional distribution, foundation models are designed to learn a joint probability distribu-
+tion, P (v, w), across a vast and diverse corpus of data that may span multiple modalities, including
+e.g., text, images, audio, and video. This approach allows the model to develop a deep, generalized
+understanding of the underlying relationships and structures inherent in the data. The objective is
+to learn a latent representation of the world, rather than a task-specific mapping, mathematically
+expressed by modeling the likelihood of the entire dataset, often through a generative process
+                                        maxEz∼D [log Pθ (z)] ,
+                                                  θ
+where z is a sample from the joint distribution of the training data. This approach allows the model to
+capture the complex, multi-modal relationships within the data, leading to a latent representation that
+can be fine-tuned for many different tasks.
+
+Adaption of foundation models to downstream tasks. The training of a foundation model on a
+vast, multi-modal corpus enables it to learn a deep, generalized understanding of the relationships
+between different data types. The goal of adapting a pre-trained foundation model for a specific
+downstream task, is to leverage its pre-existing knowledge of the joint distribution P (v, w). This
+adaptation can be mathematically formulated in two ways:
+          1. Fine-tuning, where some of the model’s parameters are updated using a small, task-specific
+             dataset, Dtask = {(vi , wi )}Mi=1 , with M ≪ N used for pre-training. The objective is
+             to slightly shift the model’s learned joint distribution to approximate a new conditional
+             distribution, P (w|v, task). This can be seen as minimizing a loss function Ltask :
+                                          min
+                                            ′
+                                               E(v,w)∼Dtask [Ltask (fθ′ (v), w)] ,
+                                              θ
+             where fθ′ is the fine-tuned model, and θ′ is an update of the original parameters θ (i.e.,
+             θ′ = θ + ∆θ).
+          2. In-context learning, where the model uses its pre-trained, static joint distribution to infer
+             the correct output for a given input without any change to its parameters. For a given
+             user-specified input, vprompt , the model uses its learned distribution to generate a response
+             wresponse that is probabilistically consistent with the prompt’s context. This can be viewed as
+             an inference process:
+                                            wresponse = arg max P (w|vprompt ) .
+                                                            w
+             Here, the model’s internal representation of the joint distribution P (v, w) is used to condition
+             the output on the new input, demonstrating its zero-shot or few-shot learning capability.
+             Reasoning extends in-context learning by enabling the model to generate a step-by-step
+             explicit thought process to solve a complex problem. The model uses its learned joint
+             distribution to model the intermediate steps required for a logical solution, often presented
+             as a “chain-of-thought”.
+For drawing analogies to CFD workflows, we will mostly use the concept of fine-tuning during this
+paper.
+      2
+    Note that there is broader discussion around foundation models for weather/climate, physics and science in
+general.
+
+
+                                                       10
+3.2       Conditional and joint distributions when modeling CFD
+
+As previously discussed AI surrogates offer the biggest gain in terms of runtime and cost over
+conventional CFD because the inference of a pretrained model to a new flow condition or geometry
+is typically less than a second (compared to many hours with conventional simulations) and can often
+take a geometry or surface mesh as input – bypassing the time-consuming volume mesh generation
+stage.
+When modeling the conditional distribution P (wCFD |vCFD ), it is important to take into account the
+fact that vCFD is a composite parameter vector that depends on several choices 3 within the workflow:
+                       vCFD = [vgeom , vpreprocess , vboundary/initial , vmesh , vphys , vdiscr ] ,          (9)
+where vgeom represents geometry, vpreprocess the geometry preprocessing, vboundary/initial represents the
+boundary/initial conditions, vmesh the meshing topology and resolution, vphys the physics modeling
+(e.g., turbulence model), and vdiscr the numerical discretization. Each of these choices significantly
+influences the resulting output distribution. vgeom , vpreprocess , vboundary/initial , vmesh are continuum vari-
+ables, whereas vphys , vdiscr are categorical variables, i.e., labels on the choices of the turbulence model
+and on the discretization (e.g., central vs upwind scheme).
+For example two of the currently most widely used datasets for automotive aerodynamics CFD are
+the DrivAerML Ashton et al. (2024) and DrivAerNet(++) Elrefaie et al. (2024) datasets. On the
+face of it, they both take an open-source road-car geometry; DrivAer (Heft & Adams, 2012) 4 and
+use CFD to simulate the flow over each, maintaining a constant CFD simulation setup for every
+geometry variation (xgeom ). However if we look closer we can see that each of the CFD inputs
+vpreprocess ,vphys ,vdiscr ,vmesh , vboundary/initial are different, as summarized shown in Table 1.
+
+
+                              Table 1: CFD input space across two datasets.
+                                           DrivAerML                DrivAerNet++
+                    Total simulations      487                      8000
+                    vgeom                  Notchback                [Notchback, estate, fastback]
+                    vpreprocess            Manual ansa              Manual ansa
+                    vphys                  Transient HRLES          Steady-state RANS
+                    vmesh - vol (surf)     160M (9M)                23M (2M)
+                    vboundary/initial      Static wheels            Rotating wheels
+                    vdiscr                 Central/upwind           Upwind
+
+These distinct choices result in two vastly different conditional output distributions and reflect a
+broader question; what contributes to the optimum dataset composition? Is it dataset size, diversity of
+geometry/boundary conditions, or the fidelity of the simulation approach (i.e., sim-real delta)?
+As shown in Figure 2, these different CFD inputs lead to outputs with limited overlap, making a single
+conditional model inadequate to capture both distinct, but partially disjoint distributions. Simply put,
+training a model on both datasets may not ultimately yield a more functional/generalizable model for
+the prediction of a DrivAer-like body.
+
+3.3       Additional data beyond CFD
+
+The question of CFD fidelity and the sim-real gap is important as CFD itself is a numerical approxi-
+mation of the Navier-Stokes equations that in turn represent the real-world nature of fluid movements
+for a given set of initial and boundary conditions. Thus, the conditional distribution of Equation (9)
+can be reduced to
+                                 vexp = [vgeom , vboundary/initial , vexp-setup ] .
+
+This can be explained by the vmesh , vpreprocess , vphys , vdiscr all being CFD related inputs that are removed
+when we consider experimental setups where there is no modeling of the physics. An additional term
+      3
+   We note that this is not an exhaustive list of potential inputs
+      4
+   The DrivAerNet++ contains three variants of the DrivAer; notchback, fastback and estate but we restrict our
+comparison here to just the notchback which they both have in common
+
+
+                                                           11
+                                                Distribution of drag coefficient (Cd)
+                                                      (Notchback models only)
+                                                                                                       Cd DrivAerNet++
+                                                                                                       Cd DrivAerML
+                    25
+
+
+                    20
+          Density
+                    15
+
+
+                    10
+
+
+                     5
+
+
+                     0   0.20     0.22         0.24        0.26           0.28     0.30         0.32            0.34
+                                                          Drag coefficient (Cd)
+
+Figure 2: Drag coefficient distribution for the DrivAerML and DrivAerNET++ datasets. Dark yellow
+areas represent points of overlapping drag coefficient.
+
+
+does arise which is the error related to the exp-real gap i.e the influence of the wind-tunnel walls, the
+way the object is mounted in the wind-tunnel etc.
+Thus, one could conclude that to reduce the CFD input space one should focus on experimental data.
+However whereas a CFD simulation produces a continuous solution over the entire spatial domain
+Ω ∈ R3 , with outputs vCFD (⃗x) for spatial positions ⃗x ∈ Ω, additional data from real-world measures
+is challenging for a number of reasons. Firstly, physical tests (i.e., flight tests, road-tests, in-situ
+data) are typically sparse in data, meaning only data is available at specific points in the flow domain.
+Consequently, real-world physical tests provide data at a discrete and finite set of NP measurement
+points P = {mi }N  i=1 , and the data is often constrained to the surface ∂Ω or specific 2D planes using
+                     P
+
+techniques such as particle image velocimetry (PIV) (Raffel et al., 2018; Adrian & Westerweel, 2011).
+Additionally, there are typically areas which are hidden from view, i.e., underneath a car.
+Secondly for real-world tests (i.e not wind-tunnels) a major challenge is the variability of flow
+conditions. Real-world tests introduce variability that is difficult to control. This variability means
+that two tests run under seemingly identical conditions, vtest , will not produce the exact same
+results. Assuming that the flow condition vflow is drawn from a probability distribution vflow ∼
+P (vboundary/initial ), i.e.,
+                                P (w|v) = Evflow ∼P (vboundary/initial ) [P (w|vgeom , vflow )] ,
+an ensemble of tests would be required given the nature of flow speeds, cross-winds and errors in
+measurement equipment itself.
+
+3.4   AI surrogate modeling for CFD
+
+Generally speaking, a surrogate (Forrester et al., 2008) (also known as a surrogate model or emulator)
+is a model that approximates the behavior of a more complex or computationally expensive system.
+Surrogate models act as a stand-in for simulations, physical experiments, or mathematical models
+that are too slow, costly, or difficult to run repeatedly.
+As discussed previously a major challenge is that a single AI surrogate model is often not general
+enough to capture the different distributions that arise from distinct choices within the CFD pipeline.
+Mathematically, training an AI surrogate involves learning a function Ĝ that approximates the true
+solution operator G of either the governing PDE, or the input-output mapping specified by user
+choices (e.g., meshing or discretization). The core objective is thus to find a model Ĝ such that the
+conditional distribution P (wCFD |vCFD ) is approximated:
+
+                                            P (wCFD |vCFD ) ≈ P (Ĝ(vCFD )) ,
+
+
+                                                                  12
+where any combination of the composite parameter vector vCFD according to Equation (9) can be
+input the surrogate. For example, in most current CFD datasets, the turbulence model (part of vphys ),
+the meshing procedure vmesh and the discretization vdiscr are fixed.
+
+3.4.1       Primer on current surrogate modeling paradigms.
+The first wave of AI surrogates for CFD were based on architectures like Graph Neural Net-
+works (GNNs) (Kipf & Welling, 2017; Pfaff et al.), Convolutional Neural Networks (CNNs) (e.g.,
+UNet) (Ronneberger et al., 2015; Gupta & Brandstetter, 2022; Raonic et al., 2023; Tompson et al.,
+2022; Guo et al., 2016), and Fourier Neural Operators (FNOs) (Li et al., 2020a, 2023c). Many
+of these models are realizations of the neural operator learning paradigm (Lu et al., 2019, 2021;
+Li et al., 2020b,a; Kovachki et al., 2021; Bartolucci et al., 2023; Alkin et al., 2024; Ranade et al.,
+2025), where the network learns a mapping between infinite-dimensional input and output function
+spaces, i.e., P (vCFD |uCFD ). Recently, there has been a surge in transformer-based (Vaswani et al.,
+2017) surrogates, reflecting their success in other scientific domains such as protein folding (Jumper
+et al., 2021; Abramson et al., 2024) and weather modeling (Bi et al., 2023; Bodnar et al., 2024).
+Examples of these models include OFormer (Li et al., 2022), Transolver (Wu et al., 2024; Luo et al.,
+2025), AB-UPT (Alkin et al., 2025), scOT Herde et al. (2024) and GAOT Wen et al. (2025). These
+architectures extend the neural operator paradigm by leveraging attention mechanisms to effectively
+integrate information across different spatial locations and scales, using self-attention, cross-attention,
+or perceiver blocks (Jaegle et al., 2021b,a).
+Physics-Informed Neural Networks (PINNs) (Raissi et al., 2019) represent a different learning
+paradigm, integrating the governing physical laws of a system directly into the neural network’s
+learning objective. This is achieved by including a physics-based term in the loss function, which is
+minimized during training via backpropagation with respect to the input coordinates. So far, PINNs
+have not been successfully applied to complex large-scale problems such as external aerodynamics.
+The primary input for an AI surrogate is the geometry of the physical system, representing the object
+in the computational domain, often represented as a high-fidelity volumetric mesh and the boundary
+conditions. Mathematically, this mesh represents a discrete sampling of the domain, Ω ∈ R3 , and
+its boundary, ∂Ω. The input to the neural network can be conceptualized as a set of NP discrete
+data points, P = {⃗xi }N  i=1 , where each point ⃗
+                            P
+                                                   xi is a vertex in the mesh and is associated with a
+specific feature vector. A more advanced input approach could be the use of raw computer-aided
+design (CAD) geometry. This bypasses the need for the computationally expensive meshing process
+and could be handled by a network that operates on a point cloud or a signed distance function
+representation of the geometry. The outputs of AI surrogates are the predicted fields and integral
+quantities of the fluid flow: (i) typical fields such as pressure or velocity fields are scalar and vector
+fields, respectively, defined over the boundary of the geometry or in the 3D volume; (ii) important
+engineering outputs are the integral quantities derived from the pressure and viscous stress fields over
+the object’s surface.
+Generalization of AI surrogates can occur across different axes of the composite parameter vector
+vCFD of Equation (9), e.g., across geometry variants, inflow conditions, meshing schemes, etc.
+
+4         From LLM scaling laws to CFD, analogies and differences
+Before moving to the topic of foundation models for CFD, we will first discuss the broader develop-
+ment of LLMs, that we will later use to compare and contrast to similarities and differences in the
+context of developing such models for CFD.
+
+4.1       Motivation: Empirical power laws for LLMs
+
+The modern understanding of AI scaling is largely built upon the seminal work on Transformer-based
+large language models (LLMs) (Vaswani et al., 2017; Radford et al.). Research has empirically
+demonstrated that the performance of these models, typically measured by the cross-entropy loss (L)
+5
+  on a held-out test set, scales as a predictable power law with three primary factors: the model size
+      5
+    The idea is that models with a lower loss are likely more capable and perform better on downstream tasks as
+well.
+
+
+                                                      13
+(M ), defined as the number of non-embedding trainable parameters; the dataset size (D), measured
+in tokens; and the total training compute (C) (Kaplan et al., 2020; Hoffmann et al., 2022).
+This relationship, which holds across many orders of magnitude, can be mathematically formulated
+as an additive model where the total loss is the sum of an irreducible loss floor and error terms that
+decay with model and dataset size:
+
+                                                                    
+                                                 A                B
+                                L(N, D) ≈                 +                + L0                     (10)
+                                                 Mα               Dβ
+
+In this formulation, A, B, α, and β are constants determined empirically for a given model family
+and data distribution. The term L0 represents the irreducible loss, an asymptotic performance limit
+corresponding to the entropy of the true data distribution. This law’s predictive power has been
+a cornerstone of modern AI development, establishing a clear strategy: to achieve breakthrough
+performance, one must scale up model size, dataset size, and compute in tandem (Hoffmann et al.,
+2022).
+Beyond text, the scaling law methodology was successfully applied and validated in computer
+vision (Zhai et al., 2022; Dehghani et al., 2023), leveraging the properties of Vision Transformers
+(ViT) (Dosovitskiy et al., 2020). Modern LLMs such as Gemini (Team et al., 2023) or GPT (Achiam
+et al., 2023) have evolved beyond text-only capabilities and are now inherently multi-modal.
+
+The “20:1 rule of thumb”. Kaplan et al. (2020) found that it seemed to be more effective to allocate
+a larger portion of the increased compute budget to growing the model size rather than the dataset
+size. This leads to a “bigger is better” paradigm. However, this was challenged and widely replaced
+by the Chinchilla scaling laws (Hoffmann et al., 2022) where in contrast to Kaplan et al. (2020) the
+core assumption is that for compute-optimal training, the model size and the number of training
+tokens should be scaled proportionally and in a balanced manner. This led to the now-famous “20:1
+rule of thumb”, which suggests that for a given compute budget, a model’s parameter count should be
+roughly proportional to its training data size, specifically requiring about 20 training tokens for every
+model parameter. Scaling the number of parameters happens by two processes: (i) by increasing the
+number of layers allows which the model to learn more complex, hierarchical representations of the
+data; (ii) increasing the hidden dimension (the size of the internal representations) which allows the
+model to capture richer features within each layer.
+
+The “All Data is Seen Only Once” assumption. A key, often unstated, assumption in the Chin-
+chilla scaling laws and much of the related research is the idea of training for one epoch, or seeing
+all the training data only once. This assumption is crucial because it ensures that performance gains
+are coming from the scale of the model and data, not from repeatedly showing the model the same
+information. In practice, models are often trained for multiple epochs, especially when data is limited,
+but the ideal scaling laws are based on this single-pass scenario to prevent the model from simply
+memorizing the training data. This assumption also ties into the concept of compute-optimal training:
+if you have a fixed compute budget, it’s more efficient to train a smaller model on more data (and
+thus for more time) than to train a massive model on a small dataset for a shorter time.
+
+The analogy for documents and tokens in CFD. The training of Large Language Models
+(LLMs) relies on extensive document corpora (e.g., RedPajama (Weber et al., 2024), the FineWeb
+datasets (Penedo et al., 2024), or DataComp-LM (Li et al., 2024)), which are tokenized into sequences
+for training. A crucial finding in this domain is that document diversity is a key determinant of a
+model’s performance (Touvron et al., 2023). Analogously, similar scaling principles should emerge
+for AI models for Computational Fluid Dynamics (CFD). In this context, e.g., input variation (see
+Equation (9)) can be viewed as a “document”, with different subsets of the simulation mesh serving
+as training sequences. This approach mirrors the LLM scaling law analogy with two primary tenets:
+(i) each subset of the simulation mesh is processed only once, ensuring data efficiency (e.g., each
+DrivAerML dataset geometry can be easily cut in 1000 different subsets with 100k mesh points each,
+which is sufficient to train proper surrogates (Alkin et al., 2025; Li et al., 2023c)); and (ii) input
+diversity is a primary factor in fostering model performance, directly paralleling the role of document
+diversity in LLMs.
+
+
+                                                   14
+The analogy for context in CFD. Transformer-based LLMs operate fundamentally by processing a
+sequence of input tokens to predict the next most probable token. This process is critically dependent
+on the model’s context, defined as the full sequence of tokens provided as input. The context acts as the
+model’s working memory, providing a rich, dynamic dataset from which to infer patterns, facts, and
+stylistic cues. At inference time, the quality and content of the prompt 6 directly influence the model’s
+performance. A well-known heuristic for effective prompting is to first provide the model with
+general, domain-specific information before asking a specific question. This method, often referred
+to as “priming” enriches the context, allowing the LLM to access and leverage relevant knowledge
+embedded within its vast parameter space. This principle of context-dependent performance is
+directly mirrored in advanced pretraining strategies. Modern LLMs are not trained with a single, fixed
+context length. Instead, they often undergo a staged pretraining process where the context window is
+progressively increased (Grattafiori et al., 2024).
+It is however important to note that LLMs do not receive explicit metadata about the source of the
+documents they process (e.g., whether the text originates from Wikipedia, Reddit, or a scientific
+journal). Instead, the model’s understanding of a document’s source and style is derived implicitly
+from the contextual cues present in the text itself.
+In stark contrast to LLMs, the training task for AI surrogates for CFD is fundamentally different.
+Unlike LLMs, CFD surrogates require an explicit parameter vector to define the properties of the
+underlying simulation. While geometric variations can be encoded through the input mesh, crucial
+simulation parameters such as preprocessing schemes, boundary and initial conditions, meshing
+procedures, physics models (e.g., RANS vs. LES), and numerical discretizations cannot be implicitly
+inferred. For these models, information that sets the scene for a given data point – analogous to an
+LLM’s understanding of a document’s source from its context – must be provided explicitly to ensure
+accurate training and generalization across multiple datasets.
+
+
+4.2        CFD is not language
+
+The above discussion clearly indicates that many aspects of LLM training and inference, particularly
+scaling laws, may be transferred to foundation models for CFD. However, CFD is not natural
+language as there are fundamental differences between the two domains.
+To begin with, all LLMs rely on the paradigm of autoregressive next token prediction, given an input
+sequence of tokens (context window), notwithstanding recent developments in discrete diffusion (Nie
+et al., 2025). These tokens are the outputs of a tokenization process that converts text (images, videos
+etc in multi-modal models) into a set of discrete, quantized entries in a codebook (Sennrich et al.,
+2016). During training, the objective is to minimize the cross-entropy loss between the distribution of
+the predicted tokens and the ground truth token distribution. All the scaling laws for LLMs are based
+on the scaling of this specific loss function, defined over distributions of quantized tokens.
+On the other hand, all the state-of-the-art AI models for CFD and for physics, in general, follow
+a very different paradigm. The inputs to the models are continuous objects (functions/fields over
+space and time) as denoted by the input vector in Equation (9) and the corresponding outputs are also
+continuous functions. The tokenization process in this setting converts these continuous inputs into
+continuous tokens in suitable latent spaces, for instance through embedding patch tokens Dosovitskiy
+et al. (2020). The training aims to minimize mismatches between the model predictions and the
+ground truth outputs, as measured by continuous norms such as root mean square error (RMSE)
+or mean absolute error (MAE). This framework is exemplified by the growing class of Physics
+Foundation Models McCabe et al. (2024); Hao et al. (2024); Herde et al. (2024); McCabe et al. (2025)
+etc. However, these models almost exclusively focus on inputs and outputs on Cartesian grids and are
+not suited for industrial scale 3D CFD learning tasks.
+Given this fundamental divergence of paradigms between LLMs and CFD, it is only natural to
+investigate whether scaling laws, analogous to the ones derived for LLMs, also hold in the setting of
+foundation models for CFD? And secondly, what are the similarities and differences between the
+derived scaling laws? We explore these questions below.
+
+
+      6
+          Note that the context and prompt are not the same thing.
+
+
+                                                           15
+5         A new scaling law for CFD foundation models
+Our aim in this section is to demonstrate how scaling laws for a potential CFD foundation model im-
+pact data generation and model training. To this end, we start with Equation (9), where the inputs for
+any CFD process are described. These include not just continuum inputs such as initial/boundary con-
+ditions, domain geometry etc but also categorical variables, i.e., the underlying physics (turbulence)
+model and the mesh discretization/numerical method etc. To model a representative configuration,
+we will fix the categorical variables and vary the input vCFD only over the continuum variables and
+for notational simplicity, we denote the resulting input variable by v. Then, the input-to-output
+ground truth map is given by S : v 7→ w. Here, w refers to a steady-state or (long) time-averaged
+realization of the underlying flow field. This map corresponds to either a full-scale resolving DNS
+or experimental data and our objective is to approximate/learn this map. To do this, we have to
+specify the categorical variables. To cover representative cases, we consider the following two sets of
+variables: underlying turbulence model, and resulting mesh discretization/numerical method.
+
+5.1        Low-fidelity RANS simulator
+
+In this case, we assume that a steady-state RANS type turbulence model is used for simulating the
+physics. We denote this CFD model by Sr and assume that
+                                                    ∥S − Sr ∥ ∼ ϵr .                                             (11)
+Here, ∥.∥ refers to an operator norm, taken in expectation (average) over the entire population of
+instances (samples) of fluid flow and ∼ denotes equality up to a constant. Note that ϵr is the smallest
+(minimum) error that the model Sr can yield.
+
+Cost of data generation We need to discretize the governing RANS equations with a suitable
+numerical method of sufficient mesh resolution (mesh converged numerical simulation) to achieve
+errors ∼ ϵr . To this end, we fix a mesh size ∆r . The resulting number of spatial cells or volumes
+is denoted by Vr ∼ ∆−3  r
+                            7
+                              . We assume that the numerical model approximating Sr scales with
+                                                                                   1
+                                                                                                 −3
+respect to the underlying mesh size ∆r as ϵr ∼ ∆γr . Thus, ∆r ∼ ϵrγ and Vr ∼ ϵr γ . As an implicit
+iterative method is used to compute the steady state flow field, the number of iterations or pseudo
+time-steps is given by Tr , which is dictated by the ability of the underlying linear solver to reach
+suitable convergence.
+On the other hand, the computational cost scales as a product of the number of cells and the number
+of iterations resulting in,
+                                                                         −3
+                                              Cr ∼ fr Vr Tr ∼ fr Tr ϵrγ .                                        (12)
+
+Here, Cr is the computational cost of generating a single realization (sample) of the flow field with
+the simulator Sr , given a fixed set of continuum inputs v in Equation (9), and fr denotes the flops per
+cell per step, a key attribute of computational complexity that is discussed later in Appendix B.
+For an ideal steady-state RANS simulation, Tr in (12) will be independent of mesh size as the goal of
+an ideal preconditioner is to keep the number of iterations constant, with respect to increasing mesh
+size. Such an ideal situation may be realized for Poisson-type solvers with (algebraic) multi-grid
+preconditioners. However, in practice, one has to use efficient ILU type preconditioners, where the
+number of iterations grows mildly with respect to increasing mesh size. To model these factors, we
+introduce an exponent 0 ≤ κ << 1 and set that Tr ∼ ∆−κ    r . Empirically, an exponent of κ ≈ 0.2 is
+observed for preconditioned Generalized minimal residual method (GMRES) solvers for CFD. With
+this ansatz, the asymptotic cost of data generation (per sample) scales as,
+                                                                      −(3+κ)
+                                                                        γ
+                                              Cr ∼ fr Vr Tr ∼ fr ϵr            .                                 (13)
+
+Cost of model training To train an AI model for acting as a surrogate for the RANS simulator Sr ,
+we generate Nr samples with the aforementioned data generation pipeline. The corresponding AI
+model of size Mr (number of trainable parameters) is denoted by Srθ . We call it the low-fidelity AI
+      7
+          It is noted that industrial meshes will not have uniform resolution in all three spatial dimensions.
+
+
+                                                             16
+model as it is trained on low-fidelity RANS simulations. The cost of training this model, denoted by
+CrT is given by the relation,
+                                       CrT ∼ nfe (Ir + Mr )Nr ,                                    (14)
+with n being the number of strides (epochs) of the dataset during training, fe the flops per epoch (see
+below) and Ir denoting the input size to the model. This input size is proportional to the the number
+of nodes or edges in (a downsampled version) of the underlying input graph. We are assuming
+a encode-process-decode framework and an additive input size model for the encoder cost in the
+compute cost relation of Equation (14). Such an assumption is valid for UPT (Alkin et al., 2024),
+GAOT (Wen et al., 2025), or GINO (Li et al., 2023b) type models, i.e., models that use a locality
+based encoding that is similar to or based upon patching as introduced in ViTs (Dosovitskiy et al.,
+2020)). We see from Equation (14) that the encoder costs scales as input size and the processor cost
+as model size.
+To further quantify the input size, we observe that the number of nodes are proportional to the number
+of spatial cells (volumes), given by Vr ∼ ∆−3r . The number of edges is also proportional to the same
+                                                                         −3
+quantity. Therefore, the discussion above implies that Ir ∼ ϵr γ . It is essential to note that although
+they might be proportional, Ir ̸= Vr , in general.
+
+Scaling law for the low-fidelity AI model Empirically, with some theoretical backing Lanthaler
+et al. (2022); Ryck & Mishra (2022), one can show that there exist AI models such that the following
+scaling laws hold for approximating the low-fidelity RANS simulator,
+                                                    1      1
+                                   ∥Sr − Srθ ∥ ∼ α + β .                                         (15)
+                                                   Mr     Nr
+Here, Mr is the model size and Nr is the dataset size, measured here by the number of training
+samples. We are assuming an asymptotic regime of large enough model and dataset sizes such that
+Equation (15) holds.
+We can equilibrate the two terms in Equation (15) by setting,
+                                                          β
+                                              Mr ∼ Nrα .                                             (16)
+Consequently, the resulting error is
+                                                                1
+                                          ∥Sr − Srθ ∥ ∼              .                               (17)
+                                                              Nrβ
+Now, we can obtain the following ground-truth error,
+                   ∥S − Srθ ∥ ∼ ∥Sr − Srθ ∥ + ∥Sr − Srθ ∥ by triangle inequality
+                                        1                                                             (18)
+                              ∼ ϵr + β , by Equation (11) and Equation (17) .
+                                       Nr
+It is clear from the above equation that an AI model of size Mr given by Equation (16) with Nr
+training samples can obtain a test error of size ϵr (and no smaller error), provided that the dataset size
+and model size are chosen as,
+                                              −1                    −1
+                                       Nr ∼ ϵr β ,     Mr ∼ ϵr α .                                   (19)
+Substituting Mr , Nr from Equation (19) into Equation (14) and also the asymptotic form of Ir , we
+obtain the model training cost as,
+                                  1
+                                                                    3β
+                                                                          
+                        T      −β       1
+                                       −α    − γ3               β
+                                                                        γ
+                      Cr ∼ nϵr        ϵr + ϵ r      ∼ nfe Nr Nr + Nr
+                                                                α
+                                                                            .                 (20)
+
+Here, the last estimate follows from (19) by expressing compute in terms of the number of training
+samples, rather than the error.
+On the other hand, we observe from (13) that the data generation cost scales as,
+                                                     (3+κ)                         (3+κ)β
+                                               −(           1
+                                                           +β   )             1+
+                          CrD ∼ Cr Nr ∼ fr ϵr          γ
+                                                                    ∼ fr Nr           γ
+                                                                                            .        (21)
+
+These scaling laws are also summarized in Table 2
+
+
+                                                     17
+Table 2: Complexity for training different AI models for CFD, comparing surrogates of low-fidelity
+(LF), high-fidelity (HF), and high-fidelity transient (HF-T) CFD simulators. All the quantities are
+defined in Section 5.
+   Model           Error       Model size Dataset size              Total compute
+                                                                                                  (3+κ)β
+                                          β
+                                                                     1+ β      1+ 3β          1+
+  Srθ (LF)       ϵr ∼ Nr−β      Mr ∼ Nrα          Nr        nfe Nr α + Nr γ + fr Nr        γ
+
+                                                                                 
+                                          β
+                                                                     1+ β   1+ 3β      1+ 4β
+  Sℓθ (HF)       ϵℓ ∼ Nℓ−β      Mℓ ∼ Nℓα          Nℓ          nfe Nℓ α + Nℓ γ + fℓ Nℓ γ
+                                                                                  
+                                          β
+                                                                      1+ β   1+ 3β      1+ 4β
+Stθ (HF-T) ϵℓ ∼ (δK Ñℓ )−β Mt ∼ Ñℓα             Ñℓ        nfe K Ñℓ α + Ñℓ γ + fℓ Ñℓ γ
+
+
+5.2   High-fidelity LES simulator
+
+As a second configuration, we consider a high-fidelity LES simulator, that we denote by Sℓ and
+assume that
+                                            ∥S − Sℓ ∥ ∼ ϵℓ .                                      (22)
+Note that the output of Sℓ is the time-averaged flow field wℓ . The key difference between the RANS
+simulator Sr and the LES Simulator Sℓ lies in the fact that ϵℓ < ϵr as, in general, LES models can
+capture flow phenomena more accurately than RANS models. Consequently, it also require a finer
+mesh size ∆ℓ for the underlying (mesh-converged) numerical method. An AI model Sℓθ , of size
+Mℓ , can be trained on Nℓ samples of this high-fidelity simulator. The corresponding scaling laws
+that relate error and cost can be derived, entirely analogously to the previous subsection, by simply
+replacing the index r by the index ℓ.
+Additionally, a key difference between the LES and RANS simulations lies in the time-stepping
+strategy. In contrast to the RANS configuration, where the steady state is directly computed using
+an iterative method, it is common to run a transient LES simulation and obtain the time-averaged or
+long-time limit fields as the steady state output. Consequently, we need to assume that Tl ∼ ∆−1r ,
+due to a CFL condition, resulting in Equation 23 (instead of (13) for RANS),
+
+                                                            −4
+                                       Cℓ ∼ fℓ Tℓ Vℓ ∼ fℓ ϵl γ .                                     (23)
+The final scaling laws for this model, expressed in terms of the dataset size, are summarized in Table
+2.
+
+5.3   Implications of the scaling laws.
+
+Given the above scaling laws, we can already derive the following implications,
+
+Processor dominates encoder in training costs.       We see from Table 2 that the processor cost scales
+    1+ β                                  1+ 3β
+as Nℓ,r α and the encoder cost scales as Nℓ,r γ . Hence, as long as 3α < γ, the processor dominates
+the encoder in terms of their relative contributions to the training cost. This regime clearly holds as
+γ ≈ 1 (rate of convergence of numerical method) while α ∈ [0.2, 0.3], as empirically observed in
+Herde et al. (2024); Wen et al. (2025) and references therein.
+
+Relative balance between model training costs and data generation costs. We begin with an
+analysis of the relative contributions of the costs of model training and data generation in the case of
+the high-fidelity AI model. Under the realistic assumption that the processor dominates the encoder
+in the model training costs, we obtain the following balance relation from Table 2
+                                    CℓT   nfe β ( α1 − γ4 )
+                                        ∼    N              .                                        (24)
+                                    CℓD    fℓ ℓ
+Hence, we have the following two cases,
+      (i.) 4α ≥ γ: In this case, the error of the AI model converges quite fast in model size. Conse-
+           quently, it follows from Equation (24) that CℓT < CℓD as long as nfe < fℓ . Hence, data
+           generation costs will dominate model training costs in this case.
+
+
+                                                  18
+      (ii.) 4α < γ: In this case, the error of the AI model converges relatively slowly in model size.
+            Consequently, CℓT < CℓD only if,
+                                                          αγ
+                                                       fr β(γ−4α)
+                                              Nℓ ≤                 .                             (25)
+                                                      nfe
+            Beyond this critical number of training samples, the model generation costs will dominate
+            as long as nfe ≤ fr .
+Thus, a careful analysis of the scaling laws derived here show that in the realistic case of slow
+convergence with respect to model size, we can expect that the data generation costs will dominate
+the model training costs till a critical number of samples are reached. Once this limit is breached, the
+model training costs will start to dominate the cost of data generation. However, the exact number of
+training samples is clearly problem dependent.
+A similar analysis can be repeated for the low-fidelity model, leading to the same conclusions but the
+case separation condition reads (3 + κ)α < γ in this case. This condition is even more likely to hold
+as κ << 1.
+
+Training with high-fidelity simulations is more accurate but more expensive than low-fidelity
+simulations. It is clear from Table 2 that one can at most reach a test error of size ϵr with the AI
+model Srθ , trained on the low-fidelity simulations. One cannot reach a test error of size ϵℓ with this
+model.
+On the other hand, one can reach a test error of size ϵℓ with the AI model Sℓθ , trained on high-fidelity
+simulations. However, this model will clearly be more expensive.
+To compare the costs, we assume, for the simplicity of analysis, that the data generation costs
+dominate over the model training cost and divide the corresponding entries of the last columns in
+Table 2, using the simplified cost model of Equation (12) to obtain
+                                     ( β1 + 3+κ
+                                                γ )
+                                                       ( β1 + 1−κγ )
+                              Cℓ      ϵr                1
+                                  ∼                 +                   .                           (26)
+                              Cr      ϵℓ                ϵℓ
+Thus, for any values of β, γ, 0 ≤ κ ≤ 1, Cℓ > Cr as 1 > ϵr > ϵℓ . In fact, the cost differential
+between training the two models grows as a (large) power of the relative error ratio. A similar analysis
+can be repeated in the case where the model training costs dominate.
+
+5.4    High-fidelity transient LES simulations
+
+We recall that the high-fidelity LES simulation actually approximates a transient flow field {⃗u(tn )},
+sampled at time snapshots tn with n = 1, 2, . . . , N . Thus, each high-fidelity simulation actually
+contains the trajectory of the evolution of the fluid state. These simulations are either averaged in
+time or a long-time limit is taken to obtain the steady-state output, as considered in the previous
+section. This observation naturally raises the question: can one leverage the fact that the high-fidelity
+simulations provide transient information to scale the high-fidelity AI model better? We attempt to
+answer this question below.
+First, we observe that the underlying learning problem is different for both cases. The underlying
+operator in the low fidelity case S : v 7→ w, provides a single functional output w for the given input
+v. On the other hand, the underlying operator in the transient case is given by St : v 7→ w(t), which
+maps the input v (which includes the initial conditions v(0)) into a time-dependent output w(t), for
+t ∈ [0, T ]. In practice, this output is sampled at discrete time points tn , implying that the operator
+maps St : v 7→ {w(tn )}, for n = 1, 2, . . . , N . By concatenating all the snapshots into a vector
+⃗ = {w(tn )}, we identify the underlying operator as St : v 7→ w.
+w                                                                  ⃗ Hence, there is a clear distinction
+between learning S and learning St . They are related by
+                                                          ZT
+                                                        1
+                                   lim St = S, or            St dt ∼ S .                            (27)
+                                  t→∞                  T
+                                                         0
+
+We assume that the high-fidelity LES simulations, denoted by Stℓ can approximate St in terms of
+                                           ∥St − Stℓ ∥ ∼ ϵℓ .                                       (28)
+
+
+                                                   19
+Here, the norm ∥.∥ clearly involves time-dependent quantities and requires integrating over time.
+                                                                                    ⃗ i = {Stℓn (vi )}N
+                                                     ⃗ i ) for all 1 ≤ i ≤ N , with w
+The corresponding data to learn St is given by (vi , w                                                n=1 .
+We observe that the trajectory data need not be saved at every single time-step of the underlying
+numerical simulation, but at representative time steps.
+The AI model trained on this time-dependent trajectory data is denoted as Stθ . During its training, it
+sees the trajectories either in an autoregressive manner (Bi et al., 2023; Lam et al., 2023; Brandstetter
+et al., 2022; Bodnar et al., 2024) or using specialized techniques such as all2all training (Herde et al.,
+2024), in which one can train the model to minimize the loss function
+                                XX
+                                        L wi (tk ), Stθ (wi (tj ), tk − tj ) .
+                                                                            
+                                                                                                    (29)
+                                  i   j<k
+
+Thus, given the data at time step tj and the lead time tk − tj , the AI model is trained to predict the
+“velocity field” wi (tk ) = Stℓk (ui ), at a later time tk . In principle, this implies that for the same sample,
+indexed here by i, the AI model Stθ sees K effective copies of the data with 1 ≤ K ≤ (Ñℓ (Ñℓ +1))/2
+We can hypothesize the following (corrected) scaling law for sufficiently large model size (see also
+Herde et al. (2024)):
+                                                       1
+                                     ∥Stℓ − Stθ ∥ ∼ β β .                                       (30)
+                                                    δK Ñℓ
+with δK being a compression term that measures how fewer samples are needed to obtain the same
+error when the model has been trained on full trajectories, rather than only on the steady state or
+time-average.
+Thus the number of effective samples and model size to obtain the desired error scale as,
+                                                  −1
+                                                 ϵβ                      β
+                                            Ñℓ ∼ ℓ ,        Mt ∼ Ñ α .                                    (31)
+                                                  δK
+
+The cost of training this transient model Stθ is given by
+                                                                                              
+                                     K     −( α1  1
+                                                 +β )     −( γ3 + β
+                                                                  1
+                                                                    )                β
+                                                                                  1+ α     1+ 3β
+                                                                                               γ
+ C̃T ∼ nfe (Mt + Iℓ )(K Ñℓ ) ∼ n         ϵℓ          + (ϵℓ             ∼ nfe K Ñℓ    + Ñℓ        .
+                                     δK
+                                                                                                  (32)
+On the other hand, the data generation cost scales as,
+                                                             1+ 4β
+                                                                 γ
+                                               C̃D ∼ fℓ Ñℓ          .                                      (33)
+The total cost is summarized in the third-column of Table 2.
+We readily observe from Table 2 that the high-fidelity transient model is clearly cheaper than the
+high-fidelity time-averaged model, when the data generation costs dominate as Ñℓ < Nℓ . In the
+asymptotic regime where the model training costs, we see that the high-fidelity transient model
+                                                                                                  1+ β
+continues to be cheaper to train than the high-fidelity time-averaged model as long as δK α > K.
+
+6     Constraining the theory with concrete numbers
+The theory presented thus far yields interesting qualitative conclusions regarding the training of
+a foundation AI model for CFD; however, we also aim to establish quantitative cost estimates.
+Obtaining precise figures is challenging, as the bounds provided in Table 2 hold only up to a generic
+constant (denoted by ∼). Despite this limitation, we offer representative values based on reasonable
+assumptions detailed in Appendices B and C. While these calculations may deviate from exact costs,
+they provide order-of-magnitude estimates intended to guide future research.
+
+6.1   Explicit compute for representative configurations.
+
+We start by focusing on the high-fidelity LES simulation which yields a time-averaged field as its
+learning task (middle row of Table 2). Using a representative simulation of a common low-speed
+
+
+                                                        20
+subsonic external aerodynamics simulation of a car or an airplane (Kiris et al., 2023; Ashton et al.,
+2023), we require Vℓ = 5 × 108 spatial cells and Tℓ = 2 × 105 time-steps or iterations to achieve the
+desired accuracy (see Table 3) 8 .We assume the use of an explicit cartesian WMLES calculation that
+is representative of the state-of-the-art simulations that typically improves correlation to ground truth
+experimental data (Kiris et al., 2023; Ashton et al., 2023) compared to RANS. See Appendix B for
+further details on the derivation of this flops per cell per step number that is based upon an explicit
+cartesian solver. Entirely for demonstrative purposes, we assign a relative error level of ϵℓ ∼ 3%, for
+the time-averaged (and transient) flow fields. This number is consistent with the requirement that the
+relative error for the integral quantities (drag, lift etc) is approximately 1%.
+Similarly, for the low-fidelity RANS simulation for the same use case, we consider a mesh of
+Vr = 108 points and the number of iterations to reach steady state is given by Tr = 2000. We
+also assume the use of a unstructured implicit steady-state CFD solver using a GMRES approach
+using a RANS model such as the k − ω model (Menter, 1994). Thus, the effective mesh sizes of
+the low-fidelity and high-fidelity simulations are given by ∆r ≈ 1.71∆ℓ , noting though that the
+high-fidelity is solving a time-accurate solution.
+Assuming a widely observed first-order of mesh convergence of numerical methods by setting γ ≈ 1,
+we see that the the field error is ϵr ≈ 5% 9 .
+
+Refined estimates of training cost. From (14), we have assumed how an additive model for how
+inputs are encoded and then processed in an AI model, translates into compute. However, to relate to
+practical use cases and provide reasonable estimates of the model training cost, we need to refine this
+formula further. To this end, we assume the following relation,
+
+                                       C T ≈ nN fe (ICE + τ M ),                                         (34)
+
+with model training cost C T , N being number of samples, n being the number of epochs, I input
+size and M model size. In addition, we also need to introduce the number of embedding channels
+CE in the encoder and decoder and the number of latent tokens τ that is the input to a processor. This
+refined estimate holds for model architectures such as UPT, GINO and GAOT and is consistent with
+the asympototic estimates of Section E.1 and E.2 of Wen et al. (2025). The new factor introduced in
+Equation (35) is fe , which we term as flops per training epoch, that allows us to estimate compute (in
+flops) more accurately.
+For the transient case, we can readily adapt Equation (35) to,
+
+                                      C T ≈ nÑ fe K(ICE + τ M ) ,                                       (35)
+
+to account for the fact that K input-output pairs are seen by the model (per epoch) during training.
+
+Input size. Once the high-fidelity LES fields have been generated at a resolution of 500 M, we can
+readily downsample the fields to a coarser mesh, such that the resulting downsampling or interpolation
+error is smaller than 3%. Again, for demonstrative purposes, we consider a compression factor of
+64 (corresponding to a factor of 4 compression in each direction). We note that in practice this
+downsampling would be done in a non-uniform manner to account for areas that require more
+resolution e.g boundary layers. Moreover, the downsampled nodes and edges are randomly chosen
+per training epoch and can be changed from epoch to epoch, ensure sufficient spatial coverage of the
+whole domain during the training process. The resulting mesh has 7.81 M input points or nodes and
+assuming that the number of edges scales as 6 times the number of nodes (for a cartesian mesh), the
+number of edges is now 46.86 M. Now the edge features have to be transformed by an encoder MLP,
+which we assume is CE = 322 = 1024 channels.
+We can apply similar considerations to compute the input size of the low-fidelity model by applying a
+downsampling ration of 64, leading to an input graph with I = 9.25 M edges and an encoder MLP of
+size CE = 322 = 1024 channels.
+   8
+     We accept that these numbers are use-case dependent, with some simulations requiring larger computational
+resources and others requiring less.
+   9
+     We note that for industrial use-cases the error level between different CFD inputs choices (WMLES vs
+RANS) will be case dependent.
+
+
+                                                     21
+Dataset size. To compute the number of samples in each setting, we need an estimate of the scaling
+exponent β, by which the test error scales with respect to the number of samples. Statistical learning
+theory suggests an upper bound of β < 0.5 Lanthaler et al. (2022); Ryck & Mishra (2022) and a
+slightly smaller rate has been observed in practice Herde et al. (2024); Wen et al. (2025); Mousavi
+et al. (2025). To provide a representative rate, we will use the scaling exponent for the Poseidon
+foundation model (Herde et al., 2024), where from Figure 23 (bottom right), this rate is given by
+β ≈ 0.43.
+This exponent does not suffice to calculate an estimate of the number of samples needed to attain
+the error level of approximately 3% for the high-fidelity model as the proportionality constants are
+missing. Again, we can estimate them from Figure 23 of the Poseidon foundation model, where 80 K
+samples where necessary to obtain a test error of 9%. Extrapolating from this error level with an
+exponent of 0.43, leads to 1.02 M training samples, which we approximate by 1 M samples.
+For the low-fidelity case, we know that the desired error level is 5%. Again, with β = 0.43, and the
+fact that an error of 3% required approximately 1 M samples, we extrapolate to obtain a figure of
+325 k samples (approximately) in this case.
+For the high-fidelity transient case, we also need to estimate the compression ration δK and the
+effective number of time snapshots K that are used for training the high-fidelity transient model.
+We assume that we save 100 time steps per high-fidelity transient sample. With the all2all training
+strategy of Herde et al. (2024), we can use at most 5050 input-output pairs per sample. However, such
+an extreme use of transient information is excessive. Instead, to keep computational costs reasonable
+and ensure generalization, we will use approximately the configuration of Herde et al. (2024) by
+using 50 (randomly selected) data pairs per sample per epoch, leading to setting K = 50. We note
+that a different set of 50 input-output pairs per sample can be sampled for a different epoch, ensuring
+proper coverage of all the transient information in the dataset. For the compression ratio δK , we
+follow the observations of Herde et al. (2024) Figure 46 by setting δK = 5. Thus the number of
+training examples in the transient high-fidelity case is given by Ñℓ = 200 k, as reported in Table 3.
+In addition we take a second, independent approach to reach an estimate on the number of samples
+required. As shown in Appendix C, we consider a broad range of possible geometries and flow
+conditions across the entire spectrum of CFD. We estimate in the order of 2.25M samples.
+
+
+Model size. To compute the model size, we rely on the relation Equation (16), which relates model
+size to the number of training samples. To this end, we need to estimate the scaling exponent α.
+There are very few estimates of α available in the literature but we can use the value of α from Herde
+et al. (2024) (Figure 22), as observed in the case of the Poseidon PDE foundation model. This value
+of α ≈ 0.24 is also consistent with the observations of Wen et al. (2025). Using this value of α and
+β = 0.43 and the number of samples Nℓ = 106 , we arrive at a model size of ≈ 56 B parameters,
+which is reported in Table 3. Repeating the same calculation steps for the low-fidelity case leads to a
+model size of approximately 7 B parameters.
+To estimate τ , the number of latent tokens that are fed into the processor of our AI model, we use the
+ball-park estimates of Wen et al. (2025) where the latent grid had size of 643 and the patch size for a
+ViT backbone was p = 2, resulting in a total of τ = 32768 tokens per sample. This also coincides
+with Figure 7 of Alkin et al. (2025), where it is shown that on the DrivAerML dataset models start to
+overfit when using in the order of 100 k anchor tokens. We keep the same number of latent tokens for
+the low-fidelity model too.
+
+
+Estimates of Flops per epoch. To compute estimates of flops per training epoch fe , we base our
+calculations on a training run with a GAOT type transformer model (Wen et al., 2025), which is trained
+using a GH200 NVIDIA GPU with BF16 precision. In this run, a model size of 1.4 B parameters
+was used with an input size of 3 M edges and embedding channel dimension of CE = 1024. The
+underlying structured latent grid had 643 tokens. Two configurations were tested: one with a standard
+ViT (Dosovitskiy et al., 2020) with a patch size of 4, leading to τ = 4096 tokens and another with
+a highly-optimized Swin transformer (Liu et al., 2021) processor, which supported a patch size of
+2. Based on a (average) sustained performance of 1.19 × 1018 flops and theoretical estimates of
+2.87 × 1016 flops and 2.3 × 1017 flops for the two configurations, we arrive at fe ≈ 5.2 for a patch
+size of p = 2 and fe ≈ 41.5 for a patch size of p = 4, respectively.
+
+
+                                                  22
+Number of epochs. Contrary to LLMs where training for one epoch corresponds to seeing all
+training data, CFD data can be heavily subsampled without losing information (Alkin et al., 2025).
+However, several combinations of subsampled inputs are needed to reflect the full physics of the data.
+Thus, several epochs are needed to exploit the full information contained in the simulations.
+
+                  Table 3: Concrete numbers for developing a CFD foundation model.
+                                          Low-fidelity High-fidelity Transient high-fidelity
+      Data generation
+      Training samples (N )                  3.25 × 105          106                 2 × 105
+      Number of cells (V )                       108          5 × 108                5 × 108
+      Number of steps (T )                      2000           200000                 200000
+      Flops per cell per step (f )             40000            2800                   2800
+      Compute flops (C)                      2.6 × 1021      2.8 × 1023             5.6 × 1022
+      GPU hours (Ch ) a                      1.81 × 105      6.48 × 106             1.3 × 106
+      Compute cost (Cc ) b                     $1.4 M         $51.8 M                $10.3 M
+      Storage (S) c                            650 TB           2 PB                  400 TB
+      Yearly storage cost (Sc ) d               $78 k          $240 k                  $48 k
+      Model training
+      Data scaling exponent (β)            0.43                  0.43                  0.43
+      Effective copies (K)                   –                     –                    50
+      Compression ratio (δK )                –                     –                     5
+      Training samples (N )            3.25 × 105                 106                2 × 105
+      Model scaling exponent (α)           0.24                  0.24                  0.24
+      Model size (M )                   7.5 × 109            5.62 × 1010           3.15 × 109
+      Epochs (n)                           100                   100                   100
+      Flops (fe )                           5.2                   5.2                   5.2
+      Input size (I)                    9.3 × 106             4.7 × 107             4.7 × 107
+      Encoding Channel Dimension (CE )    1024                   1024                  1024
+      Patch Size (p)                         2                     2                     2
+      Number of Latent Tokens (τ )        32768                 32768                 32768
+      Training flops (C T )            4.16 × 1022           9.58 × 1023           5.36 × 1023
+                     Th e
+      GPU hours (C )                      3849                8.8 × 104            4.96 × 104
+      Compute cost (C T c ) b            $30.7 k               $709.7 k              $397.2 k
+        a
+          Assuming NVIDIA GB200 in FP32 (80 TFLOPS) with 15% (explicit WMLES) and 5% (implicit
+          RANS) sustained flops usage.
+        b
+          Assuming $8 cost per hour for a single NVIDIA GB200 GPU.
+        c
+          Assuming 2 GB for FP32 with 10 variables stored on downsampled mesh.
+        d
+          Assuming $0.01 per GB per month.
+        e
+          Assuming NVIDIA GB200 in BF16 (5 PFLOPS) with 60% sustained flops usage.
+
+The results of the afore described explicit configurations are summarized in Table 3, where the report
+the total compute (in terms of data generation as well as model training) for the three scenarios
+considered here, namely the low-fidelity steady state, high-fidelity time-averaged and the high-fidelity
+transient cases. We also provide a dollar cost for each of the models. This table provides a principled
+estimate of the costs for training CFD Foundation models in the regime described above. We observe
+from this table that all the implications, suggested by the theory in the previous section, seem to hold.
+In particular, the cost of the low-fidelity model is significantly lower than the high-fidelity ones. Also,
+data generation costs do outweigh model training costs in this regime of less than 17 M samples.
+
+6.2     Assessing scaling behavior
+
+To further explore the practical implications of our scaling theory, Figure 3 visualizes the interplay
+between data generation (C D ) and model training (C T ) costs across varying sample sizes and param-
+eter configurations for the transient high-fidelity case. As suggested by the theory, a consistent trend
+emerges across all parameter variations: while data generation represents the dominant computational
+burden for smaller sample regimes (typically N < 106 ), the superlinear scaling of training costs –
+driven by the coupled growth of model size M and dataset size N required to satisfy Equation 19
+
+
+                                                   23
+     (a) Varying α: β = 0.425, Epochs=100.                  (b) Varying β: α = 0.24, Epochs=100.
+
+
+
+
+    (c) Varying epochs: α = 0.24, β = 0.43.           (d) Varying FLOPS per step per cell: Fixed training
+                                                      with Epochs=100 α = 0.24 and β = 0.43.
+
+
+
+
+(e) Varying time steps: Fixed training with           (f) Varying cell count: Fixed training with
+Epochs=100 α = 0.24 and β = 0.43.                     Epochs=100 α = 0.24 and β = 0.43.
+Figure 3: Comparative analysis of data generation and model training costs (y-axis in $ millions)
+versus sample size (x-axis in millions) for the transient high-fidelity case. Source code provided in
+Appendix D
+
+
+
+
+                                                 24
+eventually overtakes generation costs. Subplots 3a and 3b highlight the sensitivity of this crossover
+point to the scaling exponents; notably, a lower model scaling exponent α (indicating slower error
+convergence per parameter) significantly inflates the required model size, causing training costs
+to become the primary bottleneck at much lower sample counts. Conversely, variations in CFD
+input parameters, such as time steps (Figure 3e) and cell counts (Figure 3f), linearly shift the data
+generation baseline without altering the fundamental slope of the cost curve.
+Table 4 quantifies this transition through three representative model tiers, demonstrating the dramatic
+inversion of the cost profile. For a “Large” foundation model (2 × 105 samples), data generation
+accounts for approximately 96% of the total compute budget ($10.3 M vs $0.4 M), confirming that for
+current state-of-the-art surrogates, efficient simulation is the immediate barrier. However, as we scale
+to the “XXLarge” frontier (2 × 106 samples, which also coincides with the independent estimate of
+the number of samples needed to reasonably cover the entire spectrum of CFD use cases (Appendix
+C) and also leads to a (nominal) overall field error of 1%), the regime flips: training costs increase
+to nearly $300 M, eclipsing the $103.7 M required for data generation. This analysis underscores
+a critical strategic evolution for the community; while initial efforts must prioritize efficient data
+generation, long-term scaling towards a “universal” CFD model will ultimately be constrained by the
+computational demands of model training, necessitating potential architectural innovations.
+
+               Table 4: Large, XLarge, and XXLarge CFD foundation model estimates.
+                                                 Large        XLarge        XXLarge
+         Data generation
+         Training samples (N )                     2 × 105         1 × 106          2 × 106
+         Number of cells (V )                      5 × 108         5 × 108          5 × 108
+         Number of steps (T )                      200, 000        200, 000        200, 000
+         Flops per cell per step (f )               2, 800          2, 800           2, 800
+         Compute flops (C)                        5.6 × 1022      2.8 × 1023      5.6 × 1023
+         GPU hours (Ch ) a                        1.3 × 106       6.48 × 106      1.3 × 107
+         Compute cost (Cc ) b                      $10.3 M         $51.8 M         $103.7 M
+         Storage (S) c                              400 TB           2 PB             4PB
+         Yearly storage cost (Sc ) d                 $48 k          $240 k           $480 k
+         Model training
+         Data scaling exponent (β)                    0.43            0.43           0.43
+         Effective copies (K)                          50              50             50
+         Compression ratio (δK )                        5               5              5
+         Model scaling exponent (α)                   0.24            0.24           0.24
+         Model size (M )                          3.15 × 109      5.6 × 1010     1.95 × 1011
+         Epochs (n)                                   100             100            100
+         Flops (fe )                                   5.2             5.2           5.2
+         Encoding Channel Dimension (CE )             1024            1024          1024
+         Patch Size (p)                                 2               2              2
+         Number of Latent Tokens (τ )                32768           32768          32768
+         Input size (I)                            4.7 × 107       4.7 × 107      4.7 × 107
+         Training flops (C T )                    5.36 × 1023     4.79 × 1025    3.99 × 1026
+         GPU hours (C T h ) e                     4.963 × 104     4.43 × 106     3.69 × 107
+         Compute cost (C T c ) b                     $397 k         $35.5 M        $295 M
+           a
+             Assuming NVIDIA GB200 in FP32 (80 TFLOPS) with 15% sustained flops usage.
+           b
+             Assuming $8 cost per hour for a single NVIDIA GB200 GPU.
+           c
+             Assuming 2 GB for FP32 with 10 variables stored on downsampled mesh.
+           d
+             Assuming $0.01 per GB per month.
+           e
+             Assuming NVIDIA GB200 in BF16 (5 PFLOPS) with 60% sustained flops usage.
+
+
+
+
+                                                  25
+7   Open questions and future work for the community
+
+We conclude the paper with a number of open-questions for the CFD and ML communities to address.
+
+Reducing the computational expense of data generation As demonstrated in this paper – the
+cost of data generation is a large barrier to the development of a CFD foundation model. The main
+terms that influence this are the number of total samples required, the fidelity of the underlying
+modeling approach, and the computational efficiency f of the code. More rigorous work is needed to
+understand how to improve the flops per cell per step with a focus on optimizing for latest generation
+GPUs and consideration of lower precision.
+
+Overcoming the storage bottleneck As the fidelity of CFD simulations increases, transient
+simulations, e.g., WMLES and WRLES, are producing massive datasets, frequently exceeding the
+petabyte threshold. This exponential data volume poses a severe limitation, given that the necessary
+storage capacity is rapidly outpacing the capabilities of conventional HPC storage architectures. To To
+address this severe I/O bottleneck, future work must rigorously investigate advanced data compression
+strategies that go beyond simple subsampling. This includes a re-evaluation of classical dimensionality
+reduction techniques, such as Proper Orthogonal Decomposition (PoD) to extract dominant flow
+modes, alongside modern deep learning paradigms like Implicit Neural Representations (Neural
+Fields) and latent-space compression via autoencoders. Developing these compact, high-fidelity
+representations is critical to decoupling data generation costs from storage limitations, ultimately
+enabling the feasible training of large-scale foundation models with transient data. We point out the
+following surveys that extensively discuss the “cost of storing data”, and the challenges on increasing
+permanent storage systems for keeping up with modern day compute capabilities (Reed & Dongarra,
+2015; Luttgau et al., 2018; Thomas et al., 2021; HPCwire, 2025).
+
+Online training A primary obstacle to developing data-driven models for transient flows is the
+immense scale of the training data, which can easily reach petabytes. This size makes conventional
+“offline” paradigm of saving data to disk before training computationally infeasible due to I/O
+bottlenecks and storage costs.
+A potential solution is online training, an in-situ co-processing workflow where the machine learning
+model is trained concurrently with the data-generating CFD simulation. This approach eliminates
+the need for intermediate storage and inherently allows the model to learn temporal dynamics from
+time-series data, a critical capability for transient flow modeling. There are however many challenges
+to this approach, including the vastly different timescales between data generation and model training.
+
+Domain specific models The majority of our discussion has been based upon the progression
+towards a universal model for CFD. A logical question is link to the LLM discussion of domain-
+specific models rather than frontier-type models with > 100 B parameters. The logic being that a
+small model trained on more specific use-case or single mode dataset may be ultimately cheaper to
+train and crucially cheaper to inference. A similar logic would be made for CFD. Is there a benefit of
+allowing the model to see vastly different input space or is there a limit to which this makes sense
+where small, domain specific models will be better.
+
+Inductive biases A key open question is in what way inductive biases in the loss function or model
+architecture can improve performance in the large scale limit. We do not presume to know, and
+cannot answer this question from the current perspective but see it as an important open question for
+the community.
+
+
+8   Conclusions
+
+The convergence of high-performance computing and artificial intelligence is fundamentally reshaping
+the landscape of Computational Fluid Dynamics. In this work, we provided a framework to navigate
+this new paradigm, aimed at bridging the gap between the machine learning and CFD communities.
+By deconstructing the industrial CFD workflow into its constituent parts, we have highlighted the
+vast, input space for CFD.
+
+
+                                                  26
+Central to our contribution is the formulation of a novel scaling law tailored specifically for CFD.
+Moving beyond direct analogies to large language models, our law introduces critical new dimensions
+that capture the unique characteristics of scientific simulation. For the first time we also provide
+estimates on the computational time and cost to develop such foundation models, suggesting it is a
+tractable problem.
+The future of building CFD foundation models is inextricably linked to the development of a new
+generation of simulation tools: highly efficient, GPU-native CFD solvers. These solvers must be
+designed to generate vast, high-fidelity datasets quickly, accurately, and at the lowest possible cost,
+directly addressing the a key term in the compute budget.
+In this paper, we have established quantitative estimates for the large-scale limit, distinguishing
+between regimes where the cost of data generation is the dominant factor in total compute versus
+where the cost of model training prevails. The coefficients such as α and β need to be determined
+experimentally and likely adapted to different CFD use cases as outlined in the Appendix C.
+Crucially, these next-generation solvers cannot be developed in isolation. They must be co-designed
+for seamless integration with ML frameworks, creating a unified ecosystem where potentially online
+training can be used. Such integration is the only viable path (in addition to novel compression
+techniques) to overcoming the immense storage and I/O bottlenecks associated with high-fidelity
+transient data.
+We accept that there are many unanswered questions in the context of CFD foundation models, but
+we hope this paper can contribute to its advancement.
+
+Acknowledgments
+Thank you to the following people for fruitful discussions that helped shape the thoughts shown in
+this paper: Richard Kurle, Maurits Bleeker, Suchita Kulkarni, William Van Noordt, Rishi Ranade,
+Daniel Leibovici, Sheel Nidhan, Ira Shokar, Mohammad Amin Nabian, Kaustubh Tangsali, Michael
+Barad, Peter Sharpe, Jean Kossaifi, Nikola Kovachki, Akshay Subramaniam, Ruben Ohana, Will
+Trojak.
+
+References
+Josh Abramson, Jonas Adler, Jack Dunger, Richard Evans, Tim Green, Alexander Pritzel, Olaf
+  Ronneberger, Lindsay Willmore, Andrew J Ballard, Joshua Bambrick, et al. Accurate structure
+  prediction of biomolecular interactions with alphafold 3. Nature, pp. 1–3, 2024.
+Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman,
+  Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical report.
+  arXiv preprint arXiv:2303.08774, 2023.
+Ronald J Adrian and Jerry Westerweel. Particle image velocimetry. Number 30. Cambridge university
+  press, 2011.
+Benedikt Alkin, Andreas Fürst, Simon Schmid, Lukas Gruber, Markus Holzleitner, and Johannes
+  Brandstetter. Universal physics transformers: A framework for efficiently scaling neural operators.
+  Advances in Neural Information Processing Systems, 37:25152–25194, 2024.
+Benedikt Alkin, Maurits Bleeker, Richard Kurle, Tobias Kronlachner, Reinhard Sonnleitner, Matthias
+  Dorfer, and Johannes Brandstetter. Ab-upt: Scaling neural cfd surrogates for high-fidelity auto-
+  motive aerodynamics simulations via anchored-branched universal physics transformers. arXiv
+  preprint arXiv:2502.09692, 2025.
+Jamil Appa, Mike Turner, and Neil Ashton. Performance of CPU and GPU HPC Architectures for
+  off-design aircraft simulations. In AIAA Scitech 2021 Forum, number January, pp. 11–15, Reston,
+  Virginia, 1 2021. American Institute of Aeronautics and Astronautics. ISBN 978-1-62410-609-5.
+  doi: 10.2514/6.2021-0141. URL https://arc.aiaa.org/doi/10.2514/6.2021-0141.
+N. Ashton, A. West, S. Lardeau, and A. Revell. Assessment of RANS and DES methods for
+  realistic automotive models. Computers & Fluids, 128:1–15, 2016. ISSN 00457930. doi:
+
+
+                                                  27
+  10.1016/j.compfluid.2016.01.008. URL http://linkinghub.elsevier.com/retrieve/pii/
+  S0045793016000190.
+N. Ashton, P. Unterlechner, and T. Blacha. Assessing the Sensitivity of Hybrid RANS-LES Simula-
+  tions to Mesh Resolution, Numerical Schemes and Turbulence Modelling within an Industrial CFD
+  Process. SAE Technical Papers, 2018-April, 2018. ISSN 01487191. doi: 10.4271/2018-01-0709.
+Neil Ashton, Paul Batten, Andrew Cary, and Kevin Holst. Summary of the 4th High-Lift Prediction
+  Workshop Hybrid RANS/LES Technology Focus Group. Journal of Aircraft, pp. 1–30, 8 2023.
+  ISSN 0021-8669. doi: 10.2514/1.C037329. URL https://arc.aiaa.org/doi/10.2514/1.
+  C037329.
+Neil Ashton, Charles Mockett, Marian Fuchs, Louis Fliessbach, Hendrik Hetmann, Thilo Knacke,
+  Norbert Schonwald, Vangelis Skaperdas, Grigoris Fotiadis, Astrid Walle, Burkhard Hupertz,
+  and Danielle Maddix. DrivAerML - High-Fidelity Computational Fluid Dynamics Dataset for
+  Road-Car External Aerodynamics. arxiv.org, 2024.
+Francesca Bartolucci, Emmanuel de Bezenac, Bogdan Raonic, Roberto Molinaro, Siddhartha Mishra,
+  and Rima Alaifari. Representation equivalent neural operators: a framework for alias-free operator
+  learning. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL
+  https://openreview.net/forum?id=7LSEkvEGCM.
+Kaifeng Bi, Lingxi Xie, Hengheng Zhang, Xin Chen, Xiaotao Gu, and Qi Tian. Accurate medium-
+  range global weather forecasting with 3d neural networks. Nat., 619(7970):533–538, 2023. doi:
+ 10.1038/S41586-023-06185-3.
+Cristian Bodnar, Wessel P. Bruinsma, Ana Lucic, Megan Stanley, Johannes Brandstetter, Patrick
+  Garvan, Maik Riechert, Jonathan A. Weyn, Haiyu Dong, Anna Vaughan, Jayesh K. Gupta, Kit
+  Thambiratnam, Alex Archibald, Elizabeth Heider, Max Welling, Richard E. Turner, and Paris
+  Perdikaris. Aurora: A foundation model of the atmosphere. CoRR, abs/2405.13063, 2024. doi:
+  10.48550/ARXIV.2405.13063.
+Johannes Brandstetter, Daniel Worrall, and Max Welling. Message passing neural pde solvers. arXiv
+  preprint arXiv:2202.03376, 2022.
+Christoph Brehm, Michael F. Barad, Jeffrey A. Housman, and Cetin C. Kiris. A comparison
+  of higher-order finite-difference shock capturing schemes. Computers & Fluids, 122:184–208,
+  2015. ISSN 0045-7930. doi: https://doi.org/10.1016/j.compfluid.2015.08.023. URL https:
+  //www.sciencedirect.com/science/article/pii/S0045793015002996.
+Steven L Brunton, Bernd R Noack, and Petros Koumoutsakos. Machine Learning for Fluid Mechanics.
+  Annu. Rev. Fluid Mech. 2020, 52:477–508, 2019. doi: 10.1146/annurev-fluid-010719. URL
+  https://doi.org/10.1146/annurev-fluid-010719-.
+Shiyi Chen and Gary D Doolen. Lattice boltzmann method for fluid flows. Annual Review of Fluid
+  Mechanics, 30(1):329–364, 1998.
+Adam M. Clark, Christopher L. Rumsey, Jeffrey P. Slotnick, and Li Wang. High-Lift Prediction
+ Workshop 5: Overview and Workshop Summary. 2025. doi: 10.2514/6.2025-0045. URL https:
+ //arc.aiaa.org/doi/abs/10.2514/6.2025-0045.
+Steven Coons. Surfaces for computer aided design of space forms. MIT, MAC-TR, 41:105, 06 1967.
+Mostafa Dehghani, Josip Djolonga, Basil Mustafa, Piotr Padlewski, Jonathan Heek, Justin Gilmer,
+ Andreas Peter Steiner, Mathilde Caron, Robert Geirhos, Ibrahim Alabdulmohsin, et al. Scaling
+ vision transformers to 22 billion parameters. In International conference on machine learning, pp.
+ 7480–7512. PMLR, 2023.
+Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas
+  Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, et al. An
+  image is worth 16x16 words: Transformers for image recognition at scale. arXiv preprint
+  arXiv:2010.11929, 2020.
+
+
+                                                28
+Karthik Duraisamy, Gianluca Iaccarino, and Heng Xiao. Turbulence Modeling in the Age of Data.
+ Annual Review of Fluid Mechanics, 51(1):357–377, 2018. ISSN 0066-4189. doi: 10.1146/
+  annurev-fluid-010518-040547.
+Mohamed Elrefaie, Florin Morar, Angela Dai, and Faez Ahmed. Drivaernet++: A large-scale multi-
+ modal car dataset with computational fluid dynamics simulations and deep learning benchmarks.
+ arXiv preprint arXiv:2406.09624, 2024.
+Alexander Forrester, Andras Sobester, and Andy Keane. Engineering design via surrogate modelling:
+  a practical guide. John Wiley & Sons, 2008.
+Masataka Gamahara and Yuji Hattori. Searching for turbulence models by artificial neural network.
+ Physical Review Fluids, 2(5):054604, 2017.
+Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad
+  Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of
+  models. arXiv preprint arXiv:2407.21783, 2024.
+Xiaoxiao Guo, Wei Li, and Francesco Iorio. Convolutional neural networks for steady flow ap-
+  proximation. In Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge
+  Discovery and Data Mining, KDD ’16, pp. 481–490, New York, NY, USA, 2016. Associa-
+  tion for Computing Machinery. ISBN 9781450342322. doi: 10.1145/2939672.2939738. URL
+  https://doi.org/10.1145/2939672.2939738.
+Jayesh K Gupta and Johannes Brandstetter. Towards multi-spatiotemporal-scale generalized pde
+  modeling. arXiv preprint arXiv:2209.15616, 2022.
+Zhongkai Hao, Chang Su, Songming Liu, Julius Berner, Chengyang Ying, Hang Su, Anima Anand-
+  kumar, Jian Song, and Jun Zhu. DPOT: Auto-regressive denoising operator transformer for
+  large-scale PDE pre-training. In Forty-first International Conference on Machine Learning, 2024.
+  URL https://openreview.net/forum?id=X7UnDevHOM.
+Angelina I Heft and Nikolaus A Adams. Experimental and numerical investigation of the drivaer
+  model. In Proceedings of the ASME 2012 Fluids Engineering Summer meeting, pp. 1–11, 2012.
+Maximilian Herde, Bogdan Raonic, Tobias Rohner, Roger Käppeli, Roberto Molinaro, Emmanuel
+ de Bézenac, and Siddhartha Mishra. Poseidon: Efficient foundation models for pdes. Advances in
+ Neural Information Processing Systems, 37:72525–72624, 2024.
+Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza
+  Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al.
+  Training compute-optimal large language models. arXiv preprint arXiv:2203.15556, 2022.
+Shirzad Hosseinverdi, Jay Sitaraman, Dylan Jude, Pavithra Premaratne, Lucas Erlandson, and David
+  Appelhans. Rapidus: Performance-portable parallel flow solver for aerospace applications. In
+  AIAA SCITECH 2025 Forum, pp. 1484, 2025.
+HPCwire. Future of storage: Hpc and ai storage by the numbers. https://www.hpcwire.
+ com/2025/10/16/future-of-storage-hpc-and-ai-storage-by-the-numbers/, Octo-
+ ber 2025. Accessed: 2025-11-13.
+Andrew Jaegle, Sebastian Borgeaud, Jean-Baptiste Alayrac, Carl Doersch, Catalin Ionescu, David
+  Ding, Skanda Koppula, Daniel Zoran, Andrew Brock, Evan Shelhamer, et al. Perceiver io: A
+  general architecture for structured inputs & outputs. In International Conference on Learning
+ Representations, 2021a.
+Andrew Jaegle, Felix Gimeno, Andy Brock, Oriol Vinyals, Andrew Zisserman, and Joao Carreira.
+  Perceiver: General perception with iterative attention. In International conference on machine
+  learning, pp. 4651–4664. PMLR, 2021b.
+John Jumper, Richard Evans, Alexander Pritzel, Tim Green, Michael Figurnov, Olaf Ronneberger,
+  Kathryn Tunyasuvunakool, Russ Bates, Augustin Žídek, Anna Potapenko, et al. Highly accurate
+  protein structure prediction with alphafold. nature, 596(7873):583–589, 2021.
+
+
+                                               29
+Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess, Rewon Child, Scott
+   Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models.
+   arXiv preprint arXiv:2001.08361, 2020.
+
+S S Khalafvand, E Y K Ng, and L Zhong. CFD simulation of flow through heart: a perspective
+  review. Computer methods in biomechanics and biomedical engineering, 14(1):113–32, 1 2011.
+  ISSN 1476-8259. doi: 10.1080/10255842.2010.493515. URL http://www.ncbi.nlm.nih.
+  gov/pubmed/21271418.
+
+Thomas N. Kipf and Max Welling. Semi-supervised classification with graph convolutional networks.
+  In 5th International Conference on Learning Representations, ICLR 2017, Toulon, France, April
+  24-26, 2017, Conference Track Proceedings. OpenReview.net, 2017.
+
+Alexander Kirillov, Eric Mintun, Nikhila Ravi, Hanzi Mao, Chloe Rolland, Laura Gustafson, Tete
+  Xiao, Spencer Whitehead, Alexander C Berg, Wan-Yen Lo, et al. Segment anything. In Proceedings
+  of the IEEE/CVF international conference on computer vision, pp. 4015–4026, 2023.
+
+Cetin C. Kiris, Aditya S. Ghate, Oliver M. F. Browne, Jeffrey Slotnick, and Johan Larsson. HLPW-4:
+  Wall-Modeled Large-Eddy Simulation and Lattice–Boltzmann Technology Focus Group Workshop
+  Summary. Journal of Aircraft, 60(4):1118–1140, 7 2023. ISSN 0021-8669. doi: 10.2514/1.
+  C037193.
+
+Nikola Kovachki, Zongyi Li, Burigede Liu, Kamyar Azizzadenesheli, Kaushik Bhattacharya, Andrew
+  Stuart, and Anima Anandkumar. Neural operator: Learning maps between function spaces. arXiv
+  preprint arXiv:2108.08481, 2021.
+
+Remi Lam, Alvaro Sanchez-Gonzalez, Matthew Willson, Peter Wirnsberger, Meire Fortunato, Ferran
+  Alet, Suman Ravuri, Timo Ewalds, Zach Eaton-Rosen, Weihua Hu, Alexander Merose, Stephan
+  Hoyer, George Holland, Oriol Vinyals, Jacklynn Stott, Alexander Pritzel, Shakir Mohamed, and
+  Peter Battaglia. Learning skillful medium-range global weather forecasting. Science, 382(6677):
+  1416–1421, 2023.
+
+Samuel Lanthaler, Siddhartha Mishra, and George E Karniadakis. Error estimates for DeepONets: A
+  deep learning framework in infinite dimensions. Transactions of Mathematics and Its Applications,
+  6(1):tnac001, 2022.
+
+Johan Larsson, Soshi Kawai, Julien Bodart, and Ivan Bermejo-Moreno. Large eddy simulation with
+  modeled wall-stress: recent progress and future directions. Mechanical Engineering Reviews, 3(1):
+  15–00418–15–00418, 2015. doi: 10.1299/mer.15-00418. ISBN: 0123456789.
+
+B E Launder, G J Reece, and W Rodi. Progress in the development of a Reynolds stress turbulence
+  closure. Journal of Fluid Mechanics, 68:537–566, 1975.
+
+Brian Launder and Neil Sandham. Closure Strategies for Turbulent and Transitional Flows. Cam-
+  bridge University Press, 2002.
+
+Jeffrey Li, Alex Fang, Georgios Smyrnis, Maor Ivgi, Matt Jordan, Samir Yitzhak Gadre, Hritik
+  Bansal, Etash Guha, Sedrick Scott Keh, Kushal Arora, et al. Datacomp-lm: In search of the
+  next generation of training sets for language models. Advances in Neural Information Processing
+  Systems, 37:14200–14282, 2024.
+
+Zhen Li, Yaping Ju, and Chuhua Zhang. Machine-learning data-driven modeling of laminar-turbulent
+  transition in compressor cascade. Physics of Fluids, 35(8):085133, 08 2023a. ISSN 1070-6631.
+  doi: 10.1063/5.0164131. URL https://doi.org/10.1063/5.0164131.
+
+Zijie Li, Kazem Meidani, and Amir Barati Farimani. Transformer for partial differential equations’
+  operator learning. arXiv preprint arXiv:2205.13671, 2022.
+
+Zongyi Li, Nikola Kovachki, Kamyar Azizzadenesheli, Burigede Liu, Kaushik Bhattacharya, Andrew
+  Stuart, and Anima Anandkumar. Fourier neural operator for parametric partial differential equations.
+  arXiv preprint arXiv:2010.08895, 2020a.
+
+
+                                                 30
+Zongyi Li, Nikola Kovachki, Kamyar Azizzadenesheli, Burigede Liu, Kaushik Bhattacharya, Andrew
+  Stuart, and Anima Anandkumar. Neural operator: Graph kernel network for partial differential
+  equations. arXiv preprint arXiv:2003.03485, 2020b.
+Zongyi Li, Nikola Kovachki, Chris Choy, Boyi Li, Jean Kossaifi, Shourya Otta, Mohammad Amin
+  Nabian, Maximilian Stadler, Christian Hundt, Kamyar Azizzadenesheli, et al. Geometry-informed
+  neural operator for large-scale 3d pdes. Advances in Neural Information Processing Systems, 36:
+  35836–35854, 2023b.
+Zongyi Li, Nikola Borislavov Kovachki, Chris Choy, Boyi Li, Jean Kossaifi, Shourya Prakash Otta,
+  Mohammad Amin Nabian, Maximilian Stadler, Christian Hundt, Kamyar Azizzadenesheli, et al.
+  Geometry-informed neural operator for large-scale 3d pdes. arXiv preprint arXiv:2309.00583,
+  2023c.
+Mario Lino, Stathi Fotiadis, Anil A. Bharath, and Chris D. Cantwell. Current and emerging deep-
+ learning methods for the simulation of fluid dynamics. In Proceedings of the Royal Society A:
+ Mathematical, Physical and Engineering Sciences, volume 479. Royal Society Publishing, 7 2023.
+ doi: 10.1098/rspa.2023.0058.
+Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng Zhang, Stephen Lin, and Baining Guo.
+  Swin transformer: Hierarchical vision transformer using shifted windows. In Proceedings of the
+  IEEE/CVF international conference on computer vision, pp. 10012–10022, 2021.
+Lu Lu, Pengzhan Jin, and George Em Karniadakis. Deeponet: Learning nonlinear operators for
+  identifying differential equations based on the universal approximation theorem of operators. arXiv
+  preprint arXiv:1910.03193, 2019.
+Lu Lu, Pengzhan Jin, Guofei Pang, Zhongqiang Zhang, and George Em Karniadakis. Learning
+  nonlinear operators via deeponet based on the universal approximation theorem of operators.
+  Nature machine intelligence, 3(3):218–229, 2021.
+Huakun Luo, Haixu Wu, Hang Zhou, Lanxiang Xing, Yichen Di, Jianmin Wang, and Mingsheng
+  Long. Transolver++: An accurate neural solver for pdes on million-scale geometries. arXiv
+  preprint arXiv:2502.02414, 2025.
+Jakob Luttgau, Michael Kuhn, Kira Duwe, Yevhen Alforov, Eugen Betke, Julian Kunkel, and
+  Thomas Ludwig. Survey of storage systems for high-performance computing. Supercomput.
+  Front. Innov.: Int. J., 5(1):31–58, March 2018. ISSN 2409-6008. doi: 10.14529/jsfi180103. URL
+  https://doi.org/10.14529/jsfi180103.
+Romit Maulik, Omer San, Adil Rasheed, and Prakash Vedula. Subgrid modelling for two-dimensional
+  turbulence using neural networks. Journal of Fluid Mechanics, 858:122–144, 2019.
+Michael McCabe, Bruno Régaldo-Saint Blancard, Liam Holden Parker, Ruben Ohana, Miles Cranmer,
+ Alberto Bietti, Michael Eickenberg, Siavash Golkar, Geraud Krawezik, Francois Lanusse, Mariel
+ Pettee, Tiberiu Tesileanu, Kyunghyun Cho, and Shirley Ho. Multiple physics pretraining for
+ physical surrogate models, 2024. URL https://openreview.net/forum?id=fH9eqpCcR3.
+Michael McCabe, Payel Mukhopadhyay, Tanya Marwah, Bruno Regaldo-Saint Blancard, Francois
+ Rozet, Cristiana Diaconu, Lucas Meyer, Kaze W. K. Wong, Hadi Sotoudeh, Alberto Bietti, Irina
+ Espejo, Rio Fear, Siavash Golkar, Tom Hehir, Keiya Hirashima, Geraud Krawezik, Francois
+ Lanusse, Rudy Morel, Ruben Ohana, Liam Parker, Mariel Pettee, Jeff Shen, Kyunghyun Cho,
+ Miles Cranmer, and Shirley Ho. Walrus: A cross-domain foundation model for continuum
+ dynamics, 2025. URL https://arxiv.org/abs/2511.15684.
+F R Menter. Two-Equation Eddy-Viscosity Turbulence Models for Engineering Applications. AIAA,
+  32(8):1598–1605, 1994.
+Amil Merchant, Simon L. Batzner, Samuel S. Schoenholz, Muratahan Aykol, Gowoon Cheon, and
+ Ekin Dogus Cubuk. Scaling deep learning for materials discovery. Nat., 624(7990):80–85, 2023.
+ doi: 10.1038/S41586-023-06735-9.
+Joe J Monaghan. Smoothed particle hydrodynamics. Annual Review of Astronomy and Astrophysics,
+  30(1):543–574, 1992.
+
+
+                                                 31
+Sepehr Mousavi, Shizheng Wen, Levi Lingsch, Maximilian Herde, Bogdan Raonić, and Siddhartha
+  Mishra. Rigno: A graph-based framework for robust and accurate operator learning for pdes on
+  arbitrary domains, 2025. URL https://arxiv.org/abs/2501.19205.
+Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou, Yankai Lin,
+  Ji-Rong Wen, and Chongxuan Li. Large language diffusion models, 2025. URL https://arxiv.
+  org/abs/2502.09992.
+Eric J. Nielsen, Aaron Walden, Gabriel Nastac, Li Wang, William Jones, Mark Lohry, William K.
+  Anderson, Boris Diskin, Yi Liu, Christopher L. Rumsey, Prahladh Iyer, Patrick Moran, and
+  Mohammad Zubair. Large-Scale Computational Fluid Dynamics Simulations of Aerospace
+  Configurations on the Frontier Exascale System. doi: 10.2514/6.2024-3866. URL https:
+  //arc.aiaa.org/doi/abs/10.2514/6.2024-3866.
+Guilherme Penedo, Hynek Kydlíček, Anton Lozhkov, Margaret Mitchell, Colin A Raffel, Leandro
+ Von Werra, Thomas Wolf, et al. The fineweb datasets: Decanting the web for the finest text data at
+  scale. Advances in Neural Information Processing Systems, 37:30811–30849, 2024.
+Tobias Pfaff, Meire Fortunato, Alvaro Sanchez-Gonzalez, and Peter Battaglia. Learning mesh-based
+  simulation with graph networks. In International conference on learning representations.
+L. Piegl and W. Tiller. The NURBS Book. Monographs in Visual Communication. Springer Berlin
+   Heidelberg, 2012. ISBN 9783642973857. URL https://books.google.co.uk/books?id=
+   CkeqCAAAQBAJ.
+Alec Radford, Karthik Narasimhan, Tim Salimans, Ilya Sutskever, et al. Improving language
+  understanding by generative pre-training.
+Markus Raffel, Christian E Willert, Fulvio Scarano, Christian J Kähler, Steve T Wereley, and Jürgen
+ Kompenhans. Particle image velocimetry: a practical guide. springer, 2018.
+Maziar Raissi, Paris Perdikaris, and George E. Karniadakis. Physics-informed neural networks: A
+ deep learning framework for solving forward and inverse problems involving nonlinear partial
+ differential equations. Journal of Computational physics, 378:686–707, 2019.
+Rishikesh Ranade, Mohammad Amin Nabian, Kaustubh Tangsali, Alexey Kamenev, Oliver Hennigh,
+  Ram Cherukuri, and Sanjay Choudhry. Domino: A decomposable multi-scale iterative neural
+  operator for modeling large scale engineering simulations. arXiv preprint arXiv:2501.13350, 2025.
+Bogdan Raonic, Roberto Molinaro, Tim De Ryck, Tobias Rohner, Francesca Bartolucci, Rima
+  Alaifari, Siddhartha Mishra, and Emmanuel de Bezenac. Convolutional neural operators for robust
+  and accurate learning of PDEs. In Thirty-seventh Conference on Neural Information Processing
+  Systems, 2023. URL https://openreview.net/forum?id=MtekhXRP4h.
+Daniel A. Reed and Jack Dongarra. Exascale computing and big data. Commun. ACM, 58(7):
+  56–68, June 2015. ISSN 0001-0782. doi: 10.1145/2699414. URL https://doi.org/10.1145/
+  2699414.
+Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-
+  resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF confer-
+  ence on computer vision and pattern recognition, pp. 10684–10695, 2022.
+Olaf Ronneberger, Philipp Fischer, and Thomas Brox. U-net: Convolutional networks for biomedical
+  image segmentation. In International Conference on Medical image computing and computer-
+  assisted intervention, pp. 234–241. Springer, 2015.
+Tim De Ryck and Siddhartha Mishra. Generic bounds on the approximation error for physics-
+  informed (and) operator learning, 2022. URL https://arxiv.org/abs/2205.11393.
+Benjamin Sanderse, Panos Stinis, Romit Maulik, and Shady E Ahmed. Scientific machine learning
+  for closure models in multiscale problems: A review. arXiv preprint arXiv:2403.02913, 2024.
+Rico Sennrich, Barry Haddow, and Alexandra Birch. Neural machine translation of rare words with
+  subword units. In Proceedings of the 54th annual meeting of the association for computational
+  linguistics (volume 1: long papers), pp. 1715–1725, 2016.
+
+
+                                                32
+Joonho Seo, Song Youngjae, Sungchan Kim, Kunwoo Lee, Young Choi, and Soowon Chae. Wrap-
+  around operation for multi-resolution cad model. Computer-Aided Design & Applications, 2:
+  67–76, 01 2005. doi: 10.1080/16864360.2005.10738354.
+Peter Sharpe, Rishikesh Ranade, Kaustubh Tangsali, Mohammad Amin Nabian, Ram Cherukuri, and
+  Sanjay Choudhry. Accelerating transient cfd through machine learning-based flow initialization.
+  arXiv preprint arXiv:2503.15766, 2025.
+Bálint Siklósi, Pushpender K. Sharma, David J. Lusher, István Z. Reguly, and Neil D. Sandham.
+  Reduced and mixed precision turbulent flow simulations using explicit finite difference schemes,
+  2025. URL https://arxiv.org/abs/2505.20911.
+Anand Pratap Singh and Karthik Duraisamy. Using field inversion to quantify functional errors in
+  turbulence closures. Physics of Fluids, 28(4), 2016.
+Jeffrey Slotnick, Abdollah Khodadoust, Juan Alonso, David Darmofal, William Gropp, Elizabeth
+  Lurie, and Dimitri Mavriplis. CFD Vision 2030 Study: A Path to Revolutionary Computational
+  Aerosciences. Nasa Cr-2014-21878, (March), 2014. URL http://ntrs.nasa.gov/search.
+  jsp?R=20140003093.
+J Smagorinsky. General circulation experiments with the primitive equations: 1. The basic equations.
+   Mon. Weather Rev., 91:91–164, 1963.
+P. R. Spalart and V. Venkatakrishnan. On the role and challenges of CFD in the aerospace industry.
+   The Aeronautical Journal, 120(1223):209–232, 2016. ISSN 0001-9240. doi: 10.1017/aer.2015.10.
+   URL http://www.journals.cambridge.org/abstract_S000192401500010X.
+Philippe R. Spalart. Detached-Eddy Simulation. Annual Review of Fluid Mechanics, 41(1):181–
+  202, 1 2009. ISSN 0066-4189. doi: 10.1146/annurev.fluid.010908.165130. URL http://www.
+  annualreviews.org/doi/abs/10.1146/annurev.fluid.010908.165130.
+Gemini Team, Rohan Anil, Sebastian Borgeaud, Jean-Baptiste Alayrac, Jiahui Yu, Radu Soricut,
+  Johan Schalkwyk, Andrew M Dai, Anja Hauth, Katie Millican, et al. Gemini: a family of highly
+  capable multimodal models. arXiv preprint arXiv:2312.11805, 2023.
+Luis Thomas, Sebastien Gougeaud, Stéphane Rubini, Philippe Deniel, and Jalil Boukhobza. Predict-
+  ing file lifetimes for data placement in multi-tiered storage systems for hpc. In Proceedings of the
+  Workshop on Challenges and Opportunities of Efficient and Performant Storage Systems, CHEOPS
+  ’21, New York, NY, USA, 2021. Association for Computing Machinery. ISBN 9781450383028.
+  doi: 10.1145/3439839.3458733. URL https://doi.org/10.1145/3439839.3458733.
+Jonathan Tompson, Kristofer Schlachter, Pablo Sprechmann, and Ken Perlin. Accelerating eulerian
+  fluid simulation with convolutional networks, 2022. URL https://arxiv.org/abs/1607.
+  03597.
+Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timothée
+  Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, et al. Llama: Open and
+  efficient foundation language models. arXiv preprint arXiv:2302.13971, 2023.
+M. Turner, J. Appa, and N. Ashton. Performance of cpu and gpu hpc architectures for off-design
+ aircraft simulation. In AIAA Scitech 2021 Forum, 2021. ISBN 978-1-62410-609-5.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz
+  Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing
+  systems, 30, 2017.
+B.C. Vermeire, F.D. Witherden, and P.E. Vincent. On the utility of GPU accelerated high-order
+  methods for unsteady flow simulations: A comparison with industry-standard tools. Journal of
+  Computational Physics, 334:497–521, 2017. ISSN 00219991. doi: 10.1016/j.jcp.2016.12.049.
+  URL http://linkinghub.elsevier.com/retrieve/pii/S0021999116307136.
+Jian-Xun Wang, Jin-Long Wu, and Heng Xiao. Physics-informed machine learning approach for
+   reconstructing reynolds stress modeling discrepancies based on dns data. Physical Review Fluids,
+   2(3):034603, 2017.
+
+
+                                                 33
+Maurice Weber, Daniel Y. Fu, Quentin Anthony, Yonatan Oren, Shane Adams, Anton Alexandrov,
+ Xiaozhong Lyu, Huu Nguyen, Xiaozhe Yao, Virginia Adams, Ben Athiwaratkun, Rahul Chalamala,
+ Kezhen Chen, Max Ryabinin, Tri Dao, Percy Liang, Christopher Ré, Irina Rish, and Ce Zhang.
+ Redpajama: an open dataset for training large language models. NeurIPS Datasets and Benchmarks
+ Track, 2024.
+
+Shizheng Wen, Arsh Kumbhat, Levi Lingsch, Sepehr Mousavi, Yizhou Zhao, Praveen Chandrashekar,
+  and Siddhartha Mishra. Geometry aware operator transformer as an efficient and accurate neural
+  surrogate for pdes on arbitrary domains. arXiv preprint arXiv:2505.18781, 2025.
+
+Samuel Williams, Andrew Waterman, and David Patterson. Roofline: an insightful visual performance
+  model for multicore architectures. Commun. ACM, 52(4):65–76, April 2009. ISSN 0001-0782.
+  doi: 10.1145/1498765.1498785. URL https://doi.org/10.1145/1498765.1498785.
+
+F. D. Witherden, a. M. Farrington, and P. E. Vincent. PyFR: An open source framework for
+   solving advection-diffusion type problems on streaming architectures using the flux reconstruction
+   approach. Computer Physics Communications, 185(11):3028–3040, 2013. ISSN 00104655. doi:
+  10.1016/j.cpc.2014.07.011. URL http://dx.doi.org/10.1016/j.cpc.2014.07.011.
+
+Haixu Wu, Huakun Luo, Haowen Wang, Jianmin Wang, and Mingsheng Long. Transolver: A fast
+  transformer solver for pdes on general geometries. arXiv preprint arXiv:2402.02366, 2024.
+
+Han Yang, Chenxi Hu, Yichi Zhou, Xixian Liu, Yu Shi, Jielan Li, Guanzhi Li, Zekun Chen, Shuizhou
+  Chen, Claudio Zeni, Matthew Horton, Robert Pinsler, Andrew Fowler, Daniel Zügner, Tian Xie,
+  Jake Smith, Lixin Sun, Qian Wang, Lingyu Kong, Chang Liu, Hongxia Hao, and Ziheng Lu.
+  Mattersim: A deep learning atomistic model across elements, temperatures and pressures. arXiv
+  preprint arXiv:2405.04967, 2024.
+
+Claudio Zeni, Robert Pinsler, Daniel Zügner, Andrew Fowler, Matthew Horton, Xiang Fu, Zilong
+  Wang, Aliaksandra Shysheya, Jonathan Crabbé, Shoko Ueda, et al. A generative model for
+  inorganic materials design. Nature, pp. 1–3, 2025.
+
+Xiaohua Zhai, Alexander Kolesnikov, Neil Houlsby, and Lucas Beyer. Scaling vision transformers.
+  In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pp.
+  12104–12113, 2022.
+
+
+A     Further discussion on the role of AI in CFD
+
+The main text of the paper discusses largely the use of AI surrogates outside of a conventional CFD
+solver. There are additional areas where AI can help to accelerate a convention CFD process, which
+we now discuss:
+
+      1. AI to develop improved turbulence/transition/chemistry models that plug within a conven-
+         tional CFD solver
+      2. AI to precondition/initialize CFD solutions to speed up the time to reach a converged/time-
+         averaged solution using an AI surrogate model.
+
+A.1   Improved turbulence/transition/chemistry models as plugin for conventional CFD solver
+
+A significant application of AI in computational fluid dynamics (CFD) lies in the development and
+calibration of closure models for physical phenomena that are not fully resolved on the computational
+grid (Brunton et al., 2019; Sanderse et al., 2024; Duraisamy et al., 2018). In many practical engineer-
+ing simulations, methods like Direct Numerical Simulation (DNS), which resolve all spatio-temporal
+scales of turbulence, are computationally intractable. Consequently, methodologies such as Reynolds-
+Averaged Navier-Stokes (RANS) and Large Eddy Simulation (LES) are employed, which rely on
+modeling the effects of the unresolved scales. AI and machine learning present a potential alternative
+to constructing these models with better accuracy.
+
+
+                                                  34
+A.1.1     Data-driven turbulence models
+The primary challenge in RANS and LES is the formulation of a closure for the unclosed terms that
+arise from the averaging or filtering process. As shown in Equation 4, many RANS models rely on
+the Boussinesq hypothesis, which assumes a linear relationship between the Reynolds stress and the
+mean strain-rate tensor. Here, the turbulent viscosity, µt , is determined by solving additional transport
+equations (e.g., for turbulent kinetic energy k and dissipation rate ϵ). The core idea of an AI-driven
+approach is to learn a superior functional mapping, from high-fidelity data (e.g., DNS or experiments)
+to predict the Reynolds stress tensor. This can be approached by correcting the turbulent viscosity:
+The idea is to learn a corrective function or a direct mapping for µt = f (Sij , Ωij , k, ϵ, . . . ) (Singh &
+Duraisamy, 2016; Wang et al., 2017), where Sij is the mean strain rate tensor, and Ωij is the mean
+rotation rate tensor. The objective is to create a RANS-based model whose solution field, achieves
+an accuracy comparable to LES but with a computational cost for RANS that remains orders of
+magnitude lower than that of LES.
+In LES, the governing equations are spatially filtered, introducing the unclosed sub-grid scale (SGS)
+stress tensor as shown in Equation 5. AI models (Gamahara & Hattori, 2017; Maulik et al., 2019) can
+learn a mapping from the velocity field to the SGS stress tensor, µsgs .
+
+A.1.2     Other AI-enhanced closure models
+The closure paradigm extends beyond turbulence modeling. Laminar-to-turbulent transition can be
+modeled by learning an intermittency factor (Li et al., 2023a), γ(⃗x, t) ∈ [0, 1]. An AI model can learn
+the mapping γ = f (Re, ∇p, . . . ) from local flow parameters to this factor, which then modulates the
+production terms in a turbulence model like k-ω SST. In reacting flows (e.g., combustion), the species
+transport equations contain highly non-linear chemical source terms, which are computationally
+expensive to evaluate directly using Arrhenius kinetics. An AI model can act as a surrogate, learning
+the complex mapping from the local thermochemical state (temperature T , pressure P , species mass
+fractions Yk ) to the source terms, which could replace costly integration or cumbersome lookup
+tables.
+
+A.2     AI to precondition/initialize CFD solutions
+
+A compelling application for AI is the use of surrogate models to provide high-quality initial
+conditions for iterative CFD solvers, thereby accelerating convergence to a steady-state or target
+solution (Sharpe et al., 2025).
+The central hypothesis is that the surrogate’s prediction lies significantly closer in the solution space
+to the final converged state than a conventional initialization, By initializing the solver within a
+stronger basin of attraction for the true solution, the number of iterations required for convergence
+can be substantially reduced. Such AI-based method offer a sophisticated alternative to conventional
+initialization strategies, which typically include either initialization with uniform freestream condi-
+tions, or interpolating a solution from a coarser computational mesh or a lower-fidelity simulation
+(e.g., using a steady-state RANS solution to initialize a scale-resolving simulation).
+
+B     Estimating flops per cell per step
+This section provides a computational cost analysis, in floating-point operations (FLOPs), for two
+prevalent CFD methodologies. The objective is to derive the number of FLOPs per computational
+cell per step (f ) to estimate resources for large-scale simulations. We accept that there exists a broad
+range of CFD input combinations, each resulting in different values for f . Nevertheless we pick
+two that correspond to the analysis in this paper and represent a representative high-fidelity and
+low-fidelity CFD input combination.
+The two methodologies are:
+
+        1. Implicit steady-state RANS: An unstructured finite-volume method with an implicit solver
+           and the k-ω SST turbulence model.
+        2. Explicit WMLES: A time-resolved Cartesian grid method using a Jameson-Schmidt-Turkel
+           (JST) scheme and the WALE subgrid-scale model.
+
+
+                                                    35
+The derived f metric shows how the two methods diverge, as summarized in Table 5.
+
+                             Table 5: Summary of the f parameter (FP32).
+      CFD methodology                 f (FLOPs per cell perstep) Key cost driver
+      Implicit steady-state RANS      ~40.000 (Range: 20 k−60 k) Linear system solution
+                                                                   (solver + preconditioner
+                                                                   efficiency)
+      Explicit WMLES                  ~2.800 (Range: 1.8 k − 3 k)  Number of time steps (dic-
+                                                                   tated by CFL stability limit)
+
+The wide range for implicit RANS is due to its cost being dominated by the iterative solution of
+a large, sparse linear system; its performance is highly sensitive to the preconditioner and number
+of inner solver iterations. In contrast, the explicit LES cost per step is deterministic and low, but
+the total simulation cost is driven by the vast number of time steps mandated by strict CFL stability
+constraints.
+
+B.1     The unified cost formula
+
+The total computational cost of a CFD simulation can be estimated using the following unified
+formula:
+
+                                  Total cost (FLOPs) = V × T × f ,                                (36)
+
+where V is the total cell count, T is the total number of iterations (RANS) or time steps (LES), and f
+is the methodology-specific parameter from Table 5.
+
+B.2     Implicit vs. explicit solvers
+
+The cost-per-cell metric diverges due to solver architecture.
+
+        • Implicit solvers (usually typically for RANS) perform a few computationally expensive
+          steps, dominated by solving a large, coupled linear system, where the state at tn+1 depends
+          on all neighbors at tn+1 .
+        • Explicit solvers (typically used for LES) perform many computationally cheap steps, as the
+          state at tn+1 is calculated using only known values from tn . This approach is limited by the
+          strict Courant-Friedrichs-Lewy (CFL) condition, mandating a vast number of small time
+          steps.
+
+A true comparison of work requires multiplying f by the total T , which will differ by orders of
+magnitude between the two approaches.
+
+B.3     Cost analysis of a steady-state implicit RANS solver
+
+An implicit RANS iteration solves the nonlinear system R(w) = 0 using a Newton-like method. A
+single iteration involves three main stages:
+
+       1. Residual calculation: Evaluation of the current flux imbalance, R(wk ). The residual R(wk )
+          represents the net imbalance of fluxes (mass, momentum, and energy) in each control volume
+          of the computational domain, based on the current approximate solution vector wk . If the
+          system were perfectly solved (at steady-state), the residual would be zero. The calculation
+          involves discretizing the RANS equations, which means computing all convective, diffusive,
+          and source terms using the current flow variables (wk ). For the 5-equation mean flow (using
+          Roe’s scheme) and the 2-equation k-ω SST model, this involves complex flux/source term
+          evaluation. The combined cost is estimated at ~6 k FLOPs/cell.
+       2. Jacobian assembly: Calculating and populating the entries of a large, sparse Jacobian ∂R
+                                                                                                ∂w
+          during each iteration. A common rule of thumb is that this costs 2 − 4× the residual
+          calculation. We estimate ~12 k FLOPs/cell.
+
+
+                                                  36
+        3. Linear system solution: Solving the large, sparse, linear system for the solution update,
+           ∆w. A block ILU preconditioner is required for the Krylov solver. Applying this involves
+           forward/backward substitution, estimated at ~1.5 k FLOPs per cell per inner iteration. The
+           GMRES iterative solver’s cost depends on NGMRES . Each iteration involves a sparse matrix-
+           vector product (SpMV) (~700 FLOPs), preconditioner application (~1.5 k FLOPs), and
+           vector operations (~420 FLOPs), for a total of ~2.6 k FLOPs per cell per GMRES iteration.
+Of these, the linear system solution consumes 80% or more of the total time.
+
+B.3.1     Synthesis and total FLOP count for RANS
+The total cost per outer RANS iteration sums these components. Assuming a typical NGMRES = 10:
+         • Linear solve cost: 10 × 2.6 k ≈ 26.2 k FLOPs per cell.
+         • Total iteration cost: 6 k (Residual) + 12 k (Jacobian) + 26.2 k (Linear solve) ≈ 44.2 k FLOPs
+           per cell per iteration.
+This aligns with our summary table and highlights the dominance of the linear solve.
+
+          Table 6: Estimated FLOPs breakdown per cell for an implicit RANS iteration
+ Component                                 Estimated FLOPs/Cell Percentage of Total (Approx.)
+ Residual calculation (fluxes, turbulence)           ~6 k                           14%
+ Jacobian matrix assembly                           ~12 k                           27%
+ Linear system solution (NGMRES = 10)              ~26.2 k                          59%
+ Total                                             ~44.2 k                         100%
+
+
+B.4     Cost analysis of a wall-modeled LES explicit solver
+
+Explicit LES requires time-accurate simulation, for which explicit methods are well-suited. A multi-
+stage Runge-Kutta (RK) scheme is common. The total work per time step is simply s (the number of
+stages) times the cost of a single spatial operator (residual) evaluation, R(w). No linear system is
+solved. The spatial operator R(w) consists of three main parts:
+        1. Convective fluxes (JST scheme): This part is dominated by the artificial dissipation (a blend
+           of second- and fourth-order terms) needed for stability, costing ~800 FLOPs per cell per
+           stage.
+        2. SGS Model (WALE): The subgrid-scale model amounts to ~300 FLOPs per cell per stage.
+        3. Flux evaluation: The central difference fluxes and viscous terms add another ~300 FLOPs
+           per cell per stage.
+The cost of the wall model is confined to boundary cells and is considered negligible in the domain-
+averaged cost.
+
+B.4.1     Synthesis and total FLOP count for LES
+The cost of a single residual evaluation is the sum of its components (~1.4 k FLOPs per cell per stage).
+For a typical two-stage Runge-Kutta scheme (s = 2), the total cost per time step is:
+
+                      Total cost = 2 × 1.4 k ≈ 2.8 kFLOPs per cell per time-step .                 (37)
+
+B.5     FLOPs to time-to-solution
+
+To translate total FLOPs into wall-clock time, one must use the hardware’s sustained, not peak,
+performance. CFD codes are memory-bandwidth-bound, so a sustained efficiency factor, ηsustained ,
+must be used:
+
+                                      Psustained = Ppeak × ηsustained .                            (38)
+
+
+                                                     37
+          Table 7: Estimated FLOPs breakdown per cell for an explicit WMLES time step.
+ Component                FLOPs per cell per stage Total FLOPs per cell (2-stage RK) Percentage of
+                                                                                       total (approx.)
+ Flux evaluation (cen-            ~300                             ~600                21%
+ tral diff. + viscous)
+ Artificial dissipation           ~800                            ~1.6 k               57%
+ (JST)
+ SGS Model (WALE)                 ~300                             ~600                21%
+ Total                            ˜1.4 k                          ˜2.8 k               100%
+
+
+For stencil-based and sparse matrix codes, a realistic ηsustained is typically between 5% to 15%. We
+assume a lower value of 5% for our low-fidelity implicit RANS solver and a higher level of 15% for
+our explicit WMLES solver.
+
+B.6   Final caveats
+
+This work provides a first-order estimate. There are several key uncertainties:
+
+       • The sustained efficiency factor (ηsustained ): This is the largest source of uncertainty, depending
+         on code implementation and memory access patterns.
+       • Algorithmic variations: The use of different numerical schemes, turbulence models, or linear
+         solvers (e.g., a different preconditioner) will alter the f value.
+
+C     Estimating the number of simulations required
+The parameter space for computational fluid dynamics is exceptionally high-dimensional. In the
+following section we provide a very approximate estimate on the number of samples N required to
+build a foundational model. We propose that we can split the simulations required into four core
+areas:
+
+      1. Domains Nd : High-level application areas (e.g., automotive, aerospace, turbo-machinery,
+         combustion).
+      2. Archetypes Na : Canonical base geometries within each domain (e.g., a “sedan” or “com-
+         mercial wide-body aircraft”).
+      3. Parameters Np : Key geometric and flow variables defining the design space (e.g., Reynolds
+         number, angle of attack).
+      4. Values per parameter Npv : The samples required per parameter e.g a range of inlet velocities
+         or geometry variations.
+
+We calculate the total number of simulations, nr through Equation 39. All these values shown in
+Table 8 are approximates and created to provide an order of magnitude estimation and to provoke
+further more rigorous estimates.
+
+                                      N = Nd × Na × Np × Npv                                           (39)
+
+
+                              Table 8: Derivation total simulation count
+                                Nd Na Np Npv                    N
+                                 9      100    50      50     2.25 × 106
+
+
+C.1   Ground transportation
+       • Archetypes (100 total): e.g Passenger cars & luxury vehicles, commercial & industrial
+         haulage, public transport & service vehicles, rail & tracked transport, motorcycles & micro-
+
+
+                                                    38
+        mobility, human-powered transport, construction & agricultural machinery, motorsport &
+        performance, military & specialized off-road, recreational & traditional
+      • Key parameters (D=50): e.g Vehicle geometry & bodywork, aerodynamic devices &
+        appendages, tyre wheel & suspension geometry, powertrain & propulsion values, thermal &
+        energy management, off-road & terrain interaction, fluid flow & boundary layer physics
+
+C.2   Aerospace
+      • Archetypes (100 total): e.g Commercial transport aircraft, general aviation & special
+        mission aircraft, rotorcraft & vertical lift, advanced air mobility vehicles, unmanned aerial
+        systems, light sport & gliding aircraft, spacecraft & launch systems, lighter-than-air vehicles,
+        amphibious & ground effect craft, experimental aerodynamic configurations
+      • Key parameters (D=50): e.g General aircraft geometry, wing & airfoil design, empennage
+        & control surfaces, propulsion & inlet configuration, rotor & propeller parameters, mass
+        & balance properties, flight kinematics & attitude, freestream & atmospheric conditions,
+        thermodynamic & heat transfer variables
+
+C.3   Turbo-machinery and energy systems
+      • Archetypes (100 total): e.g Aircraft propulsion & gas turbines, steam & vapor power
+        cycles, hydropower turbines, wind energy converters, industrial compressors & blowers,
+        ventilation & air handling, liquid pumps & pumping systems, marine propulsion & thrusters,
+        specialized rotormachinery & components
+      • Key parameters (D=50): e.g Blade & airfoil geometry, rotor, stator & volute dimen-
+        sions, machine sizing & clearances, operational flow conditions, fluid thermodynamics &
+        properties, performance & dimensionless parameters
+
+C.4   Built environment
+      • Archetypes (100 total): e.g Basic geometric primitives & shapes, building morphologies
+        & typologies, urban planning & street layouts, geographic & settlement patterns, bridges
+        & crossings, civil infrastructure & water works, transportation & traffic nodes, industrial,
+        energy & utility structures, residential, commercial & public venues
+      • Key parameters (D=50): e.g Urban morphology & density metrics, building geometry &
+        architectural features, surface roughness & terrain topography, computational domain &
+        boundary conditions, fluid dynamic similarity parameters, turbulence & flow field physics,
+        thermal environment & solar radiation, material properties & thermodynamics, atmospheric
+        stability & air quality
+
+C.5   Combustion and reactive flows
+      • Archetypes (100 total): e.g Fundamental flame types & configurations, industrial burners &
+        combustion systems, furnaces, kilns & boilers, internal combustion engine (ICE) chambers,
+        aerospace & gas turbine combustors, rocket propulsion & spacecraft thrusters, fire safety &
+        hazard dynamics, wildfire & environmental fire types, atomization & droplet dynamics
+      • Key parameters (D=50): e.g Combustor & burner geometry, flow field & turbulence scales,
+        stoichiometry & thermodynamics, fuel physical properties, chemical kinetics & flame speed,
+        combustion dimensionless groups, radiation & emissions physics
+
+C.6   Marine & hydrodynamics
+      • Archetypes (100 total): e.g Container ships, bulk carriers, tankers, passenger vessels,
+        offshore energy units, service & workboats, fishing & aquaculture vessels, leisure & recre-
+        ational vessels
+      • Key parameters (D=50): Principal hull dimensions, hull form coefficients & features,
+        hydrostatics & mass properties, propeller geometry, propulsion performance factors, rudder
+        geometry, environmental conditions, fluid properties
+
+
+                                                 39
+C.7   Biological and life sciences
+      • Archetypes (100 total): e.g Cardiac chambers & anatomy, heart valves & prosthetics, vas-
+        cular system & pathologies, respiratory airways & lungs, general organ systems, mechanical
+        circulatory support & filtration, vascular omplants & stents, medical delivery & access
+        systems, microfluidic mixing & droplet dynamics etc
+      • Key parameters (D=50): e.g anatomical & geometric dimensions, medical device specifi-
+        cations, tissue mechanics & surface properties, systemic hemodynamic parameters, fluid
+        dynamic similarity & shear metrics, biofluid rheology & viscosity, mass transport & gas
+        exchange, respiratory & pulmonary variables, microfluidic & interfacial physics, computa-
+        tional boundaries & lumped parameters etc
+
+C.8   Chemical & process engineering
+      • Archetypes (100 total): e.g Chemical & biological reactors, mixing & homogenization
+        qquipment, centrifuges & cyclonic separators, filtration & gravity settling systems, mass
+        transfer columns & internals, heat exchangers & reboilers, drying & evaporative cooling
+        systems, valves & flow control, pumps & fluid machinery, piping components & fittings
+      • Key parameters (D=50): e.g mixing & vessel geometry, separation & column internals, heat
+        Exchanger design specs, fluid dynamic similarity parameters, reaction kinetics & energetics,
+        heat & mass transfer rates, multiphase flow & particle physics, process performance &
+        timescales
+
+C.9   Electronics cooling & thermal management
+      • Archetypes (100 total): e.g heatsinks & extended surfaces, phase change & heat spreaders,
+        heatsinks & extended surfaces, liquid cooling components, fans & air movers, semiconductor
+        packaging, PCB & discrete components, power supply & energy storage, server & rack
+        architecture, data center thermal infrastructure, system chassis & enclosures
+      • Key parameters (D=50): e.g Semiconductor & package dimensions, heatsink & extended
+        surface geometry, PCB & thermal interface specifications, airflow & fan geometry, liquid
+        cooling & micro-channel specs, thermal loads & operating temperatures, thermal resistance
+        & impedance metrics, fan performance & flow dynamics, material properties & thermo-
+        physics, heat transfer coefficients & similarity numbers
+
+
+
+
+                                                40
+     D   Python code for scaling plots
+ 1
+ 2   import numpy as np , matplotlib . pyplot as plt
+ 3
+ 4   plt . rcParams . update ({ ’ font . size ’ :22 , ’ axes . labelsize ’ :22 , ’ axes .
+          titlesize ’ :22 , ’ xtick . labelsize ’ :22 , ’ ytick . labelsize ’ :22 , ’ legend .
+          fontsize ’ :16 , ’ figure . figsize ’ :(10 ,6) , ’ axes . grid ’: True , ’ grid . alpha ’
+          :0.3 , ’ lines . linewidth ’ :5.5})
+ 5
+ 6 # Constants & Pre - calculations
+ 7 N , S , FX = np . linspace (0 , 2 e6 , 100) , 1 e6 , ’ #1 f77b4 ’
+ 8 K_DG = 8.0 / (0.15 * 8 e13 * 3600)
+ 9 K_MT = 8.0 / (0.6 * 5 e15 * 3600) * 5.2
+10 SZ = (5 e8 / 64) * 1024 * 6
+11
+12 # Cost Functions
+13 def c_dg (n , f =2800 , c =5 e8 , t =2 e5 ) : return n * c * t * f * K_DG
+14 def c_mt (n , a =.24 , b =.43 , e =100) :     return n * 50 * e * ( SZ + 32**3 * (
+       n **( b / a ) ) ) * K_MT
+15
+16   # Base Costs
+17   yd , yt = c_dg ( N ) , c_mt ( N )
+18
+19 # Plot Configurations : ( Name , Title , Range , CostFn , LabelFn , FixedY ,
+       FixedLbl , FixedLS , FixedLW , VaryLS )
+20 cfgs = [
+21      ( ’ alpha ’ , r ’$ \ alpha$ ’ , np . linspace (.22 ,.26 ,5) , lambda v : c_mt (N , a =
+       v , b =.425) , lambda v : fr ’ Training cost ( $ \ alpha$ ={ v :.3 f }) ’ , yd , ’
+       Data generation cost ’ , ’ -- ’ , 2.5 , ’ - ’) ,
+22      ( ’ beta ’ , r ’$ \ beta$ ’ , np . linspace (.4 ,.47 ,5) , lambda v : c_mt (N , b = v ) ,
+         lambda v : fr ’ Training cost ( $ \ beta$ ={ v :.3 f }) ’ , yd , ’ Data
+       generation cost ’ , ’ -- ’ , 2.5 , ’ - ’) ,
+23      ( ’ epochs ’ , ’ Epochs ’ , [10 ,50 ,100 ,200 ,500] , lambda v : c_mt (N , e = v ) ,
+       lambda v : f ’ Training cost ( Epochs ={ int ( v ) }) ’ , yd , ’ Data generation
+         cost ’ , ’ -- ’ , 2.5 , ’ - ’) ,
+24      ( ’ datagen_flops ’ , ’ FLOPS / cell / step ’ , np . linspace (2 e3 ,1 e4 ,5) ,
+       lambda v : c_dg (N , f = v ) , lambda v : f ’ Data gen cost ({ int ( v ) } FLOPS ) ’
+       , yt , ’ Training cost ( Fixed ) ’ , ’ - ’ , 3 , ’ -- ’) ,
+25      ( ’ cells ’ , ’ cells ’ , np . linspace (1 e8 ,1 e9 ,5) , lambda v : c_dg (N , c = v ) ,
+       lambda v : f ’ Data gen cost ({ v /1 e9 :.1 f } B cells ) ’ if v >=1 e9 else f ’
+       Data gen cost ({ int ( v / S ) } M cells ) ’ , yt , ’ Training cost ( Fixed ) ’ , ’
+       - ’ , 3 , ’ -- ’) ,
+26      ( ’ timesteps ’ , ’ timesteps ’ , np . linspace (5 e4 ,5 e5 ,5) , lambda v : c_dg (
+       N , t = v ) , lambda v : f ’ Data gen cost ({ int ( v /1000) } k Steps ) ’ , yt , ’
+       Training cost ( Fixed ) ’ , ’ - ’ , 3 , ’ -- ’)
+27 ]
+28
+29 for nm , tit , vals , fn , lbl , fy , fl , fls , flw , vls in cfgs :
+30      f , ax = plt . subplots ()
+31      ax . plot ( N /S , fy /S , label = fl , color = FX , ls = fls , lw = flw )
+32      for v , c in zip ( vals , plt . cm . magma ( np . linspace (0.2 , 0.8 , len ( vals )
+       ))):
+33            ax . plot ( N /S , fn ( v ) /S , label = lbl ( v ) , color =c , linewidth =2.5 , ls
+       = vls )
+34      ax . set ( xlabel = ’ Sample size ( millions ) ’ , ylabel = ’ Cost ( $ millions ) ’
+       , title = f ’ Cost vs . sample size ( varying { tit }) ’ , yscale = ’ log ’ ,
+       ylim =(1 ,1000) , xlim =(0 ,2) )
+35      ax . legend ( loc = ’ lower right ’) ; f . tight_layout () ; f . savefig ( f ’
+       cost_analysis_ { nm }. png ’ , dpi =300)
+36
+37   plt . show ()
+
+
+
+
+                                                   41
+

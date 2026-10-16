@@ -1,0 +1,483 @@
+                                                 Virtual Foundry Graphnet for Metal Sintering
+                                                            Deformation Prediction
+                                                            Rachel Chen                                         Chuang Gan                                           Juheon Lee
+                                                               HP Inc.                                         HP Inc.                                              Meta Inc.
+                                                    Palo Alto, CA 94304, USA                   2727 JinKe Rd, Shanghai, 201203, China                         Menlo Park, CA, USA
+                                                         lei.chen1@hp.com                                chuang.gan@hp.com                                     juheon.lee@hp.com
+
+                                                            Zijiang Yang                             Mohammad Amin Nabian                                Jun Zeng
+                                                            HP Inc.                                            NVIDIA                                  HP Inc.
+                                         2727 JinKe Rd, Shanghai,2727 JinKe Rd, China               Santa Clara, CA 95051, USA               Palo Alto, CA 94304, USA
+arXiv:2404.11753v1 [cs.LG] 17 Apr 2024
+
+
+
+
+                                                     zijiang.yang@hp.com                                mnabian@nvidia.com                            @hp.com
+
+
+
+                                            Abstract—Metal sintering is a necessary step for Metal Injec-
+                                         tion Molded parts and binder jet such as HP’s metal 3D printer
+                                         (MetJet). The metal sintering process introduces large deforma-
+                                         tion varying from 25% to 50% depending on the green part
+                                         porosity. The final part’s geometrical accuracy and consistency
+                                         remain the top challenge to manufacturing yield. This is due to:
+                                         (1) green parts out of MetJet printer are much more porous than
+                                         other technologies (e.g., MIM); our green parts after sintering
+                                         could result in 50% volumetric shrinkage. (2) Such shrinkage
+                                         is not isotropic depending on non-uniform stress built up during
+                                         the sintering process, e.g., gravitational sag, gravitational slump,
+                                         surface drag. In this paper, we use a graph-based deep learning
+                                         approach to predict the part deformation, which can speed up the                Fig. 1. Metal Jet print stages to obtain the final part.
+                                         deformation simulation substantially at the voxel level. Running a
+                                         well-trained Metal sintering inferencing engine only takes a range
+                                         of seconds to obtain the final sintering deformation value. The        many factors causing the deformation (e.g., visco-plasticity,
+                                         tested accuracy on example complex geometry achieves 0.7um
+                                         mean deviation for a 63mm testing part, for a single sintering step    sintering pressure, yield surface parameters, yield stress, grav-
+                                         (equivalent to 8.3 minutes physical sintering time), and a 0.3mm       itational sag) must be captured and applied for shape defor-
+                                         mean deviation for the complete sintering cycle (approximately         mation prediction. The final part, geometrical accuracy, and
+                                         4 hrs physical sintering time).                                        consistency remain the top challenge to manufacturing yield.
+                                            Index Terms—graph neural networks, physics-ML, additive             This is due to: (1) green parts out of MetJet printer are much
+                                         manufacturing, digital twin, metal sintering, deep learning
+                                                                                                                more porous than other technologies (e.g., MIM); our green
+                                                                I. I NTRODUCTION                                parts after sintering could result in 50% volumetric shrinkage.
+                                                                                                                (2) Such shrinkage is not isotropic depending on non-uniform
+                                            HP is a world leader in additive manufacturing and has
+                                                                                                                stress built up during the sintering process, e.g., gravitational
+                                         a portfolio of products covering both polymer and metals,
+                                                                                                                sag (feature location disruption due to insufficient support),
+                                         one of which is the celebrated HP’s Metal Jet 3D printing
+                                                                                                                gravitational slump (downward flow of material changing part
+                                         system S100. HP’s Metal Jet S100 uses precision control of
+                                                                                                                thickness), surface drag (distortion caused by friction between
+                                         heat to trigger the phase transition of metal powder material
+                                                                                                                a part and supporting surface during the movement induced
+                                         to create metal parts of shape and strength as designed. HP is
+                                                                                                                by part shrinkage), as shown in Fig. 2 the Stanford dragon
+                                         developing Digital Twin software to virtualize such complex
+                                                                                                                test sample(4) [4].
+                                         material phase transitions during production such that the user
+                                         can predict and then optimize both the design parameters and              Commercial software solutions for metal sintering defor-
+                                         the process control parameters to improve part quality and             mation prediction exist, such as Abaqus and HP’s organic
+                                         manufacturing yield.                                                   solution for mental sintering simulation Virtual Foundry pro-
+                                            Metal sintering is a necessary step for Metal Injection             vides the domain science drive prediction based on the first
+                                         Molded parts and binder jet such as HP’s MetJet [1]. The metal         principle of sintering physics. Virtual Foundry incorporates
+                                         sintering process introduces large deformation varying from            factors including thermal profile, yield curve, part porosity, and
+                                         25% to 50% [2] [3] depending on the green part porosity. The           surface friction, which can simulate a part’s deformation due to
+                                                                                                                shrinkage, sagging effects, etc. As a physics-based simulation
+                                                                                                                engine, Virtual Foundry today requires very small timesteps
+                                                                               •   Spatial convolution networks, use message passing to
+                                                                                   aggregate local information from neighborhoods. They do
+                                                                                   not have much theoretical support, but they have simple
+                                                                                   architecture and have produced state of art results on
+                                                                                   some graph tasks [8] [9].
+                                                                               We use spatial convolution networks based on predecessors’
+                                                                             work [10].
+
+                                                                             B. Digital Twin
+                                                                                A Digital Twin is an integrated multi-physics, multiscale,
+                                                                             probabilistic simulation, as a virtual replica of a real physical
+Fig. 2. The Stanford dragon test model shows the isotropic part shrinkage,
+including gravitational sag, slump, and bending.                             asset or system. It is a computational model that collects online
+                                                                             data and information, based on physical theories, produces
+                                                                             accurate and synchronized simulations, or forecasts the future
+in simulation to manage the nonlinearity that arises from                    of the physical counterpart [11] [12] [13]. A Digital Twin
+the sintering physics. Simulating a part’s transient, dynamic                system, through the rapid (real-time) collection of online
+sintering process can take from tens of minutes to several                   data and information analytics, enables engagement with
+hours, depending on part size. Many additional use cases can                 the physical environment, updating changes (performance,
+be opened if we can substantially speed up Virtual Foundry.                  maintenance) of the physical system [14], making real-time
+   In this paper, as a component of HP’s Digital Twin effort,                recommendations and autonomous decisions to facilitate the
+we propose the Virtual Foundry Graphnet led by HP Labs to                    operation in the physical world. Digital Twin enables the
+predict the part deformation, which can speed up the deforma-                Industrial 4.0 revolution, extending to industries including
+tion simulation substantially at the voxel level. Running a well-            manufacturing, healthcare, and smart cities. For example, GE
+trained Metal sintering inferencing engine only takes a range                developed the “Predix” platform for creating Digital Twins to
+of seconds to obtain the final sintering deformation value. The              run data analysis and monitoring, and “imodel.js” created by
+tested accuracy on example complex geometry achieves 0.7um                   Bentley Systems is another example of a platform for building
+mean deviation for a 63mm testing part, for a single sintering               Digital Twins [15].
+step (equivalent to 8.3 minutes physical sintering time), and a
+0.3mm mean deviation for the complete sintering cycle ( 4 hrs                C. Sintering physics
+physical sintering). This disclosed technology is our path to                   The manufacturing process of a particular material from
+create a stand-alone deep-learning framework that can make                   powder consists of the consolidation step (i.e. injection mold-
+fast (near real-time) and accurate end-¬¬¬to-end predictions                 ing, extrusion, slip, isostatic pressing, etc.) and the sintering
+of the sintering part deformation.                                           step that produces the final densified product. The sintering
+                        II. R ELATED W ORK                                   process is the powder metallurgy process during the thermal
+                                                                             treatment which contacting particles are bonded to form the
+A. Graph neural networks
+                                                                             objects of the required mechanical properties. Sintering occurs
+   Graph data structures are widely used in complex physical                 primarily at the atomistic level, during which the rheological
+simulations, such as weather systems, fluid dynamics, and so                 response of the powder body as a homogeneous, porous
+on. The objects processed by these simulation tasks are often                continuum can be described by the governing constitutive laws
+distributed in non-Euclidean spaces, and there are complex                   [16]. The sintering kinetics of particulate bodies accounts for
+physical interactions between these objects. Such information                the impact from all properties: particles themselves, the local
+is difficult to process with conventional convolutional neural               interactions with each other, macroscopic factors (externally
+networks or recurrent neural networks. Graph neural networks                 applied forces, kinematic constrictions, i.e., adhesion of the
+(GNNs) can represent such data on graph space well and                       part and furnace), inhomogeneity of the initial density distri-
+can simulate the interaction between objects through message                 bution before sintering, etc. adient penalty.
+passing and aggregation. Due to its powerful data representa-                   Sintering simulation software tools such as the Finite el-
+tion and inference capabilities, GNN has been widely applied                 ement code Abaqus use the constitutive laws of sintering
+in the field of physical simulation. Graph neural networks                   based on the continuum model. HP’s in-house software Virtual
+leverage deep leaning methods to graph-structured data, it                   Foundry (Digital Sintering) also considers the bodies as homo-
+mainly has the following branches:                                           geneous, porous continuums and simulates plastic deformation
+   • Recurrent graph neural networks, aim to learn node                      at elevated temperatures governed by diffusional theories and
+      representations with recurrent neural architectures [5].               geometrical models of grains, grain boundaries, and pores.
+   • Spectral convolution networks, use the spectrum of graph                As a physics-based simulation engine, Virtual Foundry today
+      Laplacian to perform convolutions in the spectral domain.              requires very small timesteps in sintering physics simulation,
+      They have strong theoretical support [6] [7].                          leading to minutes to several hours for simulating a part’s
+transient, dynamic sintering process depending on part size,
+limiting the user applications.
+
+D. Physics informed network
+    With the recent advances of deep neural networks in
+various applications, including computer vision and natural
+language processing, [17] applying neural networks to scien-
+tific problems has been investigated. For example, Alphafold
+[18] predicts protein structures successfully, and FourCastNet
+[19] forecasts weather and the traditional numerical weather
+simulation. However, the expressive power of neural networks
+is limited by data size, it is only easily applicable to some
+scientific problems where data acquisition is not highly limited
+or expensive. A physics-informed neural network [20] is de-
+signed to address such problems by incorporating prior knowl-
+edge of physics. PINN proposed to solve the PDE system                Fig. 3. Data process pipeline to obtain the sintering-time graph data for
+by adding extra constraints called physics-informed loss on           training and inferencing. The sample dragon build is voxelated, the color
+neural networks. DeepONet uses two networks, TrunkNet and             gradient shows each voxel’s deformation scale; we preprocess the voxel-based
+                                                                      simulation output (left) to form “nodes” of the graph (right), representing the
+BranchNet; BranchNet is used for encoding and processing              concept of “metal particles”.
+the data, and TrunkNet is used for physics-informing the
+model at any query point. Fourier neural operator maps from
+the physical domain into the frequency domain then apply
+convolutions on the Fourier domain, thus building dimension-
+free data-driven neural physics solutions. However, PINN,
+DeepONet, and Fourier Neural Operator are based on Eu-
+clidean grid structure. Therefore, it is not easily scalable to
+scientific problems defined on non-Euclidean domains. Graph
+Neural Networks and its variants [21] have been proposed
+to address the issue by applying convolutions on the graph
+domain, such that one can solve the PDE system on non-
+                                                                      Fig. 4. Data process pipeline to obtain the sintering-time graph data for
+Euclidean domains.                                                    training and inferencing. The preprocessing steps are to convert the voxel-
+    For complex physical simulation tasks, such as weather            based simulation data into a graph-based data structure for each sintering
+systems and fluid dynamics, objects processed are often dis-          step
+tributed in non-Euclidean spaces and contain complex physical
+interactions. Graph neural networks (GNNs) can represent
+                                                                         •   Such inferencing using sintering simulation state at T (t =
+such data on graph space and can simulate object interaction
+                                                                             0) to T (t = k − 1) as input predicts the sintering simula-
+better than conventional convolutional or recurrent neural
+                                                                             tion state at T (t = k), is done near real-time, for example,
+networks.
+                                                                             less than a second. It predicts the entire rollout simulation
+                                                                             states, i.e. T (t = k +1), T (t = k +2), . . . T (t = k +n) in
+                III. T HE PROPOSED METHOD
+                                                                             less than or around 10 seconds (depending on the input
+  We proposed a graph network-based simulator to build out a                 geometry size). This is much faster than obtaining each
+quantitative model that can learn the entire physics simulation              sintering state through FEA simulation – in which case,
+process and deliver much faster prediction. The deep neural                  many timesteps will be required, and each timestep may
+network could:                                                               take minutes to complete. Using our proposed inferencing
+  • Directly infer the sintered object deformation state (dis-               model to replace physical simulation achieves a much
+    placement vectors at the voxel level, and other physical                 faster speed-up for Virtual Foundry.
+    fields associated with voxels, for example, porosity) at
+    time T (t = k), when given the state of the object                A. Data preparation
+    deformation at time T (t = 0) to T (t = k − 1), k > 1.               1) Virtual Foundry transfers the origin design file (in the
+  • Rollout to infer the sintered object deformation state after            form of STL, OBJ, 3MF, etc.) of parts into voxel data
+    T (t = k), i.e., T (t = k + 1), T (t = k + 2), . . . T (t = k +         through a voxelization process and outputs voxelated
+    n), n > 1, with given the state of the object deformation               format representing part
+    at T (t = 0) to T (t = k−1). In our tested setting, k can be         2) Based on the voxelated data, we compute vertices and
+    larger than 50, and possibly be even larger with optimized              edges of voxel data to build a graph G(V, E, U). G
+    model training to cover the entire sintering simulation.                represents a graph structure model at a specific sintering
+     timestep. V represents the nodes and E represents the
+     edges between two nodes, the connection of two nodes
+     through the edge represents the interactions between the
+     two nodes.
+     Each node in the graph has a list of attributes, as shown
+     in Fig. 4, the attribute list indicates the features of this
+     node. For example, the node attribute list of node i is in
+     the form of [sk−2 , sk−1 , sk , Tk ], where sk−2 , sk−1 , sk is
+     node i’s previous three timestep’s velocity, each sk is a
+     three-dimensional vector describing velocity in XY Z-
+     dimensions.                                                       Fig. 5. Simulation prediction on the processed graph data with graph neural
+                                                                       network architecture
+     Initial n (the equation shows the case when n=3,
+     we tested with various n values such as n=2, n=6)
+     timestep’s velocity vectors are added as node attributes,            We use multilayer perceptron (MLP) for each update func-
+     representing the moving speed of each node. Sintering             tion. The weights and parameters of each MLP are learned
+     physics has an intrinsic memory effect, that is, the              during training. We perform multiple rounds of this calcula-
+     current state has a strong dependency on the previous             tion, each round is referred to as one “message passing” step,
+     state’s history. Other physics-inspired parameters can be         representing the interaction among nodes through edges. The
+     added as node attributes, such as node velocity, and              number of messages passing rounds can vary depending on the
+     accelerations vector of each timestep.                            training setting. In our case, we set it equal to 10. The more
+     Boundary constraints were also implemented to distin-             message-passing rounds, the more accurate the prediction in
+     guish nodes that can move with all degrees of freedom             general, since more message-passing rounds represent the
+     from the nodes that fall on the contacting surface.               larger node interaction scope. We chose the optimal trade-off
+  3) To define the neighbors of each node, we build directed           setting between accuracy and training runtime.
+     edges among nodes using a k-dimensional tree and find
+                                                                          The decoder extracts displacement data from learned latent
+     neighbors of each node within a radius r. Set node Vi as
+                                                                       features and sends it to Virtual Foundry. For more details,
+     the “sender” of a directed edge, nodes within its radius
+                                                                       please refer to the section on integrating DL inside Virtual
+     r range are included as the “receivers” of the directed
+                                                                       Foundry.
+     edge of this node. We define radius r to be 1.2 times
+     voxel size so that each node has 6 neighbors as receivers.
+     Each edge in the graph also has a list of attributes,             C. Objective functions
+     including the relative distance of the connected nodes.              Our loss function design is as below, at time point k,
+  4) Optionally, we implement an additional component U,               features with length n as the input of the graph neural networks
+     representing the global factors of the entire graph. For          f and accelerations with length l as the output of the graph
+     example, we use sintering temperature at different times          neural networks f . Instead of predicting one-step acceleration
+     as a component U.                                                 after time point k, we predict and constrain multiple steps’
+  5) At different sintering timesteps, the graph structure             node accelerations. That is, the graph networks can directly
+     changes, such as the number of edge connections among             or recurrently output the elements of Y .
+     nodes (indicating the dynamics of node interactions),
+     nodes and edges’ attribute value (indicating the change
+     of displacement value at each node, change of stress),
+                                                                                        Y = [ak+1 , ak+2 , ak+3 , ..., ak+l ]                 (1)
+     etc.
+                                                                                        X = [sk−n , ..., sk−2 , sk−1 , sk , g]                (2)
+                                                                                        Y = fθ (X)                                            (3)
+B. Model architecture and training
+   The learned simulator consists of three stages: encoder,               Metal sintering is a complicated physics process. It’s diffi-
+processor, and decoder. The encoder converts Virtual Foundry           cult to predict long-term deformation without a large dataset.
+data to latent graph data G(V, E). here, V, E are sets of vertices     Instead of predicting one step after time point k, our method
+and edges, respectively. The processor computes interactions           predicts l consecutive small steps, l can be 1 step or multiple
+among nodes, aggregates information, and outputs learned               steps. Multiple steps are chosen to prevent the graph networks
+latent features. The processor has an interaction networks             only learning short-term dynamics of sintering. This can
+module. Firstly, it uses the previous step’s features to update        potentially alleviate the overfitting of training and reduce the
+edge features (edge attributes list). Then it uses the previous        prediction time of rollout. We use mean square error L(Y |X)
+feature set and the updated edge features to update node               to optimize the graph networks and add a discount factor in
+features. Finally, it uses previous features, edge features, and       the loss, where a’ denotes the predicted values, and a denotes
+node features to update global features.                               the ground truth values:
+  Fig. 6. Inference pipeline to iteratively predict the next sintering state.
+
+                                                                                Fig. 7. (a) Sample geometry Busbar at sintering start time shows no
+                                                                                deformation across the part. (b) Part deformation at the sintering finish state.
+                                                                                The simulation was generated with a mesh size equal to 500 microns.
+                        ′                          ′
+     L(Y |X) = (atk+1 − atk+1 )2 + γ(atk+2 − atk+2 )2 +
+                ′                                      ′
+          γ 2 (atk+3 − atk+3 )2 + ... + γ l−1 (atk+l − atk+l )2                 the global feature, implementing edge dropout (with random
+   Additionally, apart from differentiating the node types and                  edge dropout ratio set to be 60%, the randomly selected edges
+adding the type of vector as a node attribute for the model to                  are updated for every training epoch) during model training,
+learn differentiating during training, we can also constrain the                normalizing the input node features, including node velocities
+“Fixed node” and “Slip nodes” moving explicitly by setting                      and accelerations and adding additional anchoring point losses.
+their velocity or acceleration equal to 0 in the model loss                     Model version #4 shows the best prediction accuracy in both
+function (training objective function). With this loss function                 the next step and rollout predictions. We adopted the best
+implementation, the model learns with explicit instruction that                 model architecture version for later tests and report the test
+different node type has 0 acceleration in stated dimensions –                   accuracy in the next section.
+not moving in the stated dimensions.
+                                                                                B. Test geometry accuracy
+D. Inferencing                                                                     We demonstrate the model testing accuracy in this paper
+   Like the data preparation in the model training process, the                 on four different test geometries and different voxelization
+converted graph for the initial steps serves as the input of                    resolutions (voxel size equal to 1000 microns, 500 microns);
+trained graph networks. Corresponding to the training set, that                 the details of the test parts, including the number of voxels
+is, the model takes one data sample from t = 0 to t = n                         and the number of nodes for each test geometry after data
+(the initial n steps, where n is equal to the model training                    preprocessing are as shown in Table 2. Figure 6 shows
+parameter setting) as input, G(V, E, U) at t = n + 1 is to be                   the simulation complete state result of the part deformation
+predicted. Firstly, the trained graph network makes the next                    compared to the sintering start time (with no deformation). The
+timestep prediction. Then, the output of trained graph networks                 color bar shows the displacement magnitude in millimeters.
+G(V, E, U) at t = n + 1 is recursively fed as input and builds                     We demonstrate the rollout prediction accuracy on two
+up the following timestep’s graph input (from t = 1 to t =                      tested parts in Fig.8. The bar plot shows the mean nodal
+n + 1) to the same trained graph networks to predict the next                   prediction accuracy (measured as a mean error in millimeters)
+timestep’s (t = n + 2) graph features. This process is repeated                 until the end of the end-of-sintering cycle, and the dot plot in
+until the entire sintering process prediction is completed.                     red shows the maximum nodal prediction accuracy (measured
+                                                                                as a mean error in millimeter). The mean nodal predicted
+                    IV. E XPERIMENTAL RESULTS                                   difference for the first test part (the USB) is below 0.3mm,
+   NVIDIA GPUs are used to train/test the model. We im-                         and the max nodal predicted difference is around 1.2mm. For
+plemented the model with Pytorch with parallel training and                     the second test part (the Busbar), the mean nodal predicted
+mixed precision. Our code is integrated into the NVIDIA                         difference is around 0.2mm, and the max nodal predicted
+modulus platform as an application example of the Physcis-                      difference is around 1mm at the end of the sintering simu-
+ML models.                                                                      lation process. Figure 9 illustrates the nodal-level deformation
+                                                                                sampling at a mesh size equal to 1000 microns at the sintering
+A. Model optimization                                                           start time (with no deformation) and sintering completion state,
+  We trained the proposed model on a limited number of                          comparing the simulation ground truth value and the model
+geometries (7 different geometries at mesh size equal to 1000                   predicted value.
+microns are included in the training data to produce the Table                     We demonstrate the test result on all four geometries at a
+1 testing results). We tested both the “1-step accuracy” (the                   mesh size equal to 1000 microns, as shown in Fig. 10: the USB
+prediction accuracy of the very next timestep) and “Rollout                     with the part size of 59mm (measured the diagonal length),
+accuracy” (the prediction accuracy after the entire sintering                   Busbar (part size of 63mm), Extrusion screw (part size 19mm),
+process) on different geometries. Table 1 shows the version                     and Pushing grip (part size 87mm). The inference model was
+optimizations based on our baseline graph networks model.                       able to scale well with a small accuracy tradeoff at a smaller
+The improved model versions and their improved measured                         mesh size (we tested sample parts at 500 microns and 300
+accuracy are listed. We tested model architecture and hyper-                    micros) in our tests. Fig. 10. Shows the inference runtime to
+parameter variations, including adding sintering temperature as                 obtain the final deformation prediction for all four parts within
+             Experiment           Model             T        Edge         Node-feature      Anchor plane           1-step MSE      Rollout MSE
+                 #                version         profile   dropout        normalize       & anchor point l          (e10−9 )        (e10−2 )
+                                    GNS
+                  1                                  Yes       -                -                      -           49.7 / 95.7      52.1 / 43.8
+                             + Temperature(T )
+                                 GNS+ T
+                  2                                  Yes      Yes               -                      -               5.9 / 1.6     0.3 / 0.1
+                              +Edge dropout
+                               M#2 + Node
+                  3                                  Yes      Yes              Yes                     -               1.9 / 0.2     0.1 / 0.5
+                             feature normalize
+                             M#3 +Anchoring
+                  4                                  Yes      Yes              Yes                    Yes              1.5 / 0.6      0.1/0.1
+                                    Loss
+
+                                                                    TABLE I
+                                                      M ODEL VERSION ACCURACY COMPARISON .
+
+
+                                     Test geometry          Mesh size = 1000         Mesh size = 500              Size
+                                 (voxels / nodes count)          (103 )                  (103 )             (Diagonal / mm)
+
+                                    Extrusion Screw                0.8 / 6.8            4.8 / 38.7                19
+
+                                            USB                 5.5 / 44.3             35.3 / 282.0               59
+
+                                      Pushing Grip             10.6 / 84.4             79.9 / 639.4               87
+
+                                         Busbar                 3.8 / 30.6             20.5 / 11.8                63
+                                                                     TABLE II
+                                                             T EST PART GEOMETRY SIZE
+
+
+
+
+                                                                               Fig. 9. Rollout prediction accuracy on two tested geometries (a) USB and
+                                                                               (b) Busbar. The bar plot shows the mean nodal prediction accuracy, and the
+                                                                               dot plot (in red) shows the maximum nodal prediction accuracy.
+
+
+
+                                                                               sintering time of around 3 hours.
+                                                                                          V. CONCLUSION AND FUTURE WORK
+Fig. 8. Rollout prediction accuracy on two tested geometries (a) USB and          With the model prediction accuracy and fast inference
+(b) Busbar. The bar plot shows the mean nodal prediction accuracy, and the
+dot plot (in red) shows the maximum nodal prediction accuracy.
+                                                                               speed. This work as a component of HP’s Digital Twin effort,
+                                                                               Virtual Foundry Graphnet led by HP Labs aims to apply
+                                                                               Physics-Informed Neural Networks (PINN) to greatly accel-
+                                                                               erate the computation that predicts the metal powder material
+or around one minute, the runtime is computed with the input                   phase transition. It has achieved orders of magnitude speed-
+generation time from Virtual Foundry and the trained network                   up compared to physics simulation software while preserving
+inferencing time. Two tested parts have a maximum node error                   reasonable accuracy. Furthermore, Virtual Foundry Graphnet
+of less than 2% (compared to the part size). The Pushing grip                  has demonstrated an outstanding path-forward to scaling for
+shows the most significant maximum nodal error, yet it is still                diverse parts of arbitrary geometrical complexity, and scaling
+within 5%. This inference run simulated the actual physical                    for different process parameter configurations.
+                                                                                [11] A. Fuller, Z. Fan, and C. Day, “Digital twin: Enabling technology,
+                                                                                     challenges, and open research,” CoRR, vol. abs/1911.01276, 2019.
+                                                                                     [Online]. Available: http://arxiv.org/abs/1911.01276
+                                                                                [12] E. Glaessgen and D. Stargel, “The digital twin paradigm for future nasa
+                                                                                     and u.s. air force vehicles,” 04 2012.
+                                                                                [13] M. Mashaly, “Connecting the twins: A review on digital twin
+                                                                                     technology & its networking requirements,” Procedia Computer
+                                                                                     Science, vol. 184, pp. 299–305, 2021, the 12th International
+                                                                                     Conference on Ambient Systems, Networks and Technologies (ANT)
+                                                                                     / The 4th International Conference on Emerging Data and Industry
+                                                                                     4.0 (EDI40) / Affiliated Workshops. [Online]. Available: https:
+                                                                                     //www.sciencedirect.com/science/article/pii/S1877050921006694
+                                                                                [14] Z. Liu, N. Meyendorf, and N. Mrad, “The role of data fusion in
+                                                                                     predictive maintenance using digital twin,” vol. 1949, 04 2018, p.
+                                                                                     020023.
+Fig. 10. Max node error (in mm, and % to part size), inference runtime (to      [15] A. M. Madni, C. C. Madni, and S. D. Lucero, “Leveraging digital twin
+obtain the final deformation prediction) v.s. part original size, on the four        technology in model-based systems engineering,” Systems, vol. 7, no. 1,
+tested geometries (left to right: USB, Busbar, Extrusion screw, Pushing grip)        2019. [Online]. Available: https://www.mdpi.com/2079-8954/7/1/7
+                                                                                [16] D. Blaine, “The micromechanical influences on the constitutive laws of
+                                                                                     sintering for continuum model /,” 01 2004.
+                                                                                [17] D. Khurana, A. Koli, K. Khatter, and S. Singh, “Natural language
+   We at HP Labs recognize the significant role a growing                            processing: State of the art, current trends and challenges,” Multimedia
+open-source community can play in accelerating PINN’s de-                            Tools and Applications, vol. 82, 07 2022.
+velopment and expand its applications; Nvidia’s Modulus pro-                    [18] J. Jumper, R. Evans, A. Pritzel, T. Green, M. Figurnov, O. Ronneberger,
+                                                                                     K. Tunyasuvunakool, R. Bates, A. Žı́dek, A. Potapenko, A. Bridg-
+vides an outstanding platform to host such a PINN open-source                        land, C. Meyer, S. Kohl, A. Ballard, A. Cowie, B. Romera-Paredes,
+community. With open-sourcing Virtual Foundry Graphnet at                            S. Nikolov, R. Jain, J. Adler, and D. Hassabis, “Highly accurate protein
+the Modulus platform, HP Labs are joining the Modulus open-                          structure prediction with alphafold,” Nature, vol. 596, pp. 1–11, 07 2021.
+                                                                                [19] J. Pathak, S. Subramanian, P. Harrington, S. Raja, A. Chattopadhyay,
+source community.                                                                    M. Mardani, T. Kurth, D. Hall, Z. Li, K. Azizzadenesheli, P. Has-
+                                                                                     sanzadeh, K. Kashinath, and A. Anandkumar, “Fourcastnet: A global
+                         ACKNOWLEDGMENT                                              data-driven high-resolution weather model using adaptive fourier neural
+                                                                                     operators,” 2022.
+   This material is based upon work supported by the Air                        [20] S. Cuomo, V. S. di Cola, F. Giampaolo, G. Rozza, M. Raissi, and
+Force Office of Scientific Research under award number                               F. Piccialli, “Scientific machine learning through physics-informed neu-
+                                                                                     ral networks: Where we are and what’s next,” 2022.
+FA9550-23-1-0739. Any opinions, findings, and conclusions                       [21] K. Xu, W. Hu, J. Leskovec, and S. Jegelka, “How powerful are graph
+or recommendations expressed in this material are those of                           neural networks?” 2019.
+the author(s) and do not necessarily reflect the views of the
+United States Air Force.
+
+                             R EFERENCES
+ [1] H. INC, “Reinvent business opportunities with digitally driven                                      Rachel (Lei) Chen is a Machine Learning Research
+     metal 3d printing for mass production hp metal jet s100 printing                                    Engineer at HP Inc. She received her M.S. degree
+     solution,” 2022. [Online]. Available: https://h20195.www2.hp.com/v2/                                in Electrical and Computer Engineering from Duke
+     GetDocument.aspx?docname=4AA8-1958ENW                                                               University in 2019 and her B.S. degree in Electri-
+ [2] A. Kumar, J. Wang, Y. Bai, S. Huxtable, and C. Williams, “Impacts                                   cal Engineering from Korea Advanced Institute of
+     of process-induced porosity on material properties of copper made by                                Science and Technology (KAIST) in 2017. She is
+     binder jetting additive manufacturing,” Materials & Design, vol. 182, p.                            now devoted to research in applying cutting-edge
+     108001, 07 2019.                                                                                    deep learning algorithms in Additive Manufactur-
+ [3] J. Slotwinski and E. Garboczi, “Porosity of additive manufacturing                                  ing quality control, acceleration, and Digital Twins.
+     parts for process monitoring.”          40th Review of Progress in                                  (lei.chen1@hp.com)
+     Quantitative Non-Destructive Evaluation, Baltimore, MD, 2013-07-
+     26 2013. [Online]. Available: $https://tsapps.nist.gov/publication/get
+     pdf.cfm?pub id=914546$
+ [4] [Online]. Available: https://graphics.stanford.edu/data/3Dscanrep/
+ [5] Z. Wu, S. Pan, F. Chen, G. Long, C. Zhang, and P. S. Yu, “A
+     comprehensive survey on graph neural networks,” IEEE Transactions
+     on Neural Networks and Learning Systems, vol. 32, no. 1, p. 4–24,
+     Jan. 2021. [Online]. Available: http://dx.doi.org/10.1109/TNNLS.2020.
+     2978386                                                                                             Chuang Gan received his B.S. degree from Nanjing
+ [6] J. Bruna, W. Zaremba, A. Szlam, and Y. LeCun, “Spectral networks and                                University of Aeronautics and Astronautics, China,
+     locally connected networks on graphs,” 2014.                                                        in 2014 and his M.S. degree from Zhejiang Uni-
+ [7] T. N. Kipf and M. Welling, “Semi-supervised classification with graph                               versity, China, in 2017. Since 2017, he has been
+     convolutional networks,” 2017.                                                                      a software engineer and researcher at HP Inc. His
+                                                                                                         research interests are in deep learning and computer
+ [8] J. Atwood and D. Towsley, “Diffusion-convolutional neural networks,”
+                                                                                                         vision. (chuang.gan@hp.com).
+     2016.
+ [9] P. Veličković, G. Cucurull, A. Casanova, A. Romero, P. Liò, and
+     Y. Bengio, “Graph attention networks,” 2018.
+[10] A. Sanchez-Gonzalez, J. Godwin, T. Pfaff, R. Ying, J. Leskovec, and
+     P. W. Battaglia, “Learning to simulate complex physics with graph
+     networks,” 2020.
+                         Juheon Lee received his PhD degree from the
+                         University of Cambridge, UK, in 2016. Since 2019,
+                         he has been a research scientist at HP Inc. His
+                         research interests are in geometric deep learning
+                         physics-informed neural networks and neural tangent
+                         kernel theory. (juheon.lee@hp.com).
+
+
+
+
+                         Zijiang Yang received his B.S. degree from Zhe-
+                         jiang University, China, in 1997 and his Ph.D. degree
+                         from Zhejiang University, China, in 2003, respec-
+                         tively. From 2003 to 2008, he was a senior software
+                         specialist at Nokia, China. Since 2008, he has been a
+                         software expert and master technologist at HP Inc.,
+                         China. His research interests are in deep learning
+                         and IoT. (zijiang.yang2@hp.com).
+
+
+
+
+                         Mohammad Amin Nabia is a senior software
+                         engineer, at AI-HPC at NVIDIA. Mohammad is one
+                         of the core developers of NVIDIA Modulus, an
+                         AI framework for physics-ML models. Mohammad
+                         received his Ph.D. from the University of Illinois
+                         at Urbana-Champaign, with research focused on
+                         artificial intelligence for scientific computing. Mo-
+                         hammad’s background is in numerical simulation,
+                         artificial intelligence, and uncertainty quantification.
+                         (mnabian@nvidia.com).
+
+
+
+
+                        Jun Zeng is a Distinguished Technologist at HP Inc.
+                        and a principal investigator and research manager
+                        leading software research in 3D Printing and Digital
+                        Manufacturing for the HP 3D Printing Software
+                        group. His publications include a co-edited book
+                        on the Computer-aided Design of microfluidics and
+                        biochips, a co-authored book on production manage-
+                        ment of digital printing factories, 50+ peer-reviewed
+                        papers, and 42 granted patents and more pending.
+                        His academic training includes advanced degrees in
+                        mechanical engineering (PhD) and computer science
+(M.S.), both from Johns Hopkins University. Jun is an ACM member and an
+IEEE senior member. (jun.zeng@hp.com).
+

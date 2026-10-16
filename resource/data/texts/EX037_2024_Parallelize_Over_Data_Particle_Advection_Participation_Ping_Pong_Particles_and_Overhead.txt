@@ -1,0 +1,916 @@
+                                                                                                                                                                                          1
+
+
+
+
+                                                  Parallelize Over Data Particle Advection:
+                                              Participation, Ping Pong Particles, and Overhead
+                                                    Zhe Wang∗ , Kenneth Moreland∗ , Matthew Larsen† , James Kress‡ , Hank Childs§ , David Pugmire∗
+                                                                       ∗ Oak Ridge National Laboratory, Oak Ridge, TN, USA
+                                                                                   † Luminary Cloud, Inc., CA, USA
+                                                             ‡ King Abdullah University of Science & Technology (KAUST), Saudi Arabia
+                                                                              § University of Oregon, Eugene, OR, USA
+
+
+                                             Abstract—Particle advection is one of the foundational algo-                other, efficient parallel processing of trajectory computations
+                                         rithms for visualization and analysis and is central to under-
+arXiv:2410.09710v1 [cs.DC] 13 Oct 2024
+
+
+
+
+                                                                                                                         can be difficult. The most common approach to parallel
+                                         standing vector fields common to scientific simulations. Achieving              particle advection over distributed memory ranks (such as
+                                         efficient performance with large data in a distributed memory
+                                         setting is notoriously difficult. Because of its simplicity and min-            in an MPI job [6]) is Parallelize over Data (POD), which
+                                         imized movement of large vector field data, the Parallelize over                assigns a partition of the flow field (a “block”) to each
+                                         Data (POD) algorithm has become a de facto standard. Despite its                compute rank and pushes trajectory computation to the rank
+                                         simplicity and ubiquitous usage, the scaling issues with the POD                containing the particle’s position. POD is popular because it
+                                         algorithm are known and have been described throughout the                      simplifies the data distribution and execution of the algorithm,
+                                         literature. In this paper, we describe a set of in-depth analyses
+                                         of the POD algorithm that shed new light on the underlying                      and it also minimizes data movement, which is particularly
+                                         causes for the poor performance of this algorithm. We designed                  crucial for in situ visualization [7]. POD also matches the data
+                                         a series of representative workloads to study the performance                   distribution model commonly used by data parallel software
+                                         of the POD algorithm and executed them on a supercomputer                       frameworks for scientific visualization [8]. Therefore, POD is
+                                         while collecting timing and statistical data for analysis. we then              the default algorithm used by scalable visualization tools such
+                                         performed two different types of analysis. In the first analysis, we
+                                         introduce two novel metrics for measuring algorithmic efficiency                as ParaView [9], VisIt [10], and Ascent [11].
+                                         over the course of a workload run. The second analysis was from                    Although straightforward to implement and sometimes effi-
+                                         the perspective of the particles being advected. Using particle-                cient, POD can become slow when algorithm configurations or
+                                         centric analysis, we identify that the overheads associated with                data sets lead to unbalanced particle advection workloads. The
+                                         particle movement between processes (not the communication                      fundamental problem with POD is that the division of work
+                                         itself) have a dramatic impact on the overall execution time.
+                                         These overheads become particularly costly when flow features                   is dictated by the structure of the velocity field rather than the
+                                         span multiple blocks, resulting in repeated particle circulation                amount of computation to be done, and thus work becomes
+                                         (which we term “ping pong particles”) between blocks. Our                       unbalanced when particles distribute themselves unevenly to
+                                         findings shed important light on the underlying causes of poor                  velocity field blocks. This can occur for a variety of reasons,
+                                         performance and offer directions for future research to address                 including the following. First, seed placement in a small region
+                                         these limitations.
+                                                                                                                         of the overall volume will limit the number of ranks that can
+                                            Index Terms—Scientific Visualization, Particle Advection, Par-               participate in performing work. Additional ranks will only get
+                                         allel over Data                                                                 work as the seeds propagate through the volume. This is of
+                                                                                                                         course dependent on the nature of the velocity field and some
+                                                                   I. I NTRODUCTION                                      ranks may see little or no work. Second, if the velocity field
+                                            Particle advection is a foundational algorithm for the vi-                   contains one or more sinks, the particles will be attracted to
+                                         sualization and analysis of flow fields. Particle advection in                  these data blocks, and hence ranks that contain these features.
+                                         fluid flow visualization starts with a vector field representing                Even if the initial seed locations are distributed throughout
+                                         the velocity of a fluid and traces the trajectories that massless               the entire volume, the particles, and hence the work to advect
+                                         particles would take if carried by this fluid. These trajectories               them, become concentrated by the ranks with sink features
+                                         can be used directly to represent the flow as streamlines, but                  that collect them.
+                                         they also form the basis of numerous other flow visualization                      In this paper, we present new results that shed important
+                                         algorithms, including stream surfaces [1], [2], Lagrangian                      light on the underlying causes of imbalance and decreased
+                                         coherent surfaces [3], and Poincaré plots [4], [5].                             performance for distributed memory particle advection. We
+                                            Tracing particles can be computationally expensive, and                      design a set of experiments to explore the performance of this
+                                         although the trajectories of particles are independent of each                  algorithm across a diverse set of workloads. From the different
+                                                                                                                         computational tasks within the algorithm, we formulate a
+                                            This manuscript has been authored by UT-Battelle, LLC under Contract         model that describes the execution time and is used as the
+                                         No. DE-AC05-00OR22725 with the U.S. Department of Energy. The pub-
+                                         lisher, by accepting the article for publication, acknowledges that the U.S.    basis for our analysis of results. Further, we instrument the
+                                         Government retains a non-exclusive, paid up, irrevocable, world-wide license    code to collect a variety of timings, counters, and statistics
+                                         to publish or reproduce the published form of the manuscript, or allow others   from our model to quantify the algorithmic behavior across
+                                         to do so, for U.S. Government purposes. The DOE will provide public
+                                         access to these results in accordance with the DOE Public Access Plan           these differing workloads.
+                                         (http://energy.gov/downloads/doe-public-access-plan).                              The contributions of this paper are described below. We
+                                                                                                                                    2
+
+
+
+introduce a novel metric called rank participation to effec-        processors are joined in a cluster configuration, giving rise
+tively quantify the evolving workload imbalances of particle        to what is often known as an MPI+X configuration. Particle
+advection over time. This metric serves as an efficient tool        advection in these systems uses a POS approach locally but a
+for measuring the degree of associated imbalance between            basic POD approach across the process ranks of the distributed
+different workloads on the same dataset as well as among            system [23], [24]. In such a configuration, it is common to
+different datasets. We additionally introduce the concept of        perform both the advection and communication of particles in
+aggregated rank participation to facilitate the comparison          batches. That is, advecting all of the particles that are present
+of workload imbalances across diverse datasets and their            on a particular node followed by communication of particles
+associated settings. The challenges of the POD algorithm at         to the next destination.
+scale are well known [12]. In using these metrics, we find that
+the POD algorithm can be efficient for some select cases, but       B. Performance evaluation of particle advection algorithms
+that the participation rates are much worse than expected for
+                                                                       Peterka et al. [16] utilize a particle tracer to monitor key
+the majority of the configurations in our experiments.
+                                                                    metrics of the parallel particle advection system. They discuss
+   Our second contribution comes from an analysis of individ-
+                                                                    several bottlenecks of the particle advection system. Our work
+ual particles being advected. We have identified two primary
+                                                                    views the execution time of the whole particle advection
+factors that lead to decreased performance, which to the best
+                                                                    system from both perspectives of computation ranks and long-
+of our understanding have not been described in the literature.
+                                                                    running particles, which better explains the bottleneck of the
+First, the number of particles that are processed together in
+                                                                    particle advection system. We also derive metrics that evaluate
+a group on a given rank can cause a significant increase
+                                                                    the degrees of corresponding factors causing the bottleneck.
+in the overall execution time. Second, the overhead (not
+                                                                       Childs et al. [25] explore the relationship between particle
+the communication itself) of transferring particles between
+                                                                    advection workloads and the high-performance hardware in
+processes grows unexpectedly and has a dramatic impact on
+                                                                    which they are run. They conclude that powerful processors
+the overall execution time. We also identify cases where these
+                                                                    and GPUs can help with dense particle workloads, but those
+overheads rapidly accumulate. These cases, which we term
+                                                                    benefits diminish as the workload lightens. Our study uses
+“ping pong effect”, occur when flow features span multiple
+                                                                    the performance model as an intermediate tool to explore the
+blocks. This results in particles repeatedly circulating between
+                                                                    reason causing workload imbalance.
+the blocks containing the flow features.
+                                                                       Sisneros et al. [26] vary multiple parameters, and evaluate
+   The rest of the paper is organized as follows. § II discusses
+                                                                    the associated performance of parallel particle advection based
+the background and related work. § III describes the particle
+                                                                    on POD. Their results reveal that the default configurations
+advection algorithm and derives a model for the execution
+                                                                    used in production-ready visualization tools are not always
+time. § IV describes the experiments performed, and § V pro-
+                                                                    optimal. However, their analysis only shows the relationship
+vides a detailed evaluation of the results. In § VI, we discuss
+                                                                    between the configuration and performance, and they do not
+the implications of our findings and describe approaches for
+                                                                    discuss the underlying reason causing poor performance for a
+alleviating their effects. Finally, we conclude the paper and
+                                                                    specific configuration. Our work uses metrics associated with
+indicate future works in § VII.
+                                                                    each process and long-running particles to reveal how the
+                                                                    unbalanced workload decreases the performance of parallel
+          II. BACKGROUND AND R ELATED W ORK                         particle advection.
+A. Parallel particle advection algorithms                              Binyahib et al. [27] present a comprehensive evaluation to
+                                                                    show how different particle advection algorithms behave with
+   When advecting particles in a distributed-memory parallel
+                                                                    different workload factors. Their results show that POD has the
+system (i.e., one using a Message Passing Interface (MPI) [6]
+                                                                    best performance when using a large seeding box. Our work
+model), there are two basic approaches to the implementa-
+                                                                    further explores situations that cause a poor performance of
+tion [13]. The first is a data parallel Parallelize over Data
+                                                                    the POD algorithm with a large seeding box.
+(POD) approach where data are partitioned and distributed
+among process ranks to manage particles in those domains.
+The second is a task parallel Parallelize over Seeds (POS)          C. Load-balanced particle advection algorithms
+approach where particles are evenly distributed among pro-             Nouanesengsy et al. [28] describe a partitioning algorithm
+cess ranks and data are loaded on ranks as needed. These            based on workload estimation to reduce the idle time of each
+approaches can also be combined to form hybrid implementa-          rank for a parallel particle streamline generation algorithm.
+tions [14]–[19]. We direct the reader to Zhang and Yuan [20]        Subsequent research [29], [30] use dynamic load balancing
+for an overview and Yenpure [21] for optimization strategies        strategies to adjust the workloads between processes to im-
+of parallel particle tracing systems.                               prove the performance of particle tracing systems. By analyz-
+   Recent computer architecture introduces computer proces-         ing the reasons that cause that imbalance of particle advection
+sors such as multi-core CPUs and GPUs that have a high              in detail, our work complements the literature that studies the
+degree of parallelism. Particle advection systems taking ad-        workload participation strategy of parallel particle advection.
+vantage of these processors have shared memory access, and          In particular, the rank participation value shows how load
+thus, a POS approach is a natural fit for local parallelism [22].   balancing between different processes changes during the
+That said, in a high-performance computer, multiple parallel        particle advection, and the long-running particle statistics show
+                                                                                                                                         3
+
+
+
+how “ping pong particles” can cause workload imbalance.                The computation phase is performed if the rank has any
+In addition, we focus on asynchronous MPI communication,            work. If the ActiveQueue is not empty, a particle advec-
+which is barely discussed in the aforementioned related works       tion kernel is initialized with the particles in ActiveQueue
+for load-balanced particle advection systems.                       (Line 9). Execution of the kernel will advance each particle
+                                                                    by solving the differential equation using a Runge-Kutta 4
+                                                                    (RK4) solver [31] to compute the path (Line 11). Each particle
+           III. T HEORETICAL C ONSIDERATIONS
+                                                                    is advected until a termination criterion is met (i.e., the
+   This section presents a framework used to analyze the            maximum number of iterations, or the particle enters a zero-
+execution time for a parallel particle advection workload. In       velocity region– a sink), or it exits the spatial domain of the
+particular, § III-A describes the POD algorithm adopted in this     data block. Next, at the end of advection, the particles exiting
+study. § III-B defines terms for computational tasks in the POD     the block, Pout , and the number of terminations are extracted
+algorithm and provides a model for the execution time from a        from the advection Result (Lines 13, 14) and the ActiveQueue
+rank- and a particle-based perspective. The model provides a        is cleared (Line 15).
+theoretical foundation in explaining experiment results in § V.        Following computation, the communication phase is per-
+                                                                    formed using asynchronous message passing with MPI [32].
+                                                                    The first step is to send particles in the Pout queue to their
+A. Particle advection algorithm                                     destinations. The destination rank can be determined from the
+                                                                    location of each particle in Pout .1 The particles being sent
+Algorithm 1 Parallel particle advection algorithm.                  to each destination are bundled together and sent using the
+                                                                    asynchronous MPI_Isend call (Line 18). The second step
+ 1: /* Initialization */                                            is to update the global counter for the locally terminated
+ 2: ActiveQueue = GetSeeds()                                        particles (Line 19). If Pout is empty or Nterm is zero, then
+ 3: Count = TotalNumberOfParticles()                                the operations are both no-ops. The third step (Line 20) is
+ 4: while Count > 0 do                                              to receive any incoming particles that have been sent by other
+ 5:   Pout = Empty                                                  ranks. This is done using MPI_Iprobe, which will indicate if
+ 6:   Nterm = 0                                                     any messages have arrived from other ranks. If any messages
+ 7:   if ActiveQueue not Empty then                                 have asynchronously arrived, the MPI_Irecv call is used
+                                                                    to receive them. These incoming particles are added to the
+ 8:      /* Begin overhead */
+                                                                    ActiveQueue (Line 21) for processing during the next iteration
+ 9:      Initialize Kernel with ActiveQueue
+                                                                    of the loop.
+10:      /* Advection */
+11:      Result = Kernel execute
+                                                                    B. Execution time model
+12:      /* End Overhead */
+13:      Pout = Exiting particles from Result                         From Algorithm1 we define the following terms.
+14:      Nterm = Num terminated from Result                           • I is the time for initialization. (Lines 2- 3)
+15:      ActiveQueue = Empty                                          • BO denotes “begin overhead”, the overhead required
+16:   end if                                                            to initialize a worklet with a batch of particles. This
+17:   /* Communication and Wait */                                      overhead includes the time to select active particles and
+18:   Send Pout                                                         create the necessary data structures within the kernel for
+19:   Count = UpdateCounter(Nterm )                                     particle advection. (Line 9).
+20:   Pin = Receive incoming particles                                • A denotes the time to advect a batch of particles until
+21:   Add Pin to ActiveQueue                                            they terminate or leave the data block (Line 11).
+                                                                      • EO denotes “end overhead”, the overhead required to
+22: end while
+                                                                        determine the status of each particle, organize the data
+                                                                        into outgoing buffers, and clearing the ActiveQueue
+      Algorithm 1 contains the pseudocode for performing                (Lines 13- 15).
+parallel particle advection used in this paper. It uses the           • C represents the time to exchange particles and update
+parallelize over data (POD) scheme where the data blocks                the global counter. This includes serializing the particles
+are spatially partitioned across a set of processes. Each rank          into a message, sending it over the network, and deseri-
+performs the advection for each particle that passes through the        alization. (Lines 18- 20).
+block it is assigned. During initialization , each rank assigns       • W represents the time spent when a rank has no work
+the particles contained in the local block to a variable called         to perform and waiting for particles to arrive. When
+ActiveQueue (Line 2) and then the number of particles across            using asynchronous communication this term is difficult
+all processes is computed (Line 3).                                     to compute, so we merge C and W into a single term,
+   Following initialization, the algorithm executes a while loop        CW that captures the communication and wait time.
+until all of the particles terminate or exit the global bounds of
+the data. The while loop consists of two phases: computation          1 The states of particles are also updated when computing terminated
+and communication.                                                  particles in Line 14.
+                                                                                                                                       4
+
+
+
+  From the perspective of a particular rank, we can model the             Weak scaling efficiency provides an overall view for a
+execution time as follows. Using the terminology in previous           workload’s scalability. Low weak scaling efficiency indicates
+works [13], [16], each iteration of the while loop (Lines 4-           that the workload becomes more unbalanced with an increase
+22 in Algorithm 1) is called a round. For rank r, and a total          in the number of processors during the particle advection.
+number of rounds (iterations) Nr , the execution time, Tr can             Rank participation represents the ratio of busy ranks in-
+be modeled as follows.                                                 volved in the particle advection. For any moment t and the
+                   XNr h                              i                specific rank r, if rank r is in the advection stage (namely,
+       Tr = Ir +         BOri + Air + EOri + CWri          (1)         BO A or EO in Equation 1), the rank participation value
+                     i=1                                               for this rank (RPr ) equals 1; otherwise,
+                                                                                                               PN it is zero. The rank
+  The total execution time for the entire workload with R              participation value for all ranks is r=1 RPr /N , where N
+ranks, Ttotal is the execution time for the rank with the longest      is the total number of ranks. Given that rank participation is
+execution time.                                                        measured at an instantaneous time t, it can support the case
+                                                                       where asynchronous POD has unaligned rounds.
+                   Ttotal = max(T1 , . . . , TR )                         Aggregated participation rate represents the overall status
+                                                                       of the particle participation for a complete particle advection
+   As a particle is advected within a dataset, it traverses
+                                                                       run and is measured as the average rank participation over
+through a sequence of blocks. Given a particle with index p
+                                                                       the run. If rank participation is represented as a continuous
+that travels through a total of Np blocks (i.e., B1 , . . . , BNp ).
+                                                                       function over the time of the run, then the aggregated partic-
+For the pth particle that traverses through a total of Np blocks,
+                                                                       ipation rate is the area under this curve divided by the time
+the execution time Tp can be modeled as follows.
+                                                                       of the run. In practice, the rank participation is measured at
+                    Np h
+                    X                                     i            discrete intervals, and these measurements are averaged.
+        Tp = Ip +          BOpi + Aip + EOpi + CWpi             (2)       Particle statistics include a series of information associated
+                    i=1                                                with particles shown in Equation 2: particle alive time, num-
+  The total execution time for the entire workload of P                ber of traversed compute ranks, particle termination reason,
+particles, Ttotal is simply the execution time for the slowest         particle accumulated advection time, overhead, and wait time.
+particle.                                                              By analyzing these statistical metrics we can understand the
+                   Ttotal = max(T1 , . . . , TP )                      wide variation in run time among particles. Associated analysis
+                                                                       results can identify the root reason for workload imbalance
+  It is worth noting that Algorithm 1 processes groups of              and guide us in choosing appropriate solutions to improve the
+particles together. This design is desirable to keep processors        performance of particle advection further.
+busy and to minimize the amount of communication. As such,
+particles are processed in groups, and each term included in
+                                                                       B. Experimental setup
+Tp in Equation 2 is influenced by all particles in the same
+group as particle p.                                                      Our workloads are varied in the flow dataset, the amount
+                                                                       of partitioning and parallelism, and the maximum iteration
+               IV. E XPERIMENTAL OVERVIEW                              length. The following five datasets with different flow char-
+                                                                       acteristics are used.
+   Our experiments are designed to explore the magnitude and
+                                                                          • Tokamak: a torus-shaped vector field from a magnetically
+associated reasons of imbalance for the POD particle advection
+                                                                            confined fusion simulation using the NIMROD code [33].
+algorithm using a diverse set of workloads. § IV-A describes
+                                                                            See Figure 1(a).
+the metrics adopted in our evaluation, and § IV-B describes
+                                                                          • Supernova: a vector field derived from the magnetic
+the experimental setup, including the datasets, workloads, and
+                                                                            field during a supernova simulation using the GenASiS
+evaluation platforms. § IV-C details how associated metrics
+                                                                            code [34]. See Figure 1(b).
+used for analysis data are collected in experiments.
+                                                                          • Hydraulics: a thermal hydraulics simulation of a box with
+                                                                            two inlets and one outlet using the NEK5000 code [35].
+A. Evaluation goals and metrics                                             See Figure 1(c).
+   To represent the imbalance of asynchronous particle ad-                • CloverLeaf3D: a hydrodynamics simulation of direc-
+
+vection and show the reason that causes the imbalance, we                   tional energy confined in a box using the CloverLeaf3D
+derive multiple metrics based on the theoretical considerations             code [36]. See Figure 1(d).
+discussed in § III. Specifically, metrics like weak scaling               • Synthetic: a perfectly cylindrical flow around a central
+
+efficiency and rank participation are used to explain the re-               axis. See Figure 1(e).
+lationships between poor scalability and workload imbalance.              Each dataset is sampled onto a sequence of five multi-block
+Meanwhile, the aggregated participation rate metric facilitates        datasets containing 8, 16, 32, 64 and 128 blocks, respectively.
+comparisons of workload imbalances across diverse datasets             Each block within the multi-block dataset is a uniform grid
+and configurations. Furthermore, particle statistics can explain       of dimension 128 × 128 × 128. The goal of data re-sampling
+the attributes of long-running particles and what reasons              operation is to prepare datasets used for different experiment
+cause a longer execution time than other particles. Detailed           configurations (8 to 128 MPI ranks with one data block per
+descriptions of these metrics are listed as follows.                   rank). The workload for each configuration consists of 5000
+                                                                                                                                                                                                             5
+
+
+
+
+                                            (a) Tokamak                    (b) Supernova                       (c) Hydraulics                (d) CloverLeaf3D                  (e) Synthetic
+
+ Fig. 1. Images of streamlines generated from the five data sets used in this study.
+
+                                                                           Step=50             Step=100           Step=500            Step=1000          Step=2000
+              10^6                       (a.1) Tokamak          10^6        (b.1) Supernova          10^6          (c.1) Hydraulics       10^6      (d.1) CloverLeaf3D       10^6       (e.1) Synthetic
+              10^5                                              10^5                                 10^5                                 10^5                               10^5
+              10^4                                              10^4                                 10^4                                 10^4                               10^4
+Time(ms)
+
+
+
+
+              10^3                                              10^3                                 10^3                                 10^3                               10^3
+              10^2                                              10^2                                 10^2                                 10^2                               10^2
+                10                                                10                                   10                                   10                                 10
+                 0 8                   16     32     64     128    0 8      16      32   64      128    0 8       16     32      64   128    0 8    16     32      64    128    0 8    16      32     64   128
+                                         (a.2) Tokamak                      (b.2) Supernova                        (c.2) Hydraulics                 (d.2) CloverLeaf3D                  (e.2) Synthetic
+                              1.0                                 1.0                                  1.0                                  1.0                                1.0
+    Weak scaling efficiency
+
+
+
+
+                              0.8                                 0.8                                  0.8                                  0.8                                0.8
+                              0.6                                 0.6                                  0.6                                  0.6                                0.6
+                              0.4                                 0.4                                  0.4                                  0.4                                0.4
+                              0.2                                 0.2                                  0.2                                  0.2                                0.2
+                              0.0 8    16     32     64     128   0.0 8     16      32   64      128   0.0 8      16     32      64   128   0.0 8   16     32      64    128   0.0 8   16      32     64   128
+                                                                                                               Number of ranks
+
+ Fig. 2. POD particle advection as parallelism increases, organized by dataset. The top row shows the execution time of the particle advection algorithm,
+ while the bottom row shows weak scalability. The X-Axis for all sub-figures is the number of ranks (log2 scale). The Y-Axis for the top row is execution
+ time (log10 scale) and for the bottom row is efficiency relative to the 8-rank case.
+
+                                                           TABLE I                                                       configurations shown in Table I represent reasonable possi-
+                                                B LOCK LAYOUT CONFIGURATIONS .                                           ble cases for measuring the MPI-parallel efficiency of POD
+                                                                                                                         particle advection algorithm in this paper.
+                                      Num          Block                 Total                 Total
+                                      Ranks        Layout               Mesh Size             Particles                     The runs are performed on the Summit supercomputer
+                                          8        2×2×2           256 × 256 × 256              40,000
+                                                                                                                         at Oak Ridge National Laboratory [37]. Summit is a 200
+                                         16        2×2×4           256 × 256 × 512              80,000                   PetaFLOPS supercomputer that consists of 4608 nodes. Each
+                                         32        2×4×4           256 × 512 × 512             160,000                   node contains two 22-core IBM Power9 CPUs and six
+                                         64        4×4×4           512 × 512 × 512             320,000
+                                        128        4×4×8          512 × 512 × 1024             640,000
+                                                                                                                         NVIDIA Tesla V100 GPUs, and a Mellanox EDR 100G
+                                                                                                                         InfiniBand network [38].
+
+ particles placed randomly inside each block. An overview of                                                             C. Analysis data collection
+ the block configuration is given in Table I.                                                                               The code described in Algorithm 1 is instrumented with
+    Particles are traced using five different maximum iterations:                                                        a number of timers and counters, which are used to collect
+ 50, 100, 500, 1000, and 2000 steps. Overall we test (5 datasets                                                         data from both a rank-centric and particle-centric perspective.
+ ×5 levels of parallelism ×5 different advection steps) = 125                                                            For the rank-centric analysis, timers and counters are used
+ total configurations. These configurations cover the different                                                          to collect data associated with each sub-task within the al-
+ use cases for flow visualization; for example, FTLE may use                                                             gorithm. These sub-tasks are Initialization, Begin Overhead ,
+ short iterations such as 50 whereas streamline is more likely                                                           Advection, End Overhead and Communication. The timers
+ to use longer iterations such as 2000. For the implementation,                                                          record the time spent in each phase and the counters quantify
+ we use the particle advection in VTK-m [22], which supports                                                             such things as the total number of rounds, number of particles
+ different types of single-core and multi-core backends. The                                                             processed, number of particles sent and received, etc.
+ focus of this paper is to identify the underlying causes of                                                                For particle-centric analysis, timing and counter attributes
+ workload imbalance in the POD particle advection algorithm.                                                             are added to each particle. These timers and counters are
+ To simplify our analysis, we use the serial backend (i.e., each                                                         updated during the execution of the algorithm. The timers
+ MPI process uses a single CPU core) in our experiments to                                                               record the accumulated time spent in each of the sub-tasks
+ eliminate effects caused by shared-memory architecture. The                                                             in the algorithm as well as the time of termination. The
+ use of GPUs may introduce additional costs that compound                                                                counters record the number of traversed blocks, number of
+ the underlying performance issues [25]. Therefore, we believe                                                           communications, and number of advection steps. The reason
+                                                                                                                                                  6
+
+
+
+for particle termination is also recorded. These values are held                 B. Rank participation
+in memory during algorithm execution, aggregated, and output
+after completion.                                                                   Gantt charts provide an effective way to understand the
+   We also provide the ability to specify a unique particle ID to                activity of each rank over the course of the execution. Figure 3
+collect detailed information for a single particle. In this mode,                shows Gantt charts for a workload consisting of 128 ranks and
+each rank checks the particles being processed and records                       2000 steps for each dataset. These charts provide an overview
+additional information if the specified particle ID is found. In                 of the balance of work among the ranks and give insight into
+this way, we can trace detailed information about a specific                     the overall scalability. The Gantt charts of the Tokamak, the
+particle, such as which ranks are traversed and associated                       Hydraulics, and the Synthetic datasets display a more even
+timestamps when a particle is sent and received. Using this                      distribution of workloads. In contrast, the Gantt charts of
+capability we are able to generate detailed information on the                   the Supernova and the CloverLeaf3D datasets reveal that a
+long running particle in a given workload. The long running                      few ranks are tasked with much more work, leading to poor
+particle is determined by running a test case and recording the                  efficiency and longer execution times.
+termination time for each particle. The test case is then re-run                    To evaluate the overall efficiency of the algorithm during it’s
+using the ID for the long running particle to collect particle-                  execution, we use the rank participation metric introduced in
+specific information.2 The experiments are run both with and                     § IV-A. A rank participation of 1 indicates that the workload
+without collecting this data to verify that our instrumentation                  is perfectly balanced among all ranks whereas a rank partici-
+does not significantly alter runtime behavior. We find that the                  pation of 1/N suggests that only one rank is working while
+overhead for collecting this data is at most 2.8%.                               the others remain idle.
+                                                                                    Figure 4 shows the rank participation as a function of time
+                    V. EXPERIMENTAL RESULTS                                      for the same runs from Figure 3, i.e., those with 128 blocks and
+   Experimental results are divided into four sections: §V-A                     2000 advection steps. The rank participation curve provides a
+considers overall execution time and weak scalability, §V-B                      straightforward view of the number of ranks actively engaged
+and §V-C analyze performance based on the rank participation                     as the algorithm progresses. We note that a rank is marked as
+and the particle-centric model, respectively, and §V-D analyzes                  participating when it is performing any of the following tasks
+termination behavior.                                                            from Equation 1: A, BO , or EO . And conversely, a rank is
+                                                                                 marked as not participating when performing tasks C or W
+A. Execution time analysis                                                       from Equation 1.
+   Our experiments’ execution times are summarized in Fig-                          The rank participation charts shown in Figure 4 highlight
+ure 2. The first row in Figure 2 shows the total execution                       the problems with efficiency for the Supernova and the Clover-
+time for a weak scaling run on each of the five datasets, with                   Leaf3D datasets, as there is a dramatic drop in participation
+25 configurations for each dataset (5 levels of parallelism × 5                  at the outset of the execution. The Tokamak and the Synthetic
+values for maximum number of advection steps). As described                      datasets exhibit relatively consistent and steady participation
+in the experimental setup (§IV-B), we maintain a fixed count                     rates over the course the execution while the Hydraulics
+of 5000 seeds per data block. We also assign one block per                       dataset lies somewhere in the middle.
+rank, so the total number of ranks and blocks is the same.                          We further compute the aggregated rank participation over
+The weak scaling efficiency for each experiment is shown                         the course of a run by integrating the participation rank
+in the second row of Figure 2. We use the runtime with 8                         curve (the area under the rank participation curve) across a
+ranks (the lowest level of concurrency in our experiments)                       normalized time axis. If all ranks were engaged across the
+as the baseline, i.e., if T (N ) is the runtime with N ranks,                    entirety of the run, the aggregated participation rate would
+then the weak scaling efficiency for N is T (N )/T (8). This is                  be 1. The aggregated rank participation values are shown
+consistent with a unit-cost-based efficiency [39] using 8 ranks                  in Figure 5 for all of the configurations evaluated in our
+as a base case and recognizing that the problem size increases                   study. The curves in each subplot track the aggregated rank
+proportionally to the number of ranks. For this formulation,                     participation for a run at a given level of parallelism as a
+perfect scaling would have an efficiency value of 1 for all                      function of the number of advection steps. As an example, the
+numbers of ranks. That said, for our experiments, the weak                       purple line in the Tokamak subplot shows the aggregated rank
+scaling efficiency significantly declines as the number of ranks                 participation running on 128 ranks and advection steps of 50,
+increases, even for cases that are well suited for the POD                       100, 500, 1000, and 2000.
+algorithm (i.e., Tokamak and Synthetic). Additionally, the                          Plotting these metrics provides insight into the scalability
+bottom half of Figure 2 shows that increasing the number of                      of the algorithm across different datasets and workloads.
+advection steps results in decreased efficiency, i.e., the yellow,               Specifically, the Tokamak and the Synthetic data have high
+green, and purple lines (500, 1000, and 2000 advection steps)                    average rank participation values, whereas the Supernova and
+have the worst efficiency, in particular with the Supernova and                  the CloverLeaf3D exhibit lower participation values when
+the CloverLeaf3D datasets.                                                       the number of ranks increases from 8 to 128. The average
+   2 In the second run, the particle with the specified ID may not technically
+                                                                                 participation rates for the Supernova and the CloverLeaf3D
+be the longest one because of uncertainty in communication, but it provides      datasets are more sensitive to the number of ranks compared
+a representative long-running particle accurately.                               to other datasets.
+                                                                                                                                                                                     7
+
+
+
+
+ Fig. 3. Gantt charts for experiments consisting of 128 ranks and 2000 advection steps. Each chart shows the activity for each rank over the course of the
+ run: blue regions denote advection time, white regions represent both communication time and wait time, and pink regions represent other overheads.
+
+                            Tokamak                            Supernova                         Hydraulics                     CloverLeaf3D                   Synthetic
+                 1.0
+Rank Participation
+
+
+
+
+                 0.8
+                 0.6
+                 0.4
+                 0.2
+                 0.00   5     10      15   20     0       24      48        72    97   0     1       3        4    6     0     59   118   177   236   0   12      24       37   49
+                                                                                           Time (seconds)
+ Fig. 4. Rank participation values of all evaluated datasets based on experiment results from Figure 3. The x axis represents the execution time of the workload,
+ and the y axis represents the corresponding rank participation value at each moment.
+                                                                 TABLE II
+     K EY STATISTICS OF LONG RUNNING PARTICLES FOR EVALUATED DATASETS . Tp REPRESENTS THE TOTAL TIME OF LONG RUNNING PARTICLE . BO AND
+        EO REPRESENT THE PERCENTAGE OF BEGIN OVERHEAD AND END OVERHEAD , RESPECTIVELY. A DVECTION REPRESENTS THE PERCENTAGE OF
+      ADVECTION TIME . “C OMM ” REPRESENTS THE PERCENTAGE OF TIME SPENT SENDING PARTICLES BETWEEN RANKS , AND “WAIT ” REPRESENTS THE
+      PERCENTAGE OF WAIT TIME SPENT IN "C OMM AND WAIT " TOWARD THE TOTAL TIME . Np REPRESENTS THE NUMBER OF TIMES THE LONG RUNNING
+                                                    PARTICLES TRAVELING THROUGH RANKS .
+
+
+                                                Dataset                Np        BO    EO        Advection        Comm       Wait   Tp (seconds)
+                                                Tokmak                 122       4%    14%          54%            2%        26%            19.4
+                                                Supernova              275       6%    21%          58%            3%        12%            97.2
+                                                Hydraulics             213       5%    11%          45%            2%        37%             5.9
+                                                CloverLeaf3D           186       6%    21%          59%            3%        12%           235.6
+                                                Synthetic              192       5%    21%          58%            4%        12%            46.8
+
+
+ C. Particle-centric model                                                                           with diagnostic information for that particle. We continue to
+                                                                                                     refer to this particle as the “slowest particle” in the second
+    As described in the model for execution time (§III-B), the                                       experiment.
+ overall execution time for the particle advection algorithm is                                         Table II is organized according to Equation 2. This table
+ only as fast as the slowest particle, i.e., the particle that takes                                 reveals three interesting observations. First, the variation in Tp
+ the longest to complete execution. This section focuses on the                                      varies considerably. The reasons behind this observation are
+ slowest particle for the configurations with 128 ranks and 2000                                     explored in § V-C1. Second, “end overhead” (EO ) is taking
+ steps for each of our five datasets. The results are shown in                                       a significant portion of the overall execution time, which is
+ Table II. Of note, the slowest particle is non-deterministic,                                       explored in § V-C2. Finally, the number of MPI ranks visited
+ as the time it takes for a given particle to complete can                                           (Np ) is quite large, indicating that these particles are bouncing
+ change slightly from run to run, meaning the slowest in one                                         between MPI ranks. § V-C3 analyzes the reason, and describes
+ experiment may get edged out by another particle in the next                                        a phenomenon we refer to as “ping pong particles.”
+ experiment. For these results, we ran an experiment to identify                                        1) Variation in Tp : Tp , the time it takes for a particle
+ the slowest particle for that run, and then re-ran the experiment                                   to complete, is the sum of all of the factors in Equation 2.
+                                                                                                                                                                8
+
+
+
+
+                                                         8 Ranks        16 Ranks       32 Ranks       64 Ranks         128 Ranks
+                                    Tokamak                 Supernova                  Hydraulics                CloverLeaf3D              Synthetic
+Aggregated rank participation
+
+                            1.0
+                            0.8
+                            0.6
+                            0.4
+                            0.2
+                            0.0 0    1000     2000   0         1000      2000      0     1000       2000   0        1000        2000   0     1000        2000
+                                                                         Total number of advection steps
+  Fig. 5. Aggregated participation for all experiments. The five subplots correspond to the five datasets, and each colored line within a subplot corresponds to
+  the number of ranks. Note that the X-Axis is showing behavior as the number of advection steps to take increases, i.e., the tick marks at 1000 correspond
+  to the behavior across an entire experiment that has particles travel 1000 steps, while the tick marks at 2000 correspond to different experiments where the
+  particles travel 2000 steps.
+
+
+
+
+  Fig. 6. Gantt charts of the particle with the longest execution time for experiments where there are 128 blocks and 2000 advection steps. The white color bars
+  represent the communication and wait stage of the longest running particle. The pink color represents BO , EO , I , and other uncategorized time between
+  measurements of the longest running particle. Other colored bars represent the advection time, with each color representing time spent on a different MPI
+  rank. For example, for CloverLeaf3D, the particle travels back and forth between two MPI ranks colored yellow and green. Finally, the end of each experiment
+  (i.e., the termination of the longest running particle) is indicated with a vertical black line.
+
+
+
+
+  Fig. 7. Scatter plots for particles for the experiments with 128 blocks and 2000 advection steps. The X axis is the execution time for each particle (Tp ) and
+  the Y axis is the accumulated group size for the particle as it traverses through blocks. The particles plotted are sampled at a rate of one of out of every
+  1000.
+
+  Despite the longest-running particles having the same amount                             rank since there are so many particles to process. Further, the
+  of work to do as the other particles, their lifetime varies                              issue is not that the particles are being processed in atomic
+  tremendously, from 5.9s for the Hydraulics dataset to 235.6s                             groups; we experimented with communication schemes that
+  for the CloverLeaf3D dataset.                                                            sent smaller batches to other MPI ranks when they were
+                                                                                           completed and found the overall execution time did not change
+     The variation in execution time is due to the load on a
+                                                                                           significantly. Figure 7 shows the delays resulting from large
+  given MPI rank. When a particle arrives at an MPI rank, it is
+                                                                                           group sizes in another way. For a given particle, it shows the
+  processed as part of a group. If the group is large, then the
+                                                                                           “accumulated group size,” i.e., total group size over all the
+  advection time for that particle on that rank will take longer.
+                                                                                           MPI ranks it visited. For example, if a particle visited three
+  For CloverLeaf3D, the group sizes get as large as 100,000
+                                                                                           MPI ranks and was part of groups of size 100, 200, and 600,
+  particles, while for Hydraulics they are often under 10,000.
+                                                                                           then its accumulated group size would be 900. This plot shows
+  Figure 6 shows a Gantt chart for the slowest particles. For
+                                                                                           that CloverLeaf3D’s slowest particle has an accumulated group
+  CloverLeaf3D, the green and yellow rectangles are as wide as
+                                                                                           size of almost nine million, while Hydraulics is well only
+  they are because advection time covers not only the slowest
+                                                                                           around 0.1 million, correlating closely with Tp .
+  particle, but also all of the particles it arrived with. So while
+  a given MPI rank is working diligently on advecting particles,                              2) End overhead: End Overhead (EO ) is surprisingly
+  these particles are taking long periods to move on to the next                           larger than Begin Overhead ( BO ), taking 2×–4× more time.
+                                                                                                                                                      9
+
+
+
+Furthermore, the EO time tends to grow with the size of                        D. Overview of statistics for terminated particles
+the particle group being processed. This is because there is                     This subsection presents statistics collected for all particles,
+significant bookkeeping at the end of the advection round to                   which contrasts with the previous subsection’s focus on long-
+manage the resulting particle states, which can be different for               running particles. During each run, the following data are
+each particle. The particles must be processed to determine                    collected for each particle: the time when a particle terminates,
+which are active and which are terminated. Those that are                      the number of blocks traversed by the particle, and the reason
+active must be partitioned based on the block to which they                    the particle terminated. In particular, reasons for termination
+will enter, and their respective data must be placed in buffers                include:
+to be ready for the communication step. We highlight this
+                                                                                 • Out of bounds: The particle exited the spatial bounds of
+result as we note previous work has (reasonably) focused on
+                                                                                    the dataset.
+optimizing the computation directly involved in advection , but
+                                                                                 • Zero velocity: The particle enters a sink.
+the time for auxiliary computation is still important. For a
+                                                                                 • Max step: The maximum number of advection steps is
+single-block the effect of EO is insignificant because there is
+                                                                                    achieved.
+less bookkeeping. But with MPI communication, this process
+has to happen regularly as particles pass in and out of blocks.                                            TABLE III
+                                                                               T HE PERCENTAGE OF PARTICLES TERMINATED FOR EACH OF THE THREE
+                                                                                 TERMINATION CRITERIA . T HIS DATA COME FROM THE EXPERIMENTS
+                                                                                       WITH 128 DATA BLOCKS AND 2000 ADVECTION STEPS .
+
+
+                                                                                     Datasets          Out of bounds      Zero velocity   Max steps
+                                                                                     Tokamak           2.1%               69.1%           28.8%
+                                                                                     Supernova         82.5%              8.5%            9.0%
+                                                                                     Hydraulics        39.6%              59.0%           1.4%
+                                                                                     CloverLeaf3D      15.1%              41.9%           43.0%
+                                                                                     Synthetic         26.2%              12.7%           61.1%
+
+
+Fig. 8. Examples of particles that ping pong in the Supernova (left) and
+Cloverleaf3D (right) datasets. The long running particles are trapped into a
+                                                                                  Table III lists the breakdown of reasons for termination
+vortex crossing two adjacent data blocks.                                      across the evaluated datasets. Figure 9 further illustrates the
+                                                                               number of terminated particles over time. Specifically, the
+   3) Illustration of ping pong particles: Figure 6 shows the                  colored bars represent the number of terminated particles for
+pattern followed by the slowest particle in each configuration.                each time slot, and the orange colored curve represents the
+In all cases, the amount of solid color (processing by an                      number of active particles. The results illustrated in Table III
+MPI rank) is greater than the amount of white (idle time                       and Figure 9 supplement the findings illustrated in Figure 6,
+between MPI ranks), which is consistent with Table II. For                     further illustrating the variation in particle advection execution
+the CloverLeaf3D dataset, the long particle spends most of its                 time for different datasets.
+time back and forth between the “green” and “yellow” MPI                          One important observation is that the orange curve in
+ranks. We refer to particles that repeatedly pass back and forth               Figure 9 shows a similar pattern for the Supernova and the
+between two adjacent MPI ranks as “ping pong particles.”                       CloverLeaf3D datasets. Both of them drop dramatically at
+These particles suffer from both of the issues just identified                 the beginning of the algorithm execution and keep steady
+— they spend more time waiting in queues to advect and they                    subsequently. However, only around 9% of particles for the
+spend more time on end overhead. The fundamental issue is                      Supernova dataset complete all advection steps and terminate
+not that they are traveling back and forth between the same                    because of “Max steps” whereas there are 43% particles for the
+two blocks, but rather that they complete so few advection                     CloverLeaf3D dataset (as shown in Table III). Although most
+steps before moving on to the next block, and thus need to                     of these particles are ping pong particles, the large number of
+visit many blocks and incur extra overheads.                                   particles in the CloverLeaf3D dataset causes more overhead
+   For the Tokamak and the Synthetic datasets, although the                    in the stage of traversing particles between different blocks
+particle travels in a loop, there are more than two MPI ranks                  compared to the Supernova dataset. As illustrated in Figure 6,
+involved along the particle advection path. For the Supernova                  the yellow colored region is wider in the CloverLeaf3D dataset
+and the CloverLeaf3D datasets, the stage where the particle                    than in the Supernova dataset.
+circulates between ranks takes more than half of the total                        Although the number of active particles shown in Figure 9
+execution time. Particles exhibiting this behavior are shown in                decreases gradually for the Tokamak, the Hydraulics, and the
+Figure 8. In particular, a vortex that is near block boundaries                Synthetic datasets,3 the termination reasons are distributed
+exists in both datasets, resulting in particle circulation between             differently. For the Synthetic dataset, most green colored bars
+two blocks. We use the term “ping pong effect” to describe                     are located at the right half of execution time, indicating more
+that a large number of ping pong particles are circulating in a                particles are advected to maximal steps. In particular, Table III
+vortex that spans MPI ranks and thus take a comparatively long                 illustrates 61.1% of particles terminate because of “Max steps”
+time to complete their advection step. § VI-B provides a more                  for the Synthetic dataset. In contrast, there are only 28.8%
+detailed analysis of ping pong effects, as well as considering
+approaches to improve execution time.                                            3 There are no ping pong particles for these datasets.
+                                                                                                                                                                                              10
+
+
+
+                                                                   Out of bounds       Zero velocity         Max step
+                                         Tokamak                 Supernova                  Hydraulics                  CloverLeaf3D               Synthetic
+Number of terminated particles
+
+                             300000                                                                                                                                600000
+
+
+
+
+                                                                                                                                                                        Number of active particles
+                             200000                                                                                                                                400000
+
+                             100000                                                                                                                                200000
+
+                                  0 0%    50%        100%   0%     50%       100%    0%         50%       100%     0%      50%         100%   0%     50%       100%0
+                                                                                    Ratio of execution time
+
+Fig. 9. The colored bars represent the number of terminated particles (labeled on the left y axis) when using 128 ranks and 2000 advection steps. Different
+colors represent different termination reasons. The orange curve represents the number of active particles (labeled on the right y axis) within a specific time
+slot during the particle execution.
+
+and 1.4% for Tokamak and Hydraulics, respectively. The                                                    The load balancing issue suggests that off-node in situ (often
+percentage of particles terminated by completing maximal                                               referred to as in transit) would provide a double win over on-
+advection steps also corresponds to the particle advection                                             node in situ. First, placing the visualization on a job with fewer
+execution time shown in Figure 6 where the Hydraulics dataset                                          processes can improve tasks with scaling or load balancing
+has the shortest particle advection time and Tokamak and                                               issues [41], [42]. Second, because the data are moved from
+Hydraulics datasets take a little bit longer.                                                          one set of nodes to another, a repartition of the data can
+                                                                                                       happen to help re-balance the work. However, these strategies
+                                                                                                       require workload anticipation based on prepossessing [28] or
+                                                   VI. D ISCUSSION
+                                                                                                       information collected in real time [29], [30].
+   In this section, we discuss two significant issues with
+parallel particle advection. The first is the surprisingly low                                         B. Particle group size and the ping pong effect
+participation rate of ranks in a parallel job, even for use                                               The authors have long suspected the possibility of particles
+cases where the POD algorithm is well suited. The second is                                            rapidly passing back and forth between partitions, but never
+our observation of the “ping pong effect” where the runtime                                            previously identified a case. The use and analysis of Gantt
+can be extended by “ping pong particles.” These particles are                                          charts discussed in §V proved invaluable in identifying and
+exchanged back and forth among a small number of processes                                             understanding these cases and the rank participation analysis
+(such as two adjacent blocks explored in this paper) as their                                          helped to quantify their impact.
+trajectory loops between them. The ping pong effect happens                                               We are surprised to note that the ping pong effect is not
+more often and with more particles than we were expecting.                                             caused by a lone particle but rather by a large group of
+Although the rank participation and ping pong effect are                                               particles. Consider the Gantt chart for the CloverLeaf3D data
+inextricably linked, we discuss them separately to address the                                         in Figure 3, which shows the majority of execution time spent
+features specific to each in § VI-A and § VI-B, respectively.                                          in ping pong particles between two ranks (specifically 45 and
+Finally, we discuss several potential solutions to resolve the                                         53). We can further see from Figure 9 that this is not a single
+issue caused by ping pong particles in § VI-C.                                                         particle but around 100,000 particles. In fact, the ping pong
+                                                                                                       effect only becomes an issue when large numbers of particles
+                                                                                                       are involved.
+A. Rank participation
+                                                                                                          From the perspective of a particle-centric model (Equa-
+   The potential for load imbalance for POD particle advection                                         tion 2), a particle p passing through block i has a minimal
+has long been known. However, the actual effect of this load                                           value of Aip if it is being processed alone. However, in
+imbalance has been anecdotal at best and is often discounted as                                        practice, a particle is bundled with other particles that have
+too minor or too rare of an effect to justify an implementation                                        arrived at a given block. Such behavior is desirable to keep
+in production tools. In our quantitative study of load balance                                         processors busy, but Aip grows as particle p must wait for its
+through rank participation, we find that load balance is worse                                         fellow particles to also complete before it can moveP to the next
+than expected under conditions surmised to be favorable                                                processor. This delay can compound the value of i Aip .
+(e.g., the Tokamak and Synthetic datasets where the flow                                                  Additionally, when a group of particles traverses a large
+continuously circulates).                                                                              number of blocks, these particles will incur the extra overheads
+   As mentioned in the related work (§ II), previous inves-                                            (BOpi and EOpi ) associated with entering and exiting a
+tigations provide techniques, particularly hybrid POD/POS                                              block. Paths traversing many blocks also incur more overall
+techniques [14]–[19], that should improve the load balancing,                                          communication and wait time ( CWpi ). A large variation of Tp
+and we should investigate integrating these optimization mech-                                         among particles indicates an imbalance of particle advection
+anisms into production tools. That said, the problem becomes                                           in the system. When a particle has a large batch size among
+even more challenging for on-node in situ visualization [40]                                           its advection path and a long traversing block sequence at
+where mesh data placement is predetermined and mesh data                                               the same time, its execution time will be significantly larger
+movement is restricted or infeasible.                                                                  than other particles. Avoiding these long-running particles can
+                                                                                                                                            11
+
+
+
+contribute to a more balanced particle advection system and
+decrease the total execution time.
+   Looking again at the CloverLeaf3D Gantt chart in Figure 3
+we see a second pair of ranks with a ping pong effect (between
+rank 77 and rank 78). These particles finish faster because they
+are in smaller groups. This smaller group size can be observed
+by the smaller dip of active particles about midway through
+the CloverLeaf3D chart of Figure 9. These results illustrate
+that both large group size and ping pong particles compound
+to worsen the execution time.
+   The fact that the ping pong effect worsens as more particles
+participate suggests that this is not caused by communication
+latency. An obvious problem with a large number of ping
+pong particles is that a large number of long trajectories must
+be computed by a small number of processes. However, the
+same could be said if a large number of particles have long,       Fig. 10. Gantt charts of the experiments rerun with the blocks of ping pong
+cyclic trajectories contained within a single partition, yet our   particles duplicated across all ranks. Supernova (left) has blocks 76 and 77
+measurements suggest that a ping pong effect is worse despite      duplicated across all other ranks whereas Cloverleaf3D (right) has blocks 45
+                                                                   and 53 duplicated across all other ranks.
+having two processes to divide the work.
+   The ping pong particles clearly have more overhead than         the blocks from the two ranks having the longest running
+the equivalent trajectory on a single partition. One potential     particles to all other ranks. That is, each rank with ID i will
+overhead is the time to transfer particle data between pro-        load the block with ID i and one of these other two duplicated
+cesses. However, our profiling clearly shows transfer time to      blocks. Two observations can be made from Figure 10. First,
+be insignificant. Rather, we find overheads associated with en-    we see that the ranks that previously had the longest running
+tering and leaving mesh blocks to be substantial. In particular,   ping pong particles (76 and 77 for Supernova, 45 and 53 for
+the EO time required to reorganize particles based on their        Cloverleaf3D) are no longer ping pong particles and are no
+termination status and destination is larger than expected and     longer the bottleneck of the operation. Instead, the runtime
+grows proportionally to the number of particles in the group.      is limited by the next longest ping pong particles, and the
+   This ping pong effect suggests a new area of investigation      overall runtime is much shorter. Second, we see a significant
+for particle advection on HPC systems. Previous investigations     amount of overhead distributed among all the ranks in the first
+have rightfully focused on optimizing the advection loop as        part of the runtime. This is the original ping pong particles
+most of the computation happens there. However, we find            in the duplicated blocks, but now that overhead is distributed
+that the “insignificant” overhead incurred during initialization   among all the ranks instead of just two. Of course, the research
+and termination of the particles can accumulate greatly as         challenge is identifying and duplicating the necessary data
+particles pass across multiple block boundaries. We therefore      without the post hoc knowledge used here.
+note the potential for improving large-scale particle advection
+by optimizing this part of the process.
+
+
+C. Potential solutions for avoiding long running particles
+   The factors discussed in this paper about long-running parti-
+cles can shed light on several potential solutions for improving
+the load balance and running time of particle advection. We
+propose some hypotheses for potential future research that
+could improve the overall runtime of parallel particle advection
+by reducing the times of the longest-running particles. To be
+clear, providing solutions to these problems is beyond the
+scope of this paper, but we provide some evidence to point
+to fruitful areas of research.
+   Consider that one of the problems with ping pong particles
+is that a small number of ranks do extra work with the ping
+pong overhead. We hypothesize that we can increase load
+                                                                   Fig. 11. Gantt charts of the experiments rerun with the blocks of ping pong
+balance and reduce overall runtime by dividing this overhead       particles merged together. Supernova (left) has blocks 76 and 77 merged into
+among more processes. This can be done by duplicating              one large data block and placed on rank 76 whereas Cloverleaf3D (right) has
+problematic blocks. Figure 10 demonstrates this idea for the       blocks 45 and 53 merged and placed on rank 53.
+Supernova and the Cloverleaf3D datasets, the two datasets            Another problem we identify with ping pong particles is
+with the most pronounced ping pong effect. Using our post          that a small loop over blocks adds significant overhead during
+hoc knowledge from the previous experiments, we duplicate          block transition. Thus, we further hypothesize that we can
+                                                                                                                                               12
+
+
+
+improve runtime by mitigating or removing this overhead. One                   that eventually leads to a different direction. Besides, detecting
+way is to merge blocks or otherwise repartition to remove the                  looping trajectories requires extra metadata, which adds its
+ping pong particles. Figure 11 demonstrates results by merging                 own overhead that needs to be evaluated in future work.
+the problematic blocks. In this case, when particles enter a rank
+containing the merged block, they stay there until termination.                                      VII. C ONCLUSIONS
+Doing so removes the ping pong particles. What is particularly                    Particle advection is a foundational visualization algorithms
+interesting in this case is the observation that the rank holding              and core to the analysis of flows that are present in many
+the merged block is now single-handedly advecting the major-                   scientific simulations. The difficulty in efficient parallelism is
+ity of the path for these particles. For the CloverLeaf3D, this                well-known and an active area of research. In this paper, we
+means that rank 53 is advecting the majority of the path for                   have presented new results that shed light on the underlying
+100,000 particles. And although we can see in Figure 11 that                   causes of poor performance and provide guidance for further
+rank 53 is still the bottleneck, the overall runtime is reduced                research in addressing these issues. Our results are derived
+by almost a factor of 2. One would think this would lead                       from a large set of runs on the Summit supercomputer. We
+to less balance and longer runtimes, but it instead reduces                    varied the runs over three different axes: level of parallelism;
+the overall runtime by removing overhead. Once again, the                      data set to capture a wide range of flow characteristics; and
+research challenge is identifying and repartitioning the data                  number of advection steps to capture a range of particle
+without post hoc knowledge.                                                    advection analysis tasks.
+                                                                                  Our analysis of these results is derived from analysis from
+                                                                               the perspective of the set of MPI processes as well as from the
+                                                                               perspective of particles. We provide a model for the execution
+                                                                               time in § III and use it as a basis for analysis of algorithm
+                                                                               performance. We introduced two metrics that quantify the
+                                                                               workload imbalance as it evolves throughout algorithm execu-
+                                                                               tion. These metrics highlight the poor efficiency of the POD
+                                                                               algorithm, even for ideal use cases (i.e., the Tokamak and the
+                                                                               Synthetic datasets). From the particle-centric analysis, we have
+                                                                               shown that the overheads associated with particle movement
+                                                                               (not the communication itself) are the source of decreased
+                                                                               performance. Further, the size of these groups of particles that
+                                                                               are processed together in batches can also have a tremendous
+                                                                               impact on scalability. These effects become more pronounced
+                                                                               when particles ping pong between a set of adjacent blocks.
+                                                                                  In §VI-C, we discuss directions for further research to
+                                                                               address the performance issues associated with long-running
+Fig. 12. Gantt chart of Supernova and CloverLeaf3D dataset with the strategy
+of early termination for ping pong particles.                                  particles and provide some initial evidence of the fruitfulness
+                                                                               of these approaches. One approach is block duplication so that
+   Another solution is to detect particles that are trapped in                 the advection of particles, and more importantly, the overheads
+a vortex and terminate them when they travel back along the                    associated with particle movement, can be amortized over
+vortex. The early termination strategy is adopted by Peterka                   more processors. Another approach is to address the ping pong
+et al. [16]. Their work only terminates a particle that is in the              effect by either termination of such particles (albeit at the risk
+same block at the end of the round. We need to record the par-                 of introducing errors to flow analysis) or identifying blocks
+ticle path and analyze associated coordinates to detect if they                where this occurs and merging them together – effectively
+are ping pong particles. Figure 12 shows results of early termi-               removing the overheads associated with particle movement.
+nation for Supernova and CloverLeaf3D as a proof of concept.                      In the future, we plan to (1) extend our preliminary findings
+We terminate particles that traverse between two adjacent                      in §VI-C, (2) refine our models for GPU-enabled particle
+blocks for two iterations, such as id1, id2, id1, id2, id1, id2.               advection algorithms, and (3) continue refining the approaches
+After using the early termination strategy, the speed of particle              for solving the ping pong effect with unsteady flow.
+execution is around 4.3× faster for the Supernova dataset and
+4.9× faster for the CloverLeaf3D dataset than our original                                     VIII. ACKNOWLEDGEMENTS
+experiments shown in Figure 3.                                                    This research used resources of the Oak Ridge Leadership
+   Although this simple strategy is effective, we should rec-                  Computing Facility, which is a DOE Office of Science User
+ognize that the result of the particle advection is modified by                Facility supported under Contract DE-AC05-00OR22725. This
+cutting short many of the trajectories, which could have con-                  work was supported in part by the U.S. Department of Energy
+sequences on the output. The approach assumes that iterations                  (DOE) RAPIDS SciDAC project under contract number DE-
+on a looped trajectory do not need to be repeated, but this                    AC05-00OR22725 and by the Exascale Computing Project
+is not true for all use cases of particle advection. Also, just                (17-SC-20-SC), a collaborative effort of the U.S. Department
+because a particle loops through blocks does not necessarily                   of Energy Office of Science and the National Nuclear Security
+mean the trajectory is repeating; the trajectory may be a spiral               Administration.
+                                                                                                                                                                 13
+
+
+
+                               R EFERENCES                                         [22] David Pugmire, Abhishek Yenpure, Mark Kim, James Kress, Robert
+                                                                                        Maynard, Hank Childs, and Bernd Hentschel. Performance-portable
+ [1] J. P. M. Hultquist. Constructing stream surfaces in steady 3D vector               particle advection with VTK-m. In Eurographics Symposium on Parallel
+     fields. In Proceedings Visualization ’92, pages 171–178, October 1992.             Graphics and Visualization (EGPGV), pages 45–55, June 2018.
+ [2] Jarke J. van Wijk. Flow visualization with surface particles. IEEE            [23] David Camp, Christoph Garth, Hank Childs, David Pugmire, and
+     Computer Graphics and Applications, 13(4):18–24, July 1993.                        Kenneth Joy. Streamline integration using MPI-hybrid parallelism on
+ [3] Hanqi Guo, Wenbin He, Tom Peterka, Han-Wei Shen, Scott M. Collis,                  large multi-core architecture. IEEE Transactions on Visualization and
+     and Jonathan J. Helmus. Finite-time lyapunov exponents and lagrangian              Computer Graphics, December 2010.
+     coherent structures in uncertain unsteady flows. IEEE Transactions on         [24] David Camp, Hari Krishnan, David Pugmire, Christoph Garth, Ian
+     Visualization and Computer Graphics, 22(6):1672–1682, June 2016.                   Johnson, E. Wes Bethel, Kenneth I. Joy, and Hank Childs. Gpu
+ [4] Helwig Löffelmann, Thomas Kučera, and Eduard Gröller. Visualizing                 acceleration of particle advection workloads in a parallel, distributed
+     poincaré maps together with the underlying flow. In Hans-Christian Hege            memory setting. In Proceedings of EuroGraphics Symposium on Parallel
+     and Konrad Polthier, editors, Mathematical Visualization: Algorithms,              Graphics and Visualization (EGPGV), pages 1–8, May 2013.
+     Applications and Numerics, pages 315–328. Springer Berlin Heidelberg,         [25] Hank Childs, Scott Biersdorff, David Poliakoff, David Camp, and
+     1998.                                                                              Allen D. Malony. Particle advection performance over varied archi-
+ [5] Allen Sanderson, Guoning Chen, Xavier Tricoche, David Pugmire, Scott               tectures and workloads. In IEEE International Conference on High
+     Kruger, and Joshua Breslau. Analysis of recurrent patterns in toroidal             Performance Computing (HiPC), pages 1–10, December 2014.
+     magnetic fields. IEEE Transactions on Visualization and Computer              [26] Robert Sisneros and David Pugmire. Tuned to terrible: A study
+     Graphics, 16(6):1431–1440, November 2010.                                          of parallel particle advection state of the practice. In 2016 IEEE
+ [6] Mark Snir, Steve Otto, Steven Huss-Lederman, David Walker, and Jack                International Parallel and Distributed Processing Symposium Workshops
+     Dongarra. MPI: The Complete Reference, volume 1, The MPI Core.                     (IPDPSW), pages 1058–1067. IEEE, 2016.
+     MIT Press, second edition, 1998. ISBN 0-262-69215-5.                          [27] Roba Binyahib, David Pugmire, Abhishek Yenpure, and Hank Childs.
+ [7] Sudhanshu Sane, Abhishek Yenpure, Roxana Bujack, Matthew Larsen,                   Parallel particle advection bake-off for scientific visualization workloads.
+     Kenneth Moreland, Christoph Garth, Chris R. Johnson, and Hank Childs.              In 2020 IEEE International Conference on Cluster Computing (CLUS-
+     Scalable in situ computation of Lagrangian representations via local               TER), pages 381–391. IEEE, 2020.
+     flow maps. In Eurographics Symposium on Parallel Graphics and                 [28] Boonthanome Nouanesengsy, Teng-Yok Lee, and Han-Wei Shen. Load-
+     Visualization (EGPGV), June 2021.                                                  balanced parallel streamline generation on large scale vector fields. IEEE
+ [8] Kenneth Moreland. A survey of visualization pipelines. IEEE Transac-               Transactions on Visualization and Computer Graphics, 17(12):1785–
+     tions on Visualization and Computer Graphics, 19(3):367–378, March                 1794, 2011.
+     2013.                                                                         [29] Jiang Zhang, Hanqi Guo, Xiaoru Yuan, and Tom Peterka. Dynamic data
+                                                                                        repartitioning for load-balanced parallel particle tracing. In 2018 IEEE
+ [9] James Ahrens, Berk Geveci, and Charles Law. ParaView: An end-user
+                                                                                        Pacific Visualization Symposium (PacificVis), pages 86–95. IEEE, 2018.
+     tool for large data visualization. In Visualization Handbook. Elesvier,
+                                                                                   [30] Jiayi Xu, Hanqi Guo, Han-Wei Shen, Mukund Raj, Skylar Wolfgang
+     2005. ISBN 978-0123875822.
+                                                                                        Wurster, and Tom Peterka. Reinforcement learning for load-balanced
+[10] Hank Childs. Visit: An end-user tool for visualizing and analyzing very
+                                                                                        parallel particle tracing. IEEE Transactions on Visualization and
+     large data. 2012.
+                                                                                        Computer Graphics, 2022.
+[11] Matthew Larsen, Eric Brugger, Hank Childs, and Cyrus Harrison.                [31] William H. Press, Saul A. Teukolsky, William T. Vetterling, and Brian P.
+     Ascent: A flyweight in situ library for exascale simulations. In In                Flannery. Numerical Recipes in C. Cambridge University Press,
+     Situ Visualization for Computational Science, pages 255–279. Springer,             Cambridge, USA, second edition, 1992.
+     2022.                                                                         [32] Message Passing Interface Forum. MPI: A Message-Passing Interface
+[12] Abhishek Yenpure, Sudhanshu Sane, Roba Binyahib, David Pugmire,                    Standard Version 4.0, June 2021.
+     Christoph Garth, and Hank Childs. State-of-the-Art Report on Optimiz-         [33] CR Sovinec, AH Glasser, TA Gianakon, DC Barnes, RA Nebel,
+     ing Particle Advection Performance. Computer Graphics Forum, 2023.                 SE Kruger, DD Schnack, SJ Plimpton, A Tarditi, MS Chu, et al.
+[13] David Pugmire, Tom Peterka, and Christoph Garth. Parallel integral                 Nonlinear Magnetohydrodynamics Simulation Using High-Order Finite
+     curves. In High Performance Visualization - Enabling Extreme-Scale                 Elements. Journal of Computational Physics, 195(1):355–386, 2004.
+     Scientific Insight, Chapman and Hall / CRC computational science              [34] Eirik Endeve, Christian Y. Cardall, Reuben D. Budiardja, and Anthony
+     series. CRC Press, 2012.                                                           Mezzacappa. Generation of Magnetic Fields by the Stationary Accretion
+[14] David Pugmire, Hank Childs, Christoph Garth, Sean Ahern, and Gunther               Shock Instability. The Astrophysical Journal, 713(2):1219–1243, Apr
+     Weber. Scalable computation of streamlines on very large datasets. In              2010.
+     Proceedings of ACM/IEEE Conference on Supercomputing, November                [35] Paul Fischer, James Lottes, David Pointer, and Andrew Siegel. Petas-
+     2009.                                                                              cale Algorithms for Reactor Hydrodynamics. In Journal of Physics:
+[15] Wesley Kendall, Jingyuan Wang, Melissa Allen, Tom Peterka, Jian                    Conference Series, volume 125, page 012076. IOP Publishing, 2008.
+     Huang, and David Erickson. Simplified parallel domain traversal. In           [36] AC Mallinson, David A Beckingsale, WP Gaudin, JA Herdman,
+     Proceedings of 2011 International Conference for High Performance                  JM Levesque, and Stephen A Jarvis. Cloverleaf: Preparing hydrody-
+     Computing, Networking, Storage and Analysis, page 10. ACM, 2011.                   namics codes for exascale. The Cray User Group, 2013, 2013.
+[16] Tom Peterka, Robert Ross, Boonthanome Nouanesengsy, Teng-Yok Lee,             [37] Summit supercomputer. https://docs.olcf.ornl.gov/systems/summit_user_
+     Han-Wei Shen, Wesley Kendall, and Jian Huang. A study of parallel                  guide.html. Accessed: 2023-02-08.
+     particle tracing for steady-state and time-varying flow fields. In EEE        [38] Sudharshan S. Vazhkudai et al. The design, deployment, and evaluation
+     International Parallel and Distributed Processing Symposium, May                   of the CORAL pre-exascale systems. In SC’18 Proceedings of the
+     2011.                                                                              International Conference for High Performance Computing, Networking,
+[17] Hanqi Guo, Xiaoru Yuan, Jian Huang, and Xiaomin Zhu. Coupled                       Storage, and Analysis, November 2018.
+     ensemble flow line advection and analysis. IEEE Transactions on               [39] Kenneth Moreland and Ron Oldfield. Formal metrics for large-scale
+     Visualization and Computer Graphics, 19(12):2733–2742, 2013.                       parallel performance. In ISC High Performance, pages 488–496, June
+[18] Roba Binyahib, David Pugmire, Boyana Norris, and Hank Childs.                      2015.
+     A lifeline-based approach for work requesting and parallel particle           [40] Hank Childs et al. A terminology for in situ visualization and analysis
+     advection. In 2019 IEEE 9th Symposium on Large Data Analysis and                   systems. The International Journal of High Performance Computing
+     Visualization (LDAV), pages 52–61. IEEE, 2019.                                     Applications, August 2020.
+[19] Roba Binyahib, David Pugmire, and Hank Childs. Hylipod: Parallel              [41] James Kress, Matthew Larsen, Jong Choi, Mark Kim, Matthew Wolf,
+     particle advection via a hybrid of lifeline scheduling and parallelization-        Norbert Podhorszki, Scott Klasky, Hank Childs, and David Pugmire.
+     over-data. In Eurographics Symposium on Parallel Graphics and                      Comparing the efficiency of in situ visualization paradigms at scale. In
+     Visualization. The Eurographics Association, 2021.                                 ISC High Performance, volume 11501, pages 99–117, 2019.
+[20] Jiang Zhang and Xiaoru Yuan. A survey of parallel particle tracing            [42] James Kress, Matthew Larsen, Jong Choi, Mark Kim, Matthew Wolf,
+     algorithms in flow visualization. Journal of Visualization, 21:351–368,            Norbert Podhorszki, Scott Klasky, Hank Childs, and David Pugmire.
+     February 2018.                                                                     Opportunities for cost savings with in-transit visualization. In High
+[21] Abhishek Yenpure, Sudhanshu Sane, Roba Binyahib, David Pugmire,                    Performance Computing - 35th International Conference, ISC High
+     Christoph Garth, and Hank Childs. State-of-the-art report on optimizing            Performance 2020, volume 12151, pages 146–165, 2020.
+     particle advection performance. Computer Graphics Forum, 2023.
+

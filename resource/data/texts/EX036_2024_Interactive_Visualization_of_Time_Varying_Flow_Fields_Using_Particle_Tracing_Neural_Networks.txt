@@ -1,0 +1,744 @@
+                                                               Interactive Visualization of Time-Varying Flow Fields
+                                                                      Using Particle Tracing Neural Networks
+                                           Mengjiao Han*, Jixian Li*, Sudhanshu Sane†, Shubham Gupta‡, Bei Wang*, Steve Petruzza§, and Chris R. Johnson*
+arXiv:2312.14973v3 [cs.GR] 15 May 2024
+
+
+
+
+                                               Figure 1: Our web-based visualization interface, integrated with our particle tracing neural networks, enables users to visualize
+                                               and explore large 3D time-varying flow fields interactively. The interface offers 3D visualization of pathlines and user-uploaded
+                                               scalar fields, along with a variety of configuration options for seed placement and rendering parameters. In this example, the
+                                               model trained on the ScalarFlow dataset was used to display pathlines, with the FTLE of the dataset as the background volume.
+                                               The training dataset was generated using 100,000 seeds placed in the injection area of [44, 64] × [0, 7] × [38, 58] over 90 time
+                                               steps. Three deep learning models, each trained for 30 time steps, were utilized in this case. It took one second to load the models
+                                               and 2.7 seconds to infer 300 pathlines displayed in the visualization using a dual-socket workstation equipped with an NVIDIA
+                                               Titan RTX GPU. The trained model’s total storage size is 78.6 MB, further reducing the space consumption required for saving
+                                               the original flow maps by 46-fold.
+                                         A BSTRACT                                                                  that using a trained DNN model to predict new particle trajecto-
+                                         Lagrangian representations of flow fields have gained prominence           ries requires a low memory footprint and results in rapid inference.
+                                         for enabling fast, accurate analysis and exploration of time-varying       Following best practices for large 3D datasets, our deep learning ap-
+                                         flow behaviors. In this paper, we present a comprehensive evaluation       proach using GPUs for inference is shown to require approximately
+                                         to establish a robust and efficient framework for Lagrangian-based         46 times less memory while being more than 400 times faster than
+                                         particle tracing using deep neural networks (DNNs). Han et al.             the conventional methods.
+                                         (2021) first proposed a DNN-based approach to learn Lagrangian             Keywords: Flow visualization, Lagrangian-based particle tracing,
+                                         representations and demonstrated accurate particle tracing for an ana-     deep learning, neural networks, scientific machine learning
+                                         lytic 2D flow field. In this paper, we extend and build upon this prior
+                                         work in significant ways. First, we evaluate the performance of DNN        1   I NTRODUCTION
+                                         models to accurately trace particles in various settings, including 2D     Time-varying flow visualization is useful for validating, exploring,
+                                         and 3D time-varying flow fields, flow fields from multiple applica-        and gaining insight from computational fluid dynamics simulations.
+                                         tions, flow fields with varying complexity, as well as structured and      It typically requires the computation and rendering of a large number
+                                         unstructured input data. Second, we conduct an empirical study to          of particle trajectories, such as pathlines and finite-time Lyapunov
+                                         inform best practices with respect to particle tracing model architec-     exponents (FTLEs), which can be computationally expensive and
+                                         tures, activation functions, and training data structures. Third, we       memory intensive. Furthermore, these computational challenges
+                                         conduct a comparative evaluation of prior techniques that employ           limit the interactivity of flow visualization. To address these chal-
+                                         flow maps as input for exploratory flow visualization. Specifically,       lenges, conventional approaches decouple the particle advection and
+                                         we compare our extended model against its predecessor by Han et            the rendering process to accelerate the visualization performance.
+                                         al. (2021), as well as the conventional approach that uses triangula-      For instance, pathlines are pre-computed and then visualized by a
+                                         tion and Barycentric coordinate interpolation. Finally, we consider        texture-based approach [31] or distributed to a high-performance
+                                         the integration and adaptation of our particle tracing model with          computing system [3].
+                                         different viewers. We provide an interactive web-based visualiza-              Deep learning techniques are promising in addressing these com-
+                                         tion interface by leveraging the efficiencies of our framework, and        putational challenges in time-varying flow visualization. They pro-
+                                         perform high-fidelity interactive visualization by integrating it with     vide compact representations, have reduced memory footprints, and
+                                         an OSPRay-based viewer. Overall, our experiments demonstrate               provide fast inference capabilities. Recent advancements have been
+                                                                                                                    in applying deep learning to various aspects of fluid dynamics [8].
+                                            * e-mail: {mengjiao,jixianli,beiwang,crj}@sci.utah.edu                  Concurrently, the scientific visualization community has increas-
+                                            † ssane@sci.utah.edu                                                    ingly utilized deep learning in the visualization pipeline [40, 60],
+                                            ‡ shubhamg2404@gmail.com                                                and specifically in the analysis and visualization of time-varying
+                                            § steve.petruzza@usu.edu                                                flow fields [4, 29, 30, 48]. Recently, Han et al. [30] provided a first
+                                                                                                                    step toward utilizing a deep learning approach for time-varying
+                                                                                                                    particle tracing. They employed a multi-layer perceptron (MLP)
+                                                                                                                    model to reconstruct Lagrangian-based flow maps. Whereas their
+                                                                                                                    results highlighted the advantages of scientific deep learning, such
+                                                                            and end location from time t0 to time t and calculate arbitrary particle
+                                                                            trajectories using interpolation. Even though an Eulerian represen-
+                                                                            tation is fast to calculate, it requires a dense temporal resolution to
+                                                                            obtain accurate trajectory reconstruction [1, 11, 44, 46, 49, 53]. In
+                                                                            contrast, the Lagrangian-based representation has received increased
+                                                                            attention as it provides good accuracy-storage tradeoffs for explo-
+                                                                            ration in temporally sparse settings [1, 45, 51, 53]. It also directly
+                                                                            supports feature extraction [21, 22, 26, 34, 54].
+                                                                                Using a Lagrangian representation, information is encoded with
+                                                                            flow maps, computed using in situ processing, and analyzed post
+Figure 2: The workflow of our deep learning-based particle tracing          hoc. The reconstruction of new trajectories from the flow maps is
+model. The Lagrangian flow maps are created using in situ process-          a crucial component of post hoc analysis. Agranovsky et al. pre-
+ing, saved to the database, and input into a neural network to learn        sented a multiresolution interpolation scheme that begins with a
+the corresponding end locations based on particle start locations           base resolution and adds additional trajectories if the region contains
+and file cycles. Once the model has been fully trained, new particle        interesting behaviors [2]. Bujack et al. [9] proposed representing
+trajectories can be inferred from the model and visualized using the        particle trajectories by parametric curves, such as Bézier curves and
+developed viewer.                                                           Hermite splines, to improve the aesthetics of the derived trajectories.
+                                                                            Chandler et al. [10] developed a k-d tree for efficient lookup of the
+as reduced memory footprints and efficient inference, their method          particle neighborhoods during interpolation. However, to the best of
+was limited to a 2D analytic flow and lacked empirical evidence to          our knowledge, none of the existing works have investigated real-
+showcase the broader applicability of deep learning in time-varying         time exploration and visualization of Lagrangian-based flows. Two
+flow visualization.                                                         main challenges of interactive visualization during the post hoc anal-
+    In this paper, we provide an in-depth study of MLP-based par-           ysis include reducing the I/O overhead of loading high-resolution
+ticle tracing deep learning models in capturing Lagrangian repre-           flow maps and accelerating the cell lookup of the particle neighbor-
+sentations of time-varying flows and demonstrate their capability           hoods. In addition, unstructured flow maps require time-consuming
+to enable fast and accurate visualization of various flow regimes.          triangulation or tetrahedralization, making the interpolation process
+The workflow of our deep learning approach is illustrated in Fig. 2.        even slower.
+We advance beyond the particle tracing model of Han et al. [30]
+                                                                                In this paper, we empirically evaluate the use of deep learning
+by conducting a comprehensive evaluation of the MLP-based mod-
+                                                                            for post hoc reconstruction and demonstrate the framework using
+els compare with the conventional approach. Our long-term goal
+                                                                            an interactive web-based viewer for visualizing and analyzing the
+is to build a robust and efficient framework for Lagrangian-based
+                                                                            flow field. Using deep learning, flow maps can be represented by a
+flow visualization using deep learning. To that end, we empirically
+                                                                            model to conserve storage space. Importantly, interactive queries for
+establish best practices in designing MLP-based models for flow
+                                                                            arbitrary particle trajectories are possible without requiring intensive
+reconstruction. Our contributions include:
+                                                                            I/O operations for loading flow maps or performing the cell lookup
+     • We evaluate how effective MLP-based models are in recon-             procedure.
+       structing particle trajectories across a diverse collection of 2D
+       and 3D flows, including structured and unstructured input data.      2.2   Deep Learning for Flow Visualization
+     • We perform an in-depth analysis of particle tracing MLP mod-
+       els that includes examining the effects of various activation        Deep learning methods have become increasingly popular for flow
+       functions, discerning the influence of model architectures,          visualization [40]. Examples of their widespread applications in-
+       gauging the impact of flow complexity, and evaluating the            clude the detection of eddies and vortices [6,7,12,14,20,35,38,41,57,
+       effects of different training data structures.                       58, 61, 62], the segmentation of streamlines [39], the extraction of a
+     • We compare our models against prior particle tracing methods         stable reference frame from unsteady 2D vector fields [36], the opti-
+       that utilize flow maps for exploratory flow visualization, in-       mization of data access patterns to boost computational performance
+       cluding the MLP model of Han et al. [30] and conventional            in distributed memory particle advection [33], and the selection of a
+       interpolation techniques.                                            representative set of particle trajectories [50] using clustering meth-
+     • We assess the practical performance of deploying our                 ods grounded in deep learning [27, 37]. Furthermore, data reduction
+       trained models through both web-based Javascript and high-           and reconstruction is widely discussed, due to the scale of the flow
+       performance C++ libraries. This evaluation offers an in-depth        data. Recent works have used low-resolution data [23, 25, 32] or 3D
+       understanding of how the neural network performs in practice.        streamlines [28, 47] to reconstruct high-resolution flow fields. Using
+     • We investigate model pruning techniques that enhance infer-          an efficient subpixel convolutional neural network (ESPCN) [55]
+       ence efficiency without compromising accuracy by judiciously         and a super-resolution convolutional neural network (SRCNN) [13],
+       discarding nonessential model weights.                               Jakob et al. [34] upsampled 2D FTLE scalar fields produced from
+     • We introduce web-based and OSPRay-integrated viewers to              Lagrangian flow maps. Sahoo et al. [48] proposed a reconstruction
+       assess the practical performance of our particle tracing mod-        technique for compressing time-varying flow fields using implicit
+       els. Using Lagrangian-based flow representations, these tools        neural networks.
+       provide interactive and seamless post hoc analysis and visual-          Successfully visualizing flow map data relies on two critical fac-
+       ization of time-varying flow fields.                                 tors: (1) accurate reconstruction of particle trajectories and (2) in-
+                                                                            teractive visualization and exploration of these trajectories. Han et
+2     R ELATED W ORK                                                        al. [30] employed a MLP architecture to reconstruct Lagrangian-
+                                                                            based flow maps for a 2D analytic dataset. Whereas they demon-
+2.1    Lagrangian Flow Reconstruction and Visualization                     strated the accuracy of reconstructing flow fields using a neural
+Eulerian and Lagrangian reference frames are used to represent              network, their study lacked quantitative and qualitative assessments
+time-dependent flow fields. Eulerian-based representations store the        across various datasets and an exploration of potential model ar-
+velocity fields directly and calculate particle trajectories by integrat-   chitecture modifications. Furthermore, they did not investigate the
+ing the velocity fields. Lagrangian representations encode the flow         benefits of rapid inference provided by deep learning models for
+behaviors using flow maps Ftt0 , which store the particle start location    interactive visualization.
+                𝑒𝑛𝑑!,'"
+                                                                                                       when deriving new particle trajectories. Lagrangianlong flow maps
+                                𝑒𝑛𝑑!,'$
+𝑠𝑡𝑎𝑟𝑡!    𝑒𝑛𝑑!,'!       𝑒𝑛𝑑!,'#                                                                        enable the derivation of new trajectories free of error propagation.
+                                    𝑒𝑛𝑑",'$                                                            However, as the integration time increases, the domain coverage of
+𝑠𝑡𝑎𝑟𝑡"          𝑒𝑛𝑑",'"
+                          𝑒𝑛𝑑",'#                                                                      this method deteriorates and interpolation accuracy may decrease as
+          𝑒𝑛𝑑",'!                                                                                      particles diverge. To leverage the benefits of both methods, we intro-
+     𝐶!     𝐶"   𝐶#     𝐶$            𝐶%      𝐶!     𝐶"  𝐶#     𝐶$   𝐶%   𝐶!    𝐶"   𝐶#    𝐶$     𝐶%   duce a hybrid method called Lagrangianhybrid (Fig. 3). This method
+            𝐿𝑎𝑔𝑟𝑎𝑛𝑔𝑖𝑎𝑛()*+                         𝐿𝑎𝑔𝑟𝑎𝑛𝑔𝑖𝑎𝑛,-)./             𝐿𝑎𝑔𝑟𝑎𝑛𝑔𝑖𝑎𝑛-012.3
+                                                                                                       extracts multiple Lagrangianshort flow maps, where each map itself
+Figure 3: Illustration for Lagrangianlong , Lagrangianshort and                                        is a Lagrangianlong flow map composed of particle trajectories with
+Lagrangianhybird methods using 1D particle trajectories. The x-                                        uniform temporal sampling for each integral curve instead of just
+axis represents the file cycle. Circles with the same color have the                                   storing the end locations. The training data structure is consistent
+same labels. The Lagrangianlong extracts a single flow map with end                                    across all three methods. However, there are slight differences in the
+locations at uniform time intervals along the trajectories. In contrast,                               inference processes for each method. We explore these differences
+the Lagrangianshort extracts several short flow maps, resetting start                                  and provide an accuracy comparison in Sec. 4.2.3.
+seeds for each time interval. The Lagrangianhybird combines the                                            For the seeding method, we place the initial seeds using a Sobol
+strengths of both Lagrangianlong and Lagrangianshort : it extracts                                     quasirandom sequence (Sobol), which has performed better than the
+the Lagrangianshort flow maps, where each individual flow map fol-                                     pseudorandom number sequence and uniform grid [30]. The initial
+lows the structure of a Lagrangianlong flow map. Lagrangianhybird                                      step in the production of training data is the placement of seeds
+achieves both comprehensive domain coverage and comparable ac-                                         in the spatial domain. After the placement of the seeds, particle
+curacy.                                                                                                trajectories are determined by shifting particles from t to t +δ , where
+                                                                                                       δ represents one simulation time step. We refer to one simulation
+   Our research utilizes the exact Lagrangian representation of time-                                  time step as a cycle. The cycle on which the end locations are saved
+varying flow fields as data for neural networks, constructed using                                     is a file cycle, and the number of cycles between two successive file
+MLP and sinusoidal activation functions [56]. We assess our method                                     cycles is an interval.
+through qualitative and quantitative analyses on a variety of 2D and                                       Given a total temporal duration of T , seeds are inserted once at the
+3D datasets, including both structured and unstructured input. We                                      beginning of time t0 and traced until T to produce flow maps using
+conduct comprehensive experiments to investigate the impact of                                         the Lagrangianlong method. During the particle tracing process,
+model architecture, flow complexity, and activation function. We                                       intermediate locations are saved. Using the Lagrangianshort method,
+also compare the performance of our deep-learning-based approach                                       particle tracing begins at time t0 and concludes at time t1 = t0 +δ ×I,
+with the conventional post hoc interpolation method. Moreover, we                                      where I is the interval. The location at t1 is then recorded, and the
+utilize deep learning for interactive visualization and exploration                                    tracing seeds are reset until the next file cycle. This process is
+during post hoc analysis of Lagrangian-based flow fields. We demon-                                    repeated until the last file cycle.
+strate that the neural network can be seamlessly integrated with
+                                                                                                           The Lagrangianhybrid method also begins particle tracing at time
+various rendering APIs written in different programming languages
+                                                                                                       t0 and terminates at t1 = t0 + δ × I × p, where I is the interval
+and deployed on different platforms.
+                                                                                                       between the file cycle and p is the number of intermediate locations
+3 L AGRANGIAN A NALYSIS U SING D EEP L EARNING                                                         to trace. The intermediate locations between (t0 ,t1 ] are recorded,
+                                                                                                       and at time t1 , the seeds are reset. This process is continued until the
+Our neural network is designed to learn the behavior of a time-                                        final file cycle. The datasets used for training are saved in the NPY
+varying flow field. Before model training, we compute the La-                                          file format for efficient Python loading.
+grangian flow maps by advecting massless particles in a time-varying                                       We built an m × n × n array to store seed start locations and
+flow field to generate the training datasets (Sec. 3.1). We adapt the                                  end locations across file cycles, where m represents the number of
+MLP network architecture from Han et al. [30], which consists of an                                    seeds and n represents the number of flow maps (file cycles). These
+encoder and a decoder built with a series of fully connected (FC) lay-                                 training samples are arranged according to Eq. (1). Each training
+ers. The starting location of a seed and a file cycle are individually                                 sample includes a start location si , the file cycle c j incorporating
+input into encoders equipped with FC layers. The resulting encoded                                     temporal data, and the target end location at the corresponding file
+latent vectors are then concatenated and fed into the decoding layers,                                 cycle ℓi, j (where 0 ≤ i ≤ m − 1, 0 ≤ j ≤ n − 1). The training dataset
+which predict the seed’s end location at the specified file cycle. For                                 for our model is therefore
+comparative analysis, our neural network uses the same number of
+FC layers for the encoders of the seeds’ start location and file cycles                                      Input ={{s0 , c0 , ℓ0,0 }, {s0 , c1 , ℓ0,1 }, ...,
+to investigate the impact of the number of layers and the size of the                                                                                                         (1)
+                                                                                                                    {s0 , cn−1 , ℓ0,n−1 }, ..., {sm−1 , cn−1 , ℓm−1,n−1 }}.
+latent vector on the performance. Since Sitzmann et al. [56] showed
+that sinusoidal activation function is suited for representing complex
+natural signals, we replace the ReLU activation function with the                                      3.2   Network Architecture
+sinusoidal activation function (Sec. 3.2).                                                             Our neural network is based on the MLP architecture developed by
+                                                                                                       Han et al. [30]. The encoder E takes the particle start locations cou-
+3.1 Training Data Generation                                                                           pled with file cycles as input and passes them through two sequences
+In this study, we replicate the training data generation of Han                                        of FC layers that are then concatenated to form the latent vector
+et al. [30], which uses two methods to extract flow maps —                                             input for the decoder D. The decoder D outputs the predicted end
+Lagragianlong and Lagrangianshort (Fig. 3). The Lagrangianlong                                         location, which is compared to the desired end location to calculate
+method extracts a single flow map composed of long particle tra-                                       the loss. Although there is no universal model architecture suitable
+jectories with uniform temporal sampling for each integral curve.                                      for all datasets, MLP offers flexibility in adjusting the size of the
+In contrast, the Lagrangianshort method extracts multiple short flow                                   hidden vector and the number of layers to suit different datasets. In
+maps, each comprising a set of seed locations and a set of end lo-                                     Sec. 4.2.1, we examine how changing the number of layers and the
+cations for each seed, where each end location corresponds to the                                      dimension of the hidden vector affects the model performance. Addi-
+displacement from the start location over nonoverlapping intervals.                                    tionally, Han et al. [30] observed that reconstruction errors increase
+Each method has its advantages and disadvantages. Lagrangianshort                                      as the number of file cycles (learned by a model) increases. As flow
+flow maps provide good domain coverage since particles are period-                                     maps store nonoverlapping intervals, we train multiple models by
+ically reset, but they may incur error propagation and accumulation                                    partitioning the flow maps. However, using multiple models involves
+                                                                                                     (64,
+                                                                             (512
+
+                                                                                      (256
+                                                         (D_in
+
+
+
+
+                                                                                                               E
+                                                                                              (12
+                                                                 (102
+                          (512, 512)
+             (256, 512)
+(128, 256)
+
+
+
+
+                                           D_in = 1024
+                                                                          En coder                                                  Decoder              [0, 2π] × [0, 2π] × [0, 2π]. The equations used for the simulations are
+                                                                                                                                                         available in the supplemental material.
+                                                                                                                                                             Heated Cylinder is a 2D unsteady simulation generated by a
+                                                                                                                                                         heated cylinder with Boussinesq Approximation [24, 43]. The simu-
+                                                                                                                                                         lation domain is [−0.5, 0.5] × [−0.5, 2.5] × [0, 20]. Our experiments
+                                                                                                                                                         utilize the time span from 0 to 10. To demonstrate our approach, we
+                                                                                                                                                         employ both structured and unstructured datasets. The structured
+                                                                                                                                                         dataset has a grid resolution of 150 × 450.
+                                                                                                                                                             Gerris Flow is a 2D ensemble simulation generated by a Ger-
+                                                                        I n pu t /Ou t pu t         FC Layer       Si n u soi dal Act i vat i on
+                                                                                                                                                         ris flow solver [34, 43]. It contains 8000 datasets with the value
+                                                                                                                                                         of Reynolds number (Re) varying from a steady regime (Re < 50)
+                                       Figure 4: The MLP architecture of our neural network. The network                                                 to periodic vortex shedding (Re < 200) to turbulent flows (Re >
+                                       architecture begins by taking two inputs: the particle’s initial location                                         2000) [34]. We choose datasets with a Re value of 23.2, 101.6,
+                                       (Start) and the number of file cycles (File Cycle). These inputs are                                              445.7, and 2352.5, respectively, to showcase the performance of our
+                                       first processed by the Encoder, which transforms them into a latent                                               method for varying degrees of flow complexity. The grid resolu-
+                                       vector represented as Din . Following this, the latent vector Din is                                              tion [X ×Y × T ] = [512 × 512 × 1001] with a simulation domain of
+                                       input into the Decoder. The Decoder then processes this information                                               [0, 1] × [0, 1] × [0, 10].
+                                       to output the final location (End) of the particle at the queried file                                                Half Cylinder is a 3D ensemble of numerical simulations of
+                                       cycle. The sinusoidal activation function is used after the FC layers                                             an incompressible 3D flow around a half cylinder [5, 43]. We
+                                       in the model except the output layer.                                                                             experiment with both structured and unstructured grids, select-
+                                       a trade-off between memory consumption and precision, which we                                                    ing Re values of 160 and 320 to investigate the effects of vary-
+                                       investigate in Sec. 4.2.3.                                                                                        ing turbulence degrees. The domain of the simulation is set to be
+                                          The neural network is developed using Pytorch1 . We use the                                                    [−0.5, 7.5] × [−0.5, 1.5] × [−0.5, 0.5]. Both structured and unstruc-
+                                       Adam optimizer with the hyperparameters β1 = 0.9, β2 = 0.999,                                                     tured datasets span 80 time steps. The structured dataset has a grid
+                                                                                                                                                         resolution of 640 × 240 × 80.
+                                       and ε = 1e−6 along with a learning rate scheduler to reduce the
+                                                                                                                                                             ScalarFlow is a large-scale, 3D reconstruction of real-world
+                                       current learning rate by a factor of 2 if the validation loss has not
+                                                                                                                                                         smoke plumes [15]. The spatial dimension is [100 × 178 × 100], and
+                                       dropped for 5 epochs. We utilize an L1 loss as our loss function:
+                                                                                                                                                         the number of time steps is 150.
+                                                                                loss(ℓi, j , ℓ̂i, j ) = L1Loss(ℓi, j , ℓ̂i, j ),                   (2)       Hurricane is a simulation from the National Center for At-
+                                       where ℓi, j represents the target (ground truth) end location of seed i at                                        mospheric Research2 . The data dimension is [500 × 500 × 100]
+                                                                                                                                                         with 47 time steps. We use the first 40 time steps and the region
+                                       file cycle c j and ℓ̂i, j denotes the predicted end location (0 ≤ i ≤ m−1                                         [150, 399]×[150, 399]×[0, 99] that contains the interesting feature—
+                                       and 0 ≤ j ≤ n − 1).                                                                                               the hurricane eye.
+                                                                                                                                                             In our experiments, we use a step size δ = 0.01 and interval
+                                       4 R ESULTS AND D ISCUSSION
+                                                                                                                                                         I = 5 for the Double Gyre, ABC, Unstructured Heated Cylinder, and
+                                       We first describe the datasets used in our evaluation (Sec. 4.1). To                                              Gerris Flow datasets. We set δ = 0.1 and I = 1 for the Half Cylinder,
+                                       investigate the best practices involving deep-learning-based particle                                             ScalarFlow and Hurricane datasets.
+                                       tracing, we then evaluate the impact of model architecture, activa-
+                                       tion function, flow field complexity, and the training data structure                                             4.2 Model Evaluation
+                                       on the performance of our model (Sec. 4.2). Additionally, we dis-                                                 We first investigate the effect of model architecture parameters on
+                                       cuss model pruning to reduce the size of trainable parameters and                                                 performance, such as the number of layers and the size of the hidden
+                                       evaluate the inference performance of our proposed neural network                                                 vector (Sec. 4.2.1). Next, we compare our model using the sinusoidal
+                                       deployed by web-based JavaScript and high-performance C++ ap-                                                     activation function with previous work [30] that uses the ReLU
+                                       plication (Sec. 4.3). We also conduct a comparative analysis against                                              activation function to demonstrate the advantages of the sinusoidal
+                                       prior techniques that employ flow maps as input for exploratory                                                   activation (Sec. 4.2.2). Finally, we illustrate the performance of
+                                       flow visualization, such as the predecessor model of Han et al. [30]                                              the neural network on the flow complexity using ensemble datasets
+                                       (Sec. 4.2.2) and the conventional Barycentric coordinate interpola-                                               and enhance the accuracy by training multiple models along the
+                                       tion method (Sec. 4.4). Finally, we introduce a web-based viewer                                                  pathlines and examining the effectiveness of our Lagrangianhybird
+                                       and an OSPRay-based viewer, offering two deployment options for                                                   method (Sec. 4.2.3).
+                                       the trained model and facilitating interactive flow visualization and                                                During the training phase, we generate an additional 10% of
+                                       exploration (Sec. 4.5). Our experiments employ a Dual RTX 3090s                                                   training data samples for validation. In the following testing results,
+                                       GPU for model training in a dual-socket workstation with two Intel                                                each error instance represents the average distance between the
+                                       Xeon E5-2640 v4 CPUs (40 logical cores at 2.4 GHz and 128 GB                                                      predicted and target (ground truth) locations along a trajectory, as
+                                       RAM) and an NVIDIA Titan RTX GPU for evaluation.                                                                  defined in Eq. (3).
+                                                                                                                                                                                       1 n−1
+                                       4.1 Datasets                                                                                                                           errori = ∑ loss(ℓi, j , ℓ̂i, j )              (3)
+                                                                                                                                                                                       n j=0
+                                       In our studies, we utilize seven datasets, including four 3D datasets:
+                                       ABC, Structured/Unstructured Half Cylinder ensembles, ScalarFlow,                                                 where i represents the index of the new seed and n is the number
+                                       and Hurricane; and three 2D datasets: Double Gyre, Gerris Flow                                                    of end locations (file cycles) along the trajectories. ℓi, j is the target
+                                       ensembles, and Structured/Unstructured Heated Cylinder.                                                           (ground truth) end location, and the ℓ̂i, j is the predicted end location.
+                                          Standard benchmark datasets such as the Double Gyre and ABC                                                    We place 5, 000 random seeds for all testing results presented below.
+                                       are commonly employed in fluid dynamics research, specifically
+                                       for developing flow visualization techniques and tools. The Double                                                4.2.1 Impact of Model Architecture
+                                       Gyre flow field is defined within the spatial domain of [0, 2] × [0, 1],                                          We evaluate the qualitative and quantitative effects of varying the
+                                       while the ABC flow field is defined within the spatial domain of                                                  number of layers in the encoder and decoder as well as the dimension
+                                          1 https://pytorch.org                                                                                             2 http://vis.computer.org/vis2004contest/data.html
+of the encoded latent vector. We use the Double Gyre, Gerris Flow          the ReLU-based MLP, as demonstrated in [30] to be the optimal
+with Re = 101.6 and Re = 445.7, ABC flow, and the unstructured             choice and confirmed by our experiments. For our approach using
+Half Cylinder with Re = 160 and Re = 320. For benchmarking                 the sinusoidal function, we use an optimal learning rate of 5e−4 .
+model performance, we utilize 100 flow maps for each 2D dataset               Fig. 5 shows the inference error of our sinusoidal-based MLP
+and 50 flow maps for each 3D dataset. For all datasets, the number         and the ReLU-based MLP. Our results indicate that the sinusoidal
+of seeds we distribute is half of the grid resolution; except in the       activation function significantly outperform the ReLU activation
+case of the Half Cylinder dataset, we strategically place seeds only       function on all datasets tested. Furthermore, our method achieves
+within the region defined by [−0.5, 0.5] × [−0.5, 0.5] × [−0.5, 0.5]       these results using the same storage space as the model in [30]
+to optimize training time. This region encompasses the obstruction         (which has a size of 8.4 MB), while greatly improving the accuracy.
+and areas of interest, allowing for more focused training.
+   In the experiments, we set the number of decoder layers and en-
+coder layers to be four, six, and eight, respectively. The encoded
+latent vector has dimensions of 1024 and 2048. Tab. 1 in the sup-
+plemental material displays the maximum, mean, and median errors
+associated with various combinations of encoder layers, decoder
+layers, and latent vector dimensions.
+
+                      Model(MB)       Training (hrs)   Inference (s)
+         [#E, #D]   1024     2048     1024    2048     1024    2048
+          [4, 4]    10.246   40.939   0.348   0.478    0.297   0.343
+          [4, 6]    10.409   41.592   0.368   0.488    0.277   0.397
+          [4, 8]    10.419   41.633   0.380   0.499    0.308   0.351
+          [6, 4]    10.327   41.265   0.379   0.491    0.282   0.375
+          [6, 6]    10.490   41.919   0.396   0.502    0.285   0.360
+          [6, 8]    10.500   41.960   0.410   0.511    0.279   0.354       Figure 5: The error plot compares our sinusodial-based MLP with
+          [8, 4]    10.332   41.286   0.409   0.502    0.329   0.359       the ReLU-based MLP of Han et al. [30]. The sinusoidal activation
+          [8, 6]    10.495   41,940   0.425   0.512    0.283   0.376
+          [8, 8]    10.505   41.980   0.438   0.521    0.289   0.366       function improves the inference accuracy significantly.
+                                                                           4.2.3 Impact of Flow Map Extraction Strategies
+Table 1: The training and inference time for models of varying sizes       The optimal model architecture varies among datasets. Based on
+for the Gerris Flow (Re = 445.7) dataset. The model size, along with       these findings, we investigate how the complexity of the flow affects
+the training and the inference time, is not affected by the dataset.       the performance of our deep learning model. We conduct an analysis
+Each row ([E, D]) represents the number of encoding layers (E)             on four Gerris Flow datasets with varying Re values: 23.2, 101.6,
+and decoding layers (D), and the hidden vector dimension is either         445.7, and 2352.5, respectively, covering a range of flow regimes
+1024 or 2048. Training time is measured on 100K training samples           from steady (Re < 50), periodic vortex shedding (50 < Re < 200),
+with 20 flow maps, trained for 100 epochs, utilizing distributed data      to turbulent flows (Re > 2000) [34]. Each training dataset consists
+parallel. Inference time was evaluated on 5, 000 seeds with 20 flow        of 500 time steps with an interval of 5, resulting in 100 flow maps
+maps, using Pytorch in Python with CUDA.                                   for each dataset. To train our model, we use 262, 144 seeds for each
+   Our model design achieves an acceptable error rate for all datasets.    dataset and design the model with four encoding layers, six decoding
+Our experiments reveal that the optimal model architecture depends         layers, and a 2048D latent vector.
+on the specific dataset. For steady flow regimes, such as those               Our results reveal that one of the limitations of our method is
+observed in the Double Gyre and Gerris (Re = 23.2), a smaller              the decline in inference accuracy as the underlying flow behavior
+latent vector dimension results in a higher accuracy. Conversely,          becomes more complex. Specifically, we observe that the turbulence
+for datasets exhibiting periodic vortex shedding, such as Gerris           flow feature (Gerris with Re = 2352.5) is the most challenging to
+(Re = 101.6) and some 3D datasets, a larger latent vector dimension        learn (Fig. 6). Improving the ability to infer turbulent flow could be
+is shown to be more effective than a smaller one. Furthermore, we          a focus of future research.
+observe a trend regarding the depth of encoding and decoding layers.          Prior work has demonstrated the Lagrangianlong method results
+In most cases, models with deeper layers, particularly those with          in fewer errors compared to Lagrangianshort , when using conven-
+eight encoding or decoding layers, yield less accurate inferences,         tional [52] or deep learning [30] methods, despite a reduction in
+performing the least effectively in our tests (see Tab. 1 in the supple-   domain coverage over time. Consequently, our experiments fo-
+mental material). When evaluating a neural network, model size is          cus solely on comparing the Lagrangianlong and Lagrangianhybrid
+an important consideration, in addition to its inference accuracy. As      methods (Fig. 3). As shown in Fig. 6, the Lagrangianhybrid method
+shown in Tab. 1, model size increases with an increasing number of         consistently reduces median errors across all datasets when com-
+layers in both the encoder and decoder, and doubles when increasing        pared to the Lagrangianlong method. In addition, our study explores
+the hidden vector size from 1024 to 2048. Moreover, the neural             the effect of reduction on the number of flow maps on training accu-
+network with more parameters requires more time for both training          racy. This is achieved by training two separate models, each with
+and inference.                                                             50 flow maps, as opposed to a single model trained with 100 flow
+                                                                           maps.
+4.2.2 Impact of Activation Function                                           The findings, as depicted in Fig. 6, indicate that reducing the
+We compare our approach with the ReLU-based MLP model pro-                 number of flow maps per model does not improve training accuracy
+posed by Han et al. [30] with the same model architecture, which           when employing the Lagrangianlong method. However, we observe
+includes five encoding layers for the seeds’ start location, seven         a slight decrease in errors when implementing the Lagrangianhybrid
+encoding layers for the file cycles, a latent vector of dimension 1024,    method. Throughout the training phase, the second model employ-
+and six decoding layers. As recommended by Sitzmann et al. [56],           ing the Lagrangianlong method exhibits errors approximately five
+we remove the LayerNorm and replace the ReLU activation func-              times greater than those of the first model. We hypothesize that these
+tion in the original architecture with the sinusoidal function for our     increased errors may be due to the greater difficulty in achieving
+comparative study. For our experiments, we use the same datasets           model convergence, possibly attributed to the larger spatial gap be-
+as described in Sec. 4.2.1. We set the learning rate to be 1e−4 for        tween the initial seed locations and their corresponding end locations
+                                                                                                           ABC - Lagrangianlong - 8.4 MB
+in the second model.                                                                   Model Loading (s)    #100 (s) #200 (s) #300 (s)     #400 (s)   #500 (s)   #1000 (s)
+   Our findings suggest that Lagrangianhybrid has greater accuracy        ONNX + GPU         2.12           0.45       0.52        0.58   0.64         0.65        1.07
+                                                                          ONNX + CPU         1.69           0.39       0.82        1.06   1.41         1.84        3.19
+than Lagrangianlong , and can also mitigate the error propagation                                    Hurricane - Lagrangianlong - 13.7 MB
+issue of Lagrangianshort .                                                             Model Loading (s) #100 (s) #200 (s) #300 (s) #400 (s)          #500 (s)   #1000 (s)
+                                                                          ONNX + GPU         2.48             0.57      0.76      0.92      0.97       1.21        1.85
+                                                                          ONNX + CPU         1.81             0.72      1.45      2.48      2.99       3.32        6.07
+
+                                                                              (a) Performance of the web-based viewer deployed by JavaScript library.
+                                                                                                           ABC - Lagrangianlong - 8.4 MB
+                                                                                       Model Loading (s)    #100 (s) #200 (s) #300 (s)     #400 (s)   #500 (s)   #1000 (s)
+                                                                          ONNX + GPU         1.15          0.003      0.005       0.007   0.009        0.014      0.032
+                                                                          ONNX + CPU        0.072           0.11       0.22        0.33   0.41          0.54      0.95
+                                                                                                     Hurricane - Lagrangianlong - 13.7 MB
+                                                                                       Model Loading (s) #100 (s) #200 (s) #300 (s) #400 (s)          #500 (s)   #1000 (s)
+                                                                          ONNX + GPU         1.18             0.004     0.007     0.009     0.012      0.018      0.037
+                                                                          ONNX + CPU         0.11              0.16      0.26     0.41      0.54        0.68      1.29
+
+                                                                               (b) Performance of the OSPRay integration deployed by C++ library.
+
+
+                                                                         Table 2: The inference performance of our web-based viewer
+Figure 6: Violin plot depicting the inference errors for models          (Tab. 2a) and OSPRay integration (Tab. 2b) with increasing numbers
+trained on Gerris Flow dataset with varying Reynolds numbers,            of seeds (#N represents the seed count) for the ABC and Hurricane
+using either the Lagrangianlong method with one or two models            datasets. We deploy the trained model using ONNX Runtime API.
+or the Lagrangianhybrid method with one or two models. These             Performance is measured in seconds, and experiments are conducted
+evaluations, conducted with 5, 000 testing seeds, calculate errors       on a workstation using a CPU (20 threads) or a GPU (CUDA). Our
+following Eq. (3). A comparison of violin plots of the same color        viewers enable interactive inference and visualization of new tra-
+across different datasets reveals that errors tend to increase as the    jectories with the Lagrangianlong method using the GPU. The C++
+flow behavior becomes more turbulent. Interestingly, using fewer         API is at least five times faster than the JavaScript API. Furthermore,
+flow maps for training in the Lagrangianlong approach does not im-       although the GPU outperforms the CPU in inference, it is slower in
+prove accuracy. Conversely, in the Lagrangianhybrid approach, using      loading the model.
+fewer flow maps actually led to a slight decrease in median errors.      The ABC dataset contains 20 flow maps, and the Hurricane dataset
+Furthermore, the Lagrangianhybrid method effectively reduces error       contains 30 flow maps. We evaluate the performance of our viewers
+propagation while maintaining domain coverage.                           on two workstations: one with an Intel Xeon CPU and an NVIDIA
+4.3     Model Pruning and Inference Performance                          Titan RTX GPU, and the other with an Intel NUC i7-8809G CPU (8
+4.3.1    Model Pruning                                                   logical cores and 32 GB RAM). We measure the speed of rendering
+                                                                         by scattering 100, 200, 300, 400, 500, and 1000 seeds across the
+An MLP model can often contain more weights than necessary for a         domain for each dataset.
+given task. The lottery ticket hypothesis suggests that a small subset      Tab. 2 presents the model loading and inference speeds of our web
+of the network is responsible for the majority of the task [19]. This    viewer and OSPRay integration using a CPU with 20 threads and a
+hypothesis implies that a small model within a large one can achieve     GPU with CUDA on the workstation. With CUDA, our developed
+the same level of accuracy. In order to create more efficient neural     viewers enable full interactivity for up to 1, 000 new seeds in the
+networks, we utilize model pruning techniques, specifically the algo-    inference pathlines. The motivation for deploying the trained neural
+rithm proposed by Fang et al. [18] using DepGraph. This approach         network on a web browser is to enable users to perform post hoc
+uses a magnitude pruning technique [16] that automatically identifies    exploration more easily, without requiring a high-performance com-
+the most important connections in the neural network, resulting in a     puter. As shown in Tab.2 in the supplemental material, we observe
+smaller, more efficient model. We perform the pruning interactively      similar performance results to those using the workstation (Tab. 2a),
+by removing some weights and then fine-tuning the model for each         indicating that the parallel algorithm used by ORT is not optimal.
+epoch; we repeat the process until a certain percentage of the model     Therefore, further improvement and acceleration of web-based de-
+is pruned. We do not prune important layers, such as the last layer of   ployment is required. Moreover, although the web-based viewer
+the model, to ensure that the model output retains the same format.      with a CPU is not fully interactive, it is still much faster than the
+Utilizing structured pruning techniques allows us to create smaller,     conventional interpolation approach.
+more efficient models that maintain the same level of accuracy as
+their larger counterparts.                                               4.4 Comparison with Interpolation Methods
+   A prime example of model pruning is demonstrated in our ex-           To compute the trajectories of new start seeds, post hoc interpolation
+periments with the Hurricane dataset, where we are able to reduce        methods are applied after saving the basis Lagrangian flow maps
+the size of a model from 34.5 MB to just 13.7 MB while maintain-         through particle tracing. Conventional interpolation methods, in-
+ing the same level of accuracy. This reduction in model size can         cluding barycentric coordinate and Shepard’s method, require the
+lead to faster inference times, decreased memory requirements, and       identification of the vicinity of the new seeds in the basis trajec-
+improved overall efficiency in neural network applications.              tories for computing a new particle trajectory. The methods for
+                                                                         determining the neighborhoods rely on the structure of the basis flow
+4.3.2    Inference Performance                                           maps. Delaunay triangulation can locate a cell in a structured or
+In Sec. 4.2.1, we evaluate the inference speed of our models with        unstructured data source containing a Lagrangian representation.
+different sizes using Pytorch in Python. In this section, we eval-          In our experiments, we compare the performance of our proposed
+uate the inference performance of our neural network in the web-         approach to that of the conventional post hoc interpolation method
+based viewer and OSPRay integration using the ABC and Hurricane          (BC), which includes (1) loading the basis flow maps, (2) creating the
+datasets. For the ABC dataset, we build a model with a 1024D             triangulation structure, and (3) performing barycentric coordinate
+hidden vector, three encoding layers, and six decoding layers, re-       interpolation. In our implementation, we utilize the CGAL [17]
+sulting in a model size of 8.4 MB. For the Hurricane dataset, we         library to generate the triangulation structure and employ Threading
+construct a model with a 2048D hidden vector, five encoding layers,      Building Blocks [42] (TBB) to parallelize all processes on CPUs.
+and eight decoding layers. The model size is 13.7 MB after pruning.      Our deep learning strategy (DL) consists of three steps: (1) loading
+the learned model, (2) generating the input using seed start locations                                                        it is essential to note that for the smaller, unstructured Half Cylinder
+and file cycles, and (3) inferring results using the training model. In                                                       dataset, which contains only 6, 752 seeds, our approach necessitates
+our studies, we implement the network inference in C++ and utilize                                                            increased storage compared to the other datasets.
+ORT 3 with CPU/GPU for the inference procedure of deep learning.                                                                  In Tab. 4, we compare the time required for the preparatory pro-
+For evaluations, we use two structured datasets (Gerris (Re = 101.6)                                                          cesses, including loading basis flow maps and performing triangu-
+and Hurricane) and the other two datasets (Heated Cylinder and Half                                                           lation in the BC interpolation approach, versus the model loading
+Cylinder(Re = 160)) in both structured and unstructured formats.                                                              time in our proposed method. Tab. 4 demonstrates that our deep-
+We compute the basis flow maps for structured datasets by placing                                                             learning-based strategy significantly reduces loading times. For the
+seeds at each grid vertex (to add basis flow maps) and utilizing Sobol                                                        hurricane dataset, the processing is approximately 426 times faster
+seeds to generate training data. In the case of unstructured data, we                                                         with a CPU and about 44 times faster with a GPU. For the smaller,
+use sparse seeds at the center of each cell.                                                                                  unstructured Heated Cylinder dataset, the network loading time is
+                                                                                                                              nine times faster with a CPU, and the performance is similar on a
+                                                                         BC                               DL
+                                                                                                                              GPU, which indicates that our DL approach effectively mitigates
+         Datasets             #FM       Resolution        Computation (hrs)   Storage (MB)   Training (hrs)    Storage (MB)
+   Gerris (Re 101.6) [S]      100        512 × 512             0.072             683.8            0.93             10.3       I/O constraints. Especially for the structured datasets, our approach
+                                      150 × 150 × 100
+       Hurricane [S]
+    Heated Cylinder [U]
+                               30
+                              100         49,610
+                                                                0.15
+                                                                0.03
+                                                                                 1599
+                                                                                 101.3
+                                                                                                 11.25
+                                                                                                 0.25
+                                                                                                                   13.7
+                                                                                                                  41.59       shows a significant speed advantage. The model loads in less than
+                                         150 × 450
+    Heated Cylinder [S]
+ Half Cylinder (Re 160) [U]
+                              100
+                               50          6,752
+                                                                0.03
+                                                               0.007
+                                                                                 137.4
+                                                                                  3.8
+                                                                                                  3.45
+                                                                                                 0.50
+                                                                                                                  41.59
+                                                                                                                  41.27       two seconds using a GPU and in under 0.2 seconds with a CPU.
+                                       80 × 80 × 80
+ Half Cylinder (Re 160) [S]    50                               0.15             680.0            2.50            41.27
+                                                                                                                              This swift performance, in contrast to the longer duration required
+                                                                                                                              for loading basis flow maps in the BC approach, underscores the
+Table 3: Comparing the computation time and storage requirements                                                              efficiency of our method during the initial setup phase.
+of the deep-learning-based approach (DL) vs. the conventional ap-
+proach (BC). This table evaluates the time to compute basis flow
+maps and the duration of neural network training across various
+structured (S) and unstructured (U) datasets. It includes the number
+of flow maps (#FM) and the resolution for each dataset. Addition-
+ally, it details the storage space needed for the basis flow map and
+the neural network. Even though our approach requires more time
+for neural network training, it consistently outperforms the conven-
+tional method in speed across all experiments (refer to Tab. 4 and
+Fig. 7) and reduces storage space requirements by two to 116 times
+compared to the conventional approach expect for the smallest un-
+structured Half Cylinder (Re = 160).
+
+                                                     BC                                         DL
+           Datasets                 Loading (s)      Triangulation (s)    Loading w/ CPU (s)       Loading w/ GPU (s)
+   Gerris (Re 101.6) [S]                2.6                 6.67                   0.06                       1.63
+       Hurricane [S]                   6.85                74.02                   0.19                       1.86
+    Heated Cylinder [U]                0.53                 1.27                   0.19                       1.76
+    Heated Cylinder [S]                1.55                 1.74                   0.19                       1.76
+ Half Cylinder (Re 160) [U]            0.71                 41.7                   0.19                       1.82
+ Half Cylinder (Re 160) [S]            4.13                29.47                   0.19                       1.82            Figure 7: Comparison of post hoc interpolation times of deep-
+                                                                                                                              learning-based (DL) vs. conventional approach (BC). This chart
+Table 4: Computation time comparison of the deep-learning-based                                                               compares the interpolation time for the conventional BC method
+approach (DL) vs. the conventional approach (BC). This table il-                                                              and the inference time for the DL method across various structured
+lustrates the time required for various tasks in post hoc analysis:                                                           and unstructured datasets, with an increasing number of seeds. Both
+loading basis flow maps, triangulation for the conventional approach,                                                         CPU and GPU performance are evaluated for the DL method. Our
+and model loading for the deep learning approach, across different                                                            findings show that the DL method, when utilizing a GPU, consis-
+structured and unstructured datasets. Our results indicate that the                                                           tently outperforms the BC method in all tests involving structured
+DL approach is consistently faster than the BC approach in all exper-                                                         datasets. It performs approximately 170 times faster for the hur-
+iments. Remarkably, for the Hurricane dataset, the processing time                                                            ricane dataset, offering a substantial speed-up for interactive flow
+is reduced by up to 426 when using CPUs and is approximately 44                                                               visualization and exploration in large-scale 3D datasets. When using
+faster with a GPU. In the case of the smaller, unstructured Heated                                                            a CPU, the DL method surpasses the BC method for high-resolution
+Cylinder dataset, network loading is nine times faster on a CPU,                                                              datasets like Gerris and Hurricane. It performs comparably to the
+whereas the performance on a GPU is comparable. This result in-                                                               BC method for the structured Half Cylinder dataset. Nonetheless,
+dicates that the DL approach effectively alleviates I/O constraints.                                                          for all unstructured datasets, the DL method, whether employing
+The substantial speed advantage of the DL approach facilitates inter-                                                         GPU or CPU, is slower than the BC method.
+active flow field exploration, particularly in large 3D datasets.
+                                                                                                                                 Our approach has shown promising results, but one limitation is
+   Tab. 3 illustrates the differences in computation time and storage                                                         the extensive training time required (refer to Tab. 3). For instance,
+requirements between the two approaches. The deep-learning-based                                                              the Hurricane dataset of 2.25 million seeds and 30 flow maps takes
+method offers a reduction in storage needs by a factor of two to                                                              approximately 11 hours to complete 100 epochs during training.
+116 times when compared to the conventional approach, across                                                                  However, this is a common issue associated with deep learning and
+all datasets. The only exception is the unstructured Half Cylinder                                                            can be potentially mitigated by utilizing more powerful hardware or
+dataset, which comprises a relatively small number of seeds, to-                                                              developing new training procedures in the future.
+taling 6, 752. Additionally, our approach is more storage efficient.                                                             As depicted in Fig. 8, we evaluate the inference accuracy of
+For example, in the case of the Gerris flow dataset, storing the                                                              our approach in comparison to the conventional approach using
+trained model results in a 68-fold reduction in storage space. For                                                            barycentric coordinates. Our method demonstrates comparable per-
+the Hurricane dataset, implementing our model pruning strategy                                                                formance across all structured datasets when considering median
+(Sec. 4.3) enables a storage reduction by a factor of 116. However,                                                           errors. Significantly, the traditional method tends to yield higher
+                                                                                                                              maximum errors in comparison to our deep-learning-based method.
+    3 https://onnxruntime.ai/docs/get-started/with-cpp.html                                                                   For example, in the structured Half Cylinder dataset, the mean errors
+                                                                           further elaborated upon in the supplemental materials.
+                                                                              In addition to the web-based viewer, we have also integrated our
+                                                                           neural network with the OSPRay [59] rendering engine to enable
+                                                                           C++ implementation (see supplemental material). Our integration
+                                                                           with the web-based viewer and OSPRay rendering engine is inde-
+                                                                           pendent of the model architecture, allowing users to integrate their
+                                                                           models easily by simply replacing the trace function. We highlight
+                                                                           the visualization result of ScalarFlow in Fig. 10.
+                                                                              All of our source code is available on GitHub.4 5
+
+
+
+
+Figure 8: The violin plot illustrates a comparison of error rates
+between our deep-learning-based method (DL) and the traditional
+barycentric coordinate interpolation (BC) method. ’S’ represents
+structured data, whereas ’U’ indicates unstructured data. The median
+is depicted by a white line on the gray bar, and the mean is shown as
+a black dot. The error range in each violin plot is displayed using
+error limits to clearly demonstrate the error distribution with the        Figure 9: Illustration of our web-based viewer for visualizing in-
+maximum error noted at the top of each plot. In terms of median            ferred pathlines using our pre-trained model in the ABC dataset. The
+error, our method shows comparable results across all structured           interface includes panels for (1) main display, (2) model loading,
+datasets. Notably, the BC method generates higher maximum errors           data information and particle tracing, (3) seed box configuration, (4)
+compared to the DL method. For instance, the mean errors in our            transfer function for scalar field data visualization, and (5) seed and
+method are up to 12 times lower for the structured Half Cylinder           line style configuration.
+dataset. However, our method tends to produce higher errors for
+unstructured datasets, especially in cases trained with sparse seeding.
+In order to develop a more accurate model for unstructured data, a
+mesh density-guided flow map sampling is necessary.
+with our approach are up to 12 times lower. However, our current
+model exhibits a larger error rate when dealing with unstructured
+data, particularly for 3D datasets such as the Half Cylinder, which
+employs sparse seeds for training. Therefore, to enhance the predic-
+tion accuracy of unstructured data, employing densely distributed
+seeds is crucial. Moreover, to overcome this limitation, we intend
+to explore an adaptive sampling strategy in our future work, which         Figure 10: Multiworkflow visualization of the ScalarFlow dataset
+could aid in selecting important seeds for generating training data.       using our OSPRay-based viewer, which integrates our neural net-
+More visual comparison results can be found in Fig. 2 and Fig. 3 of        work with the OSPRay renderer. The visualization displays the
+the supplemental material.                                                 FTLE as a volume and the pathlines inferred using our neural net-
+   In summary, our proposed deep-learning-based method has the             work. A clipping plane is aligned along the y-axis. The model is
+potential to substantially improve the prediction accuracy of struc-       trained with the Lagrangianhybrid method. Each pathline encom-
+tured datasets while also minimizing their storage requirements            passes 15 time steps, ranging from time step 135 to time step 150.
+and expediting the interpolation procedure when compared to the
+conventional post hoc interpolation approach.                              5 C ONCLUSION AND F UTURE W ORK
+                                                                           In this paper, we conduct a comprehensive evaluation of a deep
+4.5 Interactive Visualization Tool for Post Hoc Analysis                   learning approach that uses Lagrangian representations to accelerate
+Benefiting from our model’s minimal memory footprint and fast              the post hoc interpolation and visualization of time-varying flow
+inference, we build a deep learning approach to accelerate the post        fields.
+hoc interpolation and visualization of Lagrangian flow maps, which            Our results help identify best practices for using MLP-based
+is typically expensive due to I/O constraints and interpolation perfor-    models to reconstruct Lagrangian flow maps. Our findings include:
+mance (Sec. 4.4). To facilitate the exploration of flow maps without           • Shallow neural networks generally perform better than deep
+requiring a powerful computer, we develop a web-based viewer that                neural networks in reconstructing Lagrangian flow maps;
+utilizes our neural network as the backend to accelerate the inter-            • The reconstruction errors tend to increase with increased tur-
+polation and visualization process. The viewer is implemented in                 bulence in flow behaviors. A larger hidden layer (with a higher
+JavaScript and is compatible with multiple platforms and popular                 latent dimension) is more effective than a smaller one for cap-
+web browsers, such as Safari, Chrome, and Firefox. The user in-                  turing complex flow dynamics;
+terface of the web-based viewer includes control panels for model              • The Sinusoidal activation function demonstrates superior per-
+loading, seed placement, seed box configuration, scalars configura-              formance compared to the ReLU activation function;
+tion, transfer function editing, and tracing. It also provides a primary       • Employing the Lagrangianhybrid method for generating train-
+viewer for presenting the visualization of pathlines, surfaces, and              ing data effectively minimizes error propagation while preserv-
+volumes, allowing users to engage with seed placement and visu-                  ing domain coverage, in contrast to the Lagrangianlong ;
+alization outcomes (Fig. 9). The details of the implementation of
+the web viewer, as outlined in Sec. 4 of the supplemental material,           4 https://github.com/MengjiaoH/FlowMap_Web_Viewer
+
+along with the visualization results presented in Fig. 6 and 7, are           5 https://github.com/MengjiaoH/FlowMap_OSPRay_Viewer
+   • Model pruning is essential for reducing model size and enhanc-       R EFERENCES
+     ing the efficiency of the inference process.
+   By comparing the deep learning approach to the conventional             [1] A. Agranovsky, D. Camp, C. Garth, E. W. Bethel, K. I. Joy, and
+method based on Delaunay triangulation and barycentric coordinate              H. Childs. Improved Post Hoc Flow Analysis Via Lagrangian Repre-
+interpolation, we demonstrate that our approach is at least three              sentations. In 2014 IEEE 4th Symposium on Large Data Analysis and
+times faster on small datasets and over 400 times faster on large 3D           Visualization (LDAV), pages 67–75, 2014. 2
+                                                                           [2] A. Agranovsky, H. Obermaier, C. Garth, and K. I. Joy. A Multi-
+datasets. Our method improves interpolation accuracy by threefold
+                                                                               Resolution Interpolation Scheme for Pathline Based Lagrangian Flow
+on average for structured datasets. In terms of storage space, our
+                                                                               Representations. In Visualization and Data Analysis 2015, volume
+method reduces memory usage by 46 times for the Hurricane dataset              9397, page 93970K, 2015. 2
+without model pruning, by saving 30 basis flow maps with 1.6 GB            [3] A. S. Ali, A. S. Hussien, M. F. Tolba, and A. H. Youssef. Visualization
+storage. With the application of model pruning techniques, memory              of Large Time-Varying Vector Data. In 2010 3rd International Con-
+usage is further reduced, achieving a 116-fold reduction.                      ference on Computer Science and Information Technology, volume 4,
+   By leveraging the rapid inference and small memory footprint                pages 210–215. IEEE, 2010. 1
+of our MLP model, we provide a web-based viewer to offer an                [4] Y. An, H.-W. Shen, G. Shan, G. Li, and J. Liu. STSRNet: Deep Joint
+easy way to visualize and explore the post hoc interpolation process.          Space-Time Super-Resolution for Vector Field Visualization. IEEE
+Accessible from any computer regardless of processing capacity, the            Computer Graphics and Applications, 41(6):122–132, 2021. 1
+web-based viewer supports multiple platforms and web browsers. It          [5] I. Baeza Rojo and T. Günther. Vector Field Topology of Time-
+also provides various seeding strategies and supports both volume              Dependent Flows in a Steady Reference Frame. IEEE Transactions on
+and slice representations of other scalar fields, enabling users to            Visualization and Computer Graphics (Proc. IEEE Scientific Visualiza-
+select regions of interest and explore them interactively.                     tion), 2019. 4
+                                                                           [6] X. Bai, C. Wang, and C. Li. A Streampath-Based RCNN Approach to
+   When using CUDA-supported devices, our approach can generate
+                                                                               Ocean Eddy Detection. IEEE Access, 7:106336–106345, 2019. 2
+pathlines interactively. Inferring 1, 000 pathlines with 30 flow maps      [7] A. D. Beck, J. Zeifang, A. Schwarz, and D. G. Flad. A Neural Network
+takes only one second. However, on a low-end device with a single              based Shock Detection and Localization Approach for Discontinuous
+CPU, the inference speed is slower, requiring three seconds to infer           Galerkin Methods. Journal of Computational Physics, 423:109824,
+1, 000 pathlines with 30 flow maps. Despite the slower performance             2020. 2
+on low-end devices, interactive pathline generation remains signifi-       [8] S. L. Brunton, B. R. Noack, and P. Koumoutsakos. Machine Learning
+cantly faster than the conventional approach. Whereas the current              for Fluid Mechanics. Annual Review of Fluid Mechanics, 52:477–508,
+parallel scheme for deploying the neural network on the website                2020. 1
+using a CPU is suboptimal, we are optimistic that performance can          [9] R. Bujack and K. I. Joy. Lagrangian Representations of Flow Fields
+be improved with a more efficient parallel API in the future.                  with Parameter Curves. In 2015 IEEE 5th Symposium on Large Data
+   Additionally, we have integrated our neural network into the                Analysis and Visualization (LDAV), pages 41–48. IEEE, 2015. 2
+OSPRay rendering engine to support C++ developers and enable              [10] J. Chandler, H. Obermaier, and K. I. Joy. Interpolation-Based Pathline
+fast, high-fidelity rendering performance. Our integration is general          Tracing in Particle-Based Flow Visualization. IEEE transactions on
+and can be applied to other model architectures with similar tasks.            visualization and computer graphics, 21(1):68–80, 2014. 2
+We have made source code available on GitHub, allowing users to           [11] M. V. Da Costa and B. Blanke. Lagrangian methods for flow climatolo-
+easily integrate their neural networks by replacing the trace function.        gies and trajectory error assessment. Ocean Modelling, 6(3-4):335–358,
+                                                                               2004. 2
+   In addition, our study demonstrates that the proposed neural           [12] L. Deng, Y. Wang, Y. Liu, F. Wang, S. Li, and J. Liu. A CNN-based
+network, featuring a sinusoidal activation function, significantly             Vortex Identification Method. Journal of Visualization, 22(1):65–78,
+improves inference accuracy compared to a prior study [30]. We                 2019. 2
+also investigate the impact of different model architectures on var-      [13] C. Dong, C. C. Loy, K. He, and X. Tang. Image Super-Resolution
+ious 2D and 3D datasets, and assess our model’s ability to handle              Using Deep Convolutional Networks. IEEE transactions on pattern
+datasets with increasing flow complexity. Moreover, we evaluate a              analysis and machine intelligence, 38(2):295–307, 2015. 2
+Lagrangianhybrid training data structure that conceptually combines       [14] Z. Duo, W. Wang, and H. Wang. Oceanic Mesoscale Eddy Detection
+the Lagrangianlong and Lagrangianshort methods utilized in [30],               Method Based on Deep Learning. Remote Sensing, 11(16):1921, 2019.
+ensuring domain convergence while minimizing error propagation.                2
+   Even though our approach has shown promising results, certain          [15] M.-L. Eckert, K. Um, and N. Thuerey. ScalarFlow: A Large-Scale Vol-
+limitations exist. We observe larger errors in unstructured datasets           umetric Data Set of Real-world Scalar Transport Flows for Computer
+with sparse seeds. To address this limitation, we plan to investigate          Animation and Machine Learning. ACM Transactions on Graphics
+adaptive seeding approaches that place seeds based on flow features            (TOG), 38(6):1–16, 2019. 4
+                                                                          [16] B. Elesedy, V. Kanade, and Y. W. Teh. Lottery Tickets in Linear
+and mesh refinement instead of uniform seeding. Additionally, train-
+                                                                               Models: An Analysis of Iterative Magnitude Pruning. arXiv preprint
+ing the model for large 3D datasets is computationally expensive.
+                                                                               arXiv:2007.08243, 2020. 6
+We plan to explore ways to reduce training time while maintaining         [17] A. Fabri and S. Pion. CGAL: The Computational Geometry Algorithms
+accuracy, such as utilizing transfer learning. Furthermore, other              Library. In Proceedings of the 17th ACM SIGSPATIAL international
+techniques for encoding high-frequency signals, such as positional             conference on advances in geographic information systems, pages
+encoding, could be explored alongside sinusoidal activation func-              538–539, 2009. 6
+tions to further enhance accuracy. Lastly, our model is less effective    [18] G. Fang, X. Ma, M. Song, M. B. Mi, and X. Wang. DepGraph: Towards
+at inferring long trajectories, especially in complex flow behavior.           Any Structural Pruning. arXiv preprint arXiv:2301.12900, 2023. 6
+Improving the model’s capability to handle large-scale datasets is        [19] J. Frankle and M. Carbin. The Lottery Ticket Hypothesis: Finding
+also an area of future research.                                               Sparse, Trainable Neural Networks. arXiv preprint arXiv:1803.03635,
+                                                                               2018. 6
+                                                                          [20] K. Franz, R. Roscher, A. Milioto, S. Wenzel, and J. Kusche. Ocean eddy
+ACKNOWLEDGMENTS                                                                identification and tracking using neural networks. In IGARSS 2018-
+This work was partially supported by the Intel OneAPI CoE, the                 2018 IEEE International Geoscience and Remote Sensing Symposium,
+Intel Graphics and Visualization Institutes of XeLLENCE, and the               pages 6887–6890. IEEE, 2018. 2
+DOE Ab-initio Visualization for Innovative Science (AIVIS) grant          [21] G. Froyland and O. Junge. Robust FEM-Based Extraction of Finite-
+2428225. Additional support comes from NSF SHF award 2221812                   Time Coherent Sets Using Scattered, Sparse, and Incomplete Trajecto-
+and DOE DE-SC0023157.
+     ries. SIAM Journal on Applied Dynamical Systems, 17(2):1891–1924,            [41] Y. Liu, Y. Lu, Y. Wang, D. Sun, L. Deng, F. Wang, and Y. Lei. A
+     2018. 2                                                                           CNN-based shock detection method in flow visualization. Computers
+[22] G. Froyland and K. Padberg-Gehle. A rough-and-ready cluster-based                 & Fluids, 184:1–9, 2019. 2
+     approach for extracting finite-time coherent sets from sparse and incom-     [42] C. Pheatt. Intel® Threading Building Blocks. Journal of Computing
+     plete trajectory data. Chaos: An Interdisciplinary Journal of Nonlinear           Sciences in Colleges, 23(4):298–298, 2008. 6
+     Science, 25(8):087406, 2015. 2                                               [43] S. Popinet. Free Computational Fluid Dynamics. ClusterWorld, 2(6),
+[23] H. Gao, L. Sun, and J.-X. Wang. Super-resolution and denoising                    2004. 4
+     of fluid flow using physics-informed convolutional neural networks           [44] X. Qin, E. van Sebille, and A. S. Gupta. Quantification of errors induced
+     without high-resolution labels. Physics of Fluids, 33(7):073603, 2021.            by temporal resolution on Lagrangian particles in an eddy-resolving
+     2                                                                                 model. Ocean Modelling, 76:20–30, 2014. 2
+[24] T. Günther, M. Gross, and H. Theisel. Generic Objective Vortices             [45] T. Rapp, C. Peters, and C. Dachsbacher. Void-and-Cluster Sampling
+     for Flow Visualization. ACM Transactions on Graphics (Proc. SIG-                  of Large Scattered Data and Trajectories. IEEE transactions on visual-
+     GRAPH), 36(4):141:1–141:11, 2017. 4                                               ization and computer graphics, 26(1):780–789, 2019. 2
+[25] L. Guo, S. Ye, J. Han, H. Zheng, H. Gao, D. Z. Chen, J.-X. Wang,             [46] M. P. Rockwood, T. Loiselle, and M. A. Green. Practical concerns
+     and C. Wang. SSR-VFD: Spatial Super-Resolution for Vector Field                   of implementing a finite-time lyapunov exponent analysis with under-
+     Data Analysis and Visualization. In 2020 IEEE Pacific Visualization               resolved data. Experiments in Fluids, 60(4):1–16, 2019. 2
+     Symposium (PacificVis), pages 71–80. IEEE Computer Society, 2020.            [47] S. Sahoo and M. Berger. Integration-Aware Vector Field Super Resolu-
+     2                                                                                 tion. 2021. 2
+[26] A. Hadjighasem, M. Farazmand, D. Blazevski, G. Froyland, and                 [48] S. Sahoo, Y. Lu, and M. Berger. Neural Flow Map Reconstruction. In
+     G. Haller. A Critical Comparison of Lagrangian Methods for Co-                    Computer Graphics Forum, volume 41, pages 391–402. Wiley Online
+     herent Structure Detection. Chaos: An Interdisciplinary Journal of                Library, 2022. 1, 2
+     Nonlinear Science, 27(5):053104, 2017. 2                                     [49] S. Sane, R. Bujack, and H. Childs. Revisiting the Evaluation of In Situ
+[27] J. Han, J. Tao, and C. Wang. FlowNet: A Deep Learning Framework                   Lagrangian Analysis. In EGPGV@ EuroVis, pages 63–67, 2018. 2
+     for Clustering and Selection of Streamlines and Stream Surfaces. IEEE        [50] S. Sane, R. Bujack, C. Garth, and H. Childs. A Survey of Seed Place-
+     transactions on visualization and computer graphics, 26(4):1732–1744,             ment and Streamline Selection Techniques. In Computer Graphics
+     2018. 2                                                                           Forum, volume 39, pages 785–809. Wiley Online Library, 2020. 2
+[28] J. Han, J. Tao, H. Zheng, H. Guo, D. Z. Chen, and C. Wang. Flow Field        [51] S. Sane and H. Childs. Exploratory Time-Dependent Flow Visual-
+     Reduction Via Reconstructing Vector Data From 3-D Streamlines                     ization via In Situ Extracted Lagrangian Rßepresentations. In In Situ
+     Using Deep Learning. IEEE computer graphics and applications,                     Visualization for Computational Science, pages 91–109. Springer, 2022.
+     39(4):54–67, 2019. 2                                                              2
+[29] J. Han and C. Wang. TSR-VFD: Generating Temporal Super-                      [52] S. Sane, H. Childs, and R. Bujack. An Interpolation Scheme for VDVP
+     Resolution for Unsteady Vector Field Data. Computers & Graphics,                  Lagrangian Basis Flows. In Eurographics Symposium on Parallel
+     103:168–179, 2022. 1                                                              Graphics and Visualization, pages 109–119, 2019. 5
+[30] M. Han, S. Sane, and C. R. Johnson. Exploratory Lagrangian-Based             [53] S. Sane, C. R. Johnson, and H. Childs. Investigating In Situ Reduction
+     Particle Tracing Using Deep Learning. Journal of Flow Visualization               via Lagrangian Representations for Cosmology and Seismology Appli-
+     and Image Processing, 2022. 1, 2, 3, 4, 5, 9                                      cations. In International Conference on Computational Science, pages
+[31] A. Helgeland and T. Elboth. High-Quality and Interactive Animations               436–450. Springer, 2021. 2
+     of 3D Time-Varying Vector Fields. IEEE Transactions on Visualization         [54] K. L. Schlueter-Kuck and J. O. Dabiri. Coherent structure colouring:
+     and Computer Graphics, 12(6):1535–1546, 2006. 1                                   identification of coherent structures from sparse data using graph theory.
+[32] K. Höhlein, M. Kern, T. Hewson, and R. Westermann. A comparative                  Journal of Fluid Mechanics, 811:468–486, 2017. 2
+     study of convolutional neural network models for wind field downscal-        [55] W. Shi, J. Caballero, F. Huszár, J. Totz, A. P. Aitken, R. Bishop,
+     ing. Meteorological Applications, 27(6):e1961, 2020. 2                            D. Rueckert, and Z. Wang. Real-Time Single Image and Video Super-
+[33] F. Hong, J. Zhang, and X. Yuan. Access Pattern Learning with Long                 Resolution Using an Efficient Sub-Pixel Convolutional Neural Network.
+     Short-Term Memory for Parallel Particle Tracing. In 2018 IEEE Pacific             In Proceedings of the IEEE conference on computer vision and pattern
+     Visualization Symposium (PacificVis), pages 76–85. IEEE, 2018. 2                  recognition, pages 1874–1883, 2016. 2
+[34] J. Jakob, M. Gross, and T. Günther. A Fluid Flow Data Set for Machine        [56] V. Sitzmann, J. Martel, A. Bergman, D. Lindell, and G. Wetzstein.
+     Learning and its Application to Neural Flow Map Interpolation. IEEE               Implicit Neural Representations with Periodic Activation Functions.
+     Transactions on Visualization and Computer Graphics, 27(2):1279–                  Advances in Neural Information Processing Systems, 33, 2020. 3, 5
+     1289, 2020. 2, 4, 5                                                          [57] C. M. Ströfer, J. Wu, H. Xiao, and E. Paterson. Data-Driven, Physics-
+[35] B. Kashir, M. Ragone, A. Ramasubramanian, V. Yurkiv, and                          Based Feature Extraction from Fluid Flow Fields Using Convolu-
+     F. Mashayek. Application of fully convolutional neural networks for               tional Neural Networks. Communications in Computational Physics,
+     feature extraction in fluid flow. Journal of Visualization, 24(4):771–785,        25(3):625–650, 2018. 2
+     2021. 2                                                                      [58] D. Tatarenkova. Edge Detection and Machine Learning Approach to
+[36] B. Kim and T. Günther. Robust Reference Frame Extraction from                     Identify Flow Structures on Schlieren and Shadowgraph Images. 2020.
+     Unsteady 2D Vector Fields with Convolutional Neural Networks. In                  2
+     Computer Graphics Forum, volume 38, pages 285–295. Wiley Online              [59] I. Wald, G. P. Johnson, J. Amstutz, C. Brownlee, A. Knoll, J. Jeffers,
+     Library, 2019. 2                                                                  J. Günther, and P. Navrátil. OSPRay-A CPU Ray Tracing Framework
+[37] J.-Y. Lee and J. Park. Deep Regression Network-Assisted Efficient                 for Scientific Visualization. IEEE transactions on visualization and
+     Streamline Generation Method. IEEE Access, 9:111704–111717, 2021.                 computer graphics, 23(1):931–940, 2016. 8
+     2                                                                            [60] C. Wang and J. Han. DL4SciVis: A State-of-the-Art Survey on Deep
+[38] R. Lguensat, M. Sun, R. Fablet, P. Tandeo, E. Mason, and G. Chen.                 Learning for Scientific Visualization. IEEE Transactions on Visualiza-
+     EddyNet: A Deep Neural Network for Pixel-Wise Classification of                   tion and Computer Graphics, 2022. 1
+     Oceanic Eddies. In IGARSS 2018-2018 IEEE International Geoscience            [61] Y. Wang, L. Deng, Z. Yang, D. Zhao, and F. Wang. A Rapid Vor-
+     and Remote Sensing Symposium, pages 1764–1767. IEEE, 2018. 2                      tex Identification Method Using Fully Convolutional Segmentation
+[39] Y. Li, C. Wang, and C.-K. Shene. Extracting Flow Features via Su-                 Network. The Visual Computer, 37(2):261–273, 2021. 2
+     pervised Streamline Segmentation. Computers & Graphics, 52:79–92,            [62] T. B. L. Yi. CNN-based Flow Field Feature Visualization Method.
+     2015. 2                                                                           International Journal of Performability Engineering, 14(3):434, 2018.
+[40] C. Liu, R. Jiang, D. Wei, C. Yang, Y. Li, F. Wang, and X. Yuan. Deep              2
+     Learning Approaches in Flow Visualization. Advances in Aerodynam-
+     ics, 4(1):1–14, 2022. 1, 2
+

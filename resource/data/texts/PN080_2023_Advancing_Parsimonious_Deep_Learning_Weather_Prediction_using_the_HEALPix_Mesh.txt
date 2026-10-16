@@ -1,0 +1,1909 @@
+                                                        manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                                                        Advancing Parsimonious Deep Learning Weather
+                                                             Prediction using the HEALPix Mesh
+
+                                                      Matthias Karlbauer1 , Nathaniel Cresswell-Clay2 , Dale R. Durran2 ,
+                                                   Raul A. Moreno2 , Thorsten Kurth3 , Boris Bonev3 , Noah Brenowitz4 , and
+                                                                              Martin V. Butz1
+
+                                                 1 Neuro-Cognitive Modeling Group, Department of Computer Science, University of Tübingen, Tübingen,
+
+                                                                                              Germany
+arXiv:2311.06253v2 [physics.ao-ph] 19 Jun 2024
+
+
+
+
+                                                           2 Department of Atmospheric Sciences, University of Washington, Seattle, WA, USA
+                                                                            3 NVIDIA Switzerland AG, Zürich, Switzerland
+                                                                                 4 NVIDIA Corporation, Seattle, USA
+
+
+
+
+                                                        Key Points:
+                                                    • The model forecasts 7 atmospheric variables, an order of magnitude less than that
+                                                      used in state-of-the-art ML weather forecast models.
+                                                    • Forecasts are generated on the HEALPix mesh, facilitating the development of lo-
+
+                                                      cation invariant convolution kernels.
+                                                    • Without converging to climatology, the model produces realistic atmospheric states
+
+                                                      in 365-day iterative rollouts.
+
+
+
+
+                                                 Corresponding author: Dale R. Durran, drdee@uw.edu
+
+
+                                                                                                 –1–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+Abstract
+We present a parsimonious deep learning weather prediction model to forecast seven at-
+mospheric variables with 3-h time resolution for up to one-year lead times on a 110-km
+global mesh using the Hierarchical Equal Area isoLatitude Pixelization (HEALPix). In
+comparison to state-of-the-art (SOTA) machine learning (ML) weather forecast models,
+such as Pangu-Weather and GraphCast, our DLWP-HPX model uses coarser resolution
+and far fewer prognostic variables. Yet, at one-week lead times, its skill is only about one
+day behind both SOTA ML forecast models and the SOTA numerical weather predic-
+tion model from the European Centre for Medium-Range Weather Forecasts. We report
+several improvements in model design, including switching from the cubed sphere to the
+HEALPix mesh, inverting the channel depth of the U-Net, and introducing gated recur-
+rent units (GRU) on each level of the U-Net hierarchy. The consistent east-west orien-
+tation of all cells on the HEALPix mesh facilitates the development of location-invariant
+convolution kernels that successfully propagate weather patterns across the globe with-
+out requiring separate kernels for the polar and equatorial faces of the cube sphere. With-
+out any loss of spectral power after the first two days, the model can be unrolled autore-
+gressively for hundreds of steps into the future to generate realistic states of the atmo-
+sphere that respect seasonal trends, as showcased in one-year simulations.
+
+
+Plain Language Summary
+      Weather forecasting traditionally relies on numerical weather prediction models that
+solve physical equations to simulate the evolution of the atmosphere. Such numerical mod-
+els are compute intensive, and their performance is increasingly challenged by less com-
+pute demanding but still highly sophisticated machine learning (ML) approaches. Yet,
+a downside for many of these new ML models is they tend to drift away from climatol-
+ogy while producing excessively smoothed fields if they are iteratively stepped forward
+for several months. Here, a parsimonious machine learning model is developed to fore-
+cast just 7 atmospheric variables that can be stepped forward to give realistic weather
+patterns over a full year. Despite using at least a factor of 10 less variables than the 67
+to 227 in the best ML models, our model generates eight-day forecasts with errors that
+are only a day behind those from state-of-the-art ML forecasts. Our model provides a
+path toward sub-seasonal and seasonal forecasting that could potentially improve plan-
+ning for agriculture, water resources, disaster preparedness, and energy production
+
+
+1 Introduction
+      Four years ago, Weyn et al. (2019) posed the question “Can machines learn to pre-
+dict the weather?” and demonstrated that data driven convolutional neural networks can
+forecast the evolution of the 500 hPa surface much better than the alternative dynam-
+ical model, the barotropic vorticity equation, which was used in the first numerical weather
+prediction (NWP) model (Charney et al., 1950). An extremely rapid evolution of deep
+learning weather prediction (DLWP) models followed, culminating in the recent Pangu-
+Weather (Bi et al., 2023) and GraphCast models (Lam et al., 2022), which outperform
+the deterministic forecast from the state-of-the-art Integrated Forecast System (IFS) of
+the European Centre for Medium-Range Weather Forecasts (ECMWF).
+
+       NWP has continuously improved over the seven decades since the first barotropic
+model forecast (Benjamin et al., 2019). Current state-of-the-art models typically provide
+skillful predictions of global weather patterns at effective grid point spacings of roughly
+0.1 ◦ of latitude (about 10 km) through at least seven days of forecast lead time (Bauer
+et al., 2015). The computational effort required to generate such global high-resolution
+forecasts is enormous and only available at a handful of advanced dedicated centers. En-
+semble forecasts, which provide an important way to account for uncertainty by gener-
+ating a set of equally plausible predictions and extend the limit of skillful forecasts be-
+
+
+                                             –2–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+yond that of a single deterministic model run, are also limited by the computational bur-
+den of high-resolution NWP to about 50 members (Palmer, 2019).
+      Global NWP models represent 3D fields as sets of nested spherical shells in which
+the distance between each shell is the local vertical grid spacing. On every time step, the
+ECMWF Integrated Forecasting System (IFS), as configured for sub-seasonal forecast-
+ing, updates 10 prognostic 3D variables defined at 91 vertical levels. Along with surface
+pressure, this totals to over 900 spherical shells of data. Here, we use “spherical shell of
+data” to describe a single variable defined at a single vertical level on a spherical shell
+covering the globe. The large number of spherical shells of data (combined with the fine
+horizontal resolution) in NWP models is required to produce acceptably accurate numer-
+ical solutions to the equations governing atmospheric motions. The data at each indi-
+vidual point, however, cannot be independently perturbed while maintaining a meteo-
+rologically relevant atmospheric state. For example, on horizontal scales larger than about
+10 km, the temperatures throughout a vertical column and the heights of constant pres-
+sure surfaces must satisfy hydrostatic balance.
+       The actual number of independent degrees of freedom required to represent the pre-
+dictable components of the global atmosphere is unknown, but it clearly decreases with
+increasing forecast lead times (Lorenz, 1969). GraphCast (Lam et al., 2022), for exam-
+ple, has achieved success at lead times as short as 6 h with 227 spherical shells of data.
+It can produce forecasts using much less computation time than the ECMWF IFS, but
+it still requires large computing resources for training: 3 weeks using 32 TPU 4 proces-
+sors. Pangu-Weather (Bi et al., 2023) cuts the number of spherical shells by almost 2/3
+to 69. The spherical Fourier neural operator (SFNO) version of FourCastNet compared
+with the IFS in Bonev et al. (2023) uses 73 spherical shells of data. Here, we take this
+reduction much farther, presenting a parsimonious DLWP model that uses just 7 spher-
+ical shells of data to efficiently provide forecasts approaching the skill of ECMWF. While
+not as accurate as GraphCast or Pangu-Weather for medium range forecasts with lead
+times less than two weeks, we demonstrate that our model generates far less bias in fore-
+casts of 500-hPa height in one-year iterative forecasts. In addition, our model is poten-
+tially better suited for research applications such as computing the sensitivities of its com-
+pact state vector to custom diagnostic functions by backpropagation.
+      In contrast to many of the recent DLWP architectures, our approach relies on con-
+volutional neural networks (CNN), building on early work by Scher and Messori (2018)
+and Weyn et al. (2019) and the U-Net configuration in Weyn et al. (2020) and Weyn et
+al. (2021). Here, we document substantial improvements over Weyn et al. (2021), obtained
+by replacing the cubed sphere data representation with the HEALPix mesh, which is widely
+employed in astronomy (Gorski et al., 2005). In addition, we improve the former model
+by implementing physically motivated modifications in form of residual connections, re-
+current modules, and inverting the channel depth as compared with a standard U-Net.
+
+
+
+
+2 Related Work
+       Pioneering efforts to create machine learning models to forecast the weather from
+reanalysis or general circulation model (GCM) output include the dense neural network
+of Dueben and Bauer (2018) and the CNN models of Scher and Messori (2019) and Weyn
+et al. (2019), all of which employed latitude longitude (lat-lon) meshes. Weyn et al. (2020)
+obtained significantly improved forecasts by switching to a cubed sphere mesh with a
+CNN in the standard U-Net architecture (Ronneberger et al., 2015). Their model was
+capable of generating realistic weather patterns when stepped forward for a full year (730
+12 h steps). Retaining the cubed sphere, Weyn et al. (2021) produced forecasts out to
+sub-seasonal time scales using large multi-model ensembles, and Lopez-Gomez et al. (2022)
+migrated from the U-Net into a U-Net 3+ architecture (Huang et al., 2020)—which adds
+
+
+                                              –3–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+connections between multiple hierarchical levels in the U-Net—to generate forecasts of
+extreme surface temperatures.
+      Returning to the lat-lon mesh, Rasp and Thuerey (2021) demonstrated that a deep
+Resnet could be pre-trained on GCM data and then fine-tuned by transfer learning on
+ERA5 data to produce up to 5-day forecasts at coarse 5.65 ◦ grid spacing. Building on
+transformer models from computer vision (Dosovitskiy et al., 2020; Guibas et al., 2021),
+Pathak et al. (2022) and Kurth et al. (2022) used Fourier neural operators (Li et al., 2020)
+to develop FourCastNet on a 0.25 ◦ lat-lon mesh to generate forecasts approaching the
+accuracy of ECMWF’s IFS. FourCastNet was not, however, capable of stable long-lead-
+time autoregressive rollouts. This difficulty was overcome by switching from 2D Fourier
+modes on a lat-lon mesh to spherical harmonic functions Bonev et al. (2023). The result-
+ing SFNO model eliminated much of the vision transformer architecture while improv-
+ing accuracy and remaining stable for one-year forecasts.
+
+      Again on a 5.65◦ lat-lon mesh, Hu et al. (2022) used a shifted window (Swin) trans-
+former (Liu et al., 2021) to produce single forecasts as well as ensembles generated by
+perturbing the latent state using samples from their learned distribution. Bi et al. (2023)
+also applied Swin transformers on a lat-lon mesh, but used a fine 0.25 ◦ lat-lon grid spac-
+ing, 3D transformers, and included latitude and longitude fields as input to train a “3D
+Earth-specific transformer” at four different forecast lead times of 1, 3, 6, and 24 h, which
+are used in combination to span an arbitrary hourly forecast period with minimal model
+steps. If the ECMWF IFS NWP forecasts are averaged to the coarser 0.25 ◦ lat-lon mesh,
+Pangu-Weather outperforms NWP on several metrics.
+      In contrast to the preceding approaches, graph neural networks (Gori et al., 2005;
+Scarselli et al., 2008; Kipf & Welling, 2016; Battaglia et al., 2018; Pfaff et al., 2020) where
+applied on icosahedral meshes at course resolution by Keisler (2022) and at fine resolu-
+tion in the GraphCast model (Lam et al., 2022). Similarly to Pangu-Weather, Graph-
+Cast appears to outperform the coarsened ECMWF IFS forecast on several metrics.
+
+
+
+
+3 Methods
+     3.1 Data
+
+     3.1.1 Choice of Variables
+      Beginning with the same six prognostic variables used in Weyn et al. (2021)—geopotential
+height at 1000 hPa and 500 hPa (Z1000 , Z500 ),1 700 hPa to 300 hPa thickness (τ700−300 )
+defined as Z300 − Z700 , temperature at 2 m height above ground (T2m ), temperature at
+850 hPa (T850 ), and total column water vapor (T CW V )—we add Z250 based on its im-
+portance in the model of Rasp and Thuerey (2021) and to provide an upper tropospheric
+variable. As in Weyn et al. (2021), three prescribed fields are also provided: topographic
+height, land-sea mask, and top-of-atmosphere (TOA) incident solar radiation. We do not
+include prescribed or predicted sea-surface temperature or surface fluxes above the land
+or ocean. No specific information about position on the globe, such as latitude and lon-
+gitude, is provided. Three-hourly data from the ERA5 reanalysis (Hersbach et al., 2020)
+provide training data from 1979-2012, a validation set from 2013-2016, and a test set from
+2017-2018.
+
+
+                                              –4–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+(a)                        (b)                         (c)                        (d)
+
+
+
+
+Figure 1: Division of the sphere into twelve faces according to the HEALPix. Four faces
+to represent either the northern (blue) and southern extratropics, while four more faces
+arrange around the equator to represent the tropics (yellow). Each face can be subdivided
+into patches with divisions along the side of each face given by powers of two. The sphere
+in (a) has a pixel-count of one per face side; we call it hpx1. The sphere in (b) counts
+two pixels per side (hpx2), whereas the two spheres in (c) and (d) have eight pixels per
+side, i.e., hpx8. Several latitude lines in red emphasize the iso-latitudinal arrangement
+of the patches. The saturated blue area depicts a 3 × 3 stencil, as applied by a standard
+convolution. To apply the 3 × 3 stencil at the top corner of the equatorial faces, i.e., stencil
+position in (d), we fill in the missing corner patch with the average of the values in the
+two adjacent patches on the extratropical faces.
+
+
+
+
+      3.1.2 HEALPix Mesh
+       We discretize all fields using the Hierarchical Equal Area isoLatitude Pixelization
+(HEALPix) (Gorski et al., 2005). As depicted in Figure 1, a HEALPix mesh is formed
+by dividing the sphere into twelve equal-area diamond-shaped faces, with four faces ly-
+ing in the northern and southern hemispheres, and four in the tropics. According to Gorski
+et al. (2005), the HEALPix mesh has three important properties. (1) Hierarchical struc-
+ture of the database: Each of the twelve base faces can be progressively subdivided into
+smaller patches. (2) Equal areas for the discrete elements of the partition: All patches
+are the same size. (3) Isolatitude distribution for the discrete area elements on the sphere:
+The patches line up with lines of latitude, facilitating the computation of zonal averages
+and one-dimensional zonal spectra. Importantly, this last property makes the HEALPix
+mesh an “east is to the right” grid, which facilitates the training of a single set of posi-
+tion invariant convolutional kernels to capture the motion of typical weather disturbances,
+as discussed in Section 4.1.
+
+      The HEALPix can be considered a graph and does not allow a seamless applica-
+tion of convolution operations. Thus, Perraudin et al. (2019) explicitly define a graph
+from the HEALPix—by connecting adjacent neighbors with weighted edges—and per-
+form a graph convolution to classify weak lensing maps from cosmology. In a different
+approach, Krachmalnicoff and Tomasi (2019) classify digits and determine cosmic param-
+eters from simulated cosmic microwave background maps. They apply 1D convolutions
+to the flattened HEALPix data with a kernel size k and stride s both equal to 9, append-
+ing a zero to those cases where only seven instead of eight neighbors are defined (top cor-
+ner of the tropical faces). In contrast, we treat the twelve faces as distinct images and
+pad their boundaries using data from neighboring faces to allow the computation of 2D
+convolutions and averaging operators directly, as detailed in Appendix Appendix A. To
+
+
+  1 The related variable in the ERA5 dataset is geopotential and named z, whereas the geopotential
+
+height, typically referred to as Z, represents the actual height above sea level of the respective pressure
+surface and is obtained by dividing geopotential by the gravitational constant.
+
+
+
+                                                    –5–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+accelerate the padding operation, we have implemented a custom CUDA kernel, which
+is available in our repository.2
+      The grid spacing, or shortest inter-node spacing, on the HEALPix mesh is the di-
+agonal distance between a pair of nodes on adjacent latitude lines. Denoting a HEALPix
+mesh with n divisions along one side of the original 12 faces as HPXn. The grid spac-
+ing is approximately 220 km (≈ 2◦ ) for HPX32 and 110 km (≈ 1◦ ) for HPX64.3
+
+      3.2 Machine Learning Architecture
+      Relating to Tobler’s first law of geography: “All things are related, but nearby things
+are more related than distant things.” (Tobler, 1970), we mostly retain the comparably
+simple U-Net structure from Weyn et al. (2020). U-Nets (Ronneberger et al., 2015) are
+hierarchically structured feed-forward convolutional neural networks that were originally
+proposed for segmenting biomedical images. The U-Net structure proposed here intro-
+duces several physically motivated advancements to the vanilla U-Net used by Weyn et
+al. (2021) for sub-seasonal forecasting. Our final model configuration is visualized as a
+sequence of operations on layers or a block of layer operations in Figure 2. The latter
+case is indicated by CNB or GRU, which refer to ConvNeXt- and GRU-blocks (cf. Section 3.2.1
+and Section 3.2.3 for explanations), respectively. Details of the ConvNeXt-block structure
+are also visualized. GRU-blocks augment the respective layer with a recurrent processing
+mechanism (cf., Section 3.2.3). Table 1 specifies the respective parameter settings. Color
+codes for the operations in Table 1 approximate those used in the model schematic in
+Figure 2. For example, the operations in red are 3 × 3 convolutions followed by GELU
+activation functions. Residual connections are only reported in Table 1 if they contribute
+to the parameter count when implementing a 1 × 1 convolution to adjust the channel
+depth. In the following, we describe the incremental advancements that we add to our
+model.
+
+      3.2.1 Residual Prediction
+
+      We switch to a residual prediction approach both for the full predictive step and
+within each ConvNeXt block. The ConvNeXt block (Liu et al., 2022) is designed to min-
+imize compute, while maintaining performance. It introduces an inverted channel-bottleneck
+where the kernel size is reduced to k = 1. This saves parameters and compute, because
+channel depth is only processed with a 1×1 spatial filter. As shown in Figure 2, though,
+we modify the original ConvNeXt block from Liu et al. (2022) by implementing a ker-
+nel size of k = 3 and employing a two-stage convolution as done in Weyn et al. (2021).
+       Predicting residuals, that is, changes over a time step, instead of full values, is sim-
+ilar to the discretization of time derivatives when solving partial or ordinary differential
+equations, and has been used successfully in previous DLWP models (Hu et al., 2022; Keisler,
+2022; Lam et al., 2022; Pathak et al., 2022).
+
+      3.2.2 Inverting the Ordering of Channel Depth
+      The standard U-Net for semantic segmentation (Ronneberger et al., 2015) and its
+successors (Zhou et al., 2018; Huang et al., 2020) employ relatively few channels on the
+highest level and successively double the channel depth, while halving the spatial reso-
+lution in each deeper layer. This ordering is useful in image segmentation tasks, where
+deeper channels are required to create increasingly abstract filters to identify semantic
+
+
+
+  2 https://github.com/CognitiveModeling/dlwp-hpx
+  3 We provide download explanations and projection scripts in our repository. The 3D HEALPix figures
+
+are drawn in Blender 3.4.1; respective Blender files are provided in the repository too.
+
+
+
+                                                    –6–
+         manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+                                                                                                                                       Dilation = 1
+  NxN           CNB                                                                     CNB           GRU             +
+                                                                                                                                          D1= 136
+
+
+        FP      D1                                                      D1        D1    D1             D1     P            P
+
+
+
+
+                                                                                             Dilation = 2
+    N/2 x N/2               CNB                                   CNB             GRU
+                                                                                                D2 = 68
+                D1          D2                    D2   D2         D1              D1                        Layer Dimensions
+                                                                                                                  Dn # channels
+                                                                                                                  P # prognostic variables
+                                      CNB   CNB        GRU              Dilation = 4
+                N/4 x N/4                                                                                         F # forcing fields
+                            D2         D3    D2         D2                 D3 = 34
+                                                                                                                  N height, width
+                                                                                                                  I   # input channels
+                                  CNB ConvNeXt Block                                                        Operations
+                                                                                                                      Concatentation
+                                                                                                                      Res-Net connection
+                                                                                                                      Data flow
+                                                                             +
+                                                                                                                      3 x 3 Convolution & GELU
+                                                                                                                      1 x 1 Convolution
+                      I           D         4D               4D         D          D
+                                                                                                                      2 x 2 Average pooling
+                                                                                                                      2 x 2 Transpose conv (stride=2)
+
+
+
+
+Figure 2: Schematic representation of our DLWP-HPX architecture as a sequence of
+operations on layers (see legend). Individual layers are labeled by their channel depth,
+with D1 = 136, D2 = 68, and D3 = 34 being associated with the first convolutions in
+each of the three U-Net levels. Each ConvNeXt block (blue) is replaced by the layers and
+operations shown in the inset labeled CNB, with generic depths D and I determined by
+the channel depth of the input and the labeled value of Dn . The purple blocks labeled
+GRU denote convolutional Gated Recurrent Unit layers, which are augmented with 1 × 1
+spatial convolutions. Other layers evaluated by the encoder are shown as dark green,
+while those evaluated by the decoder are shown as light green.
+
+
+
+
+                                                                                 –7–
+         manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+Table 1: CNN architecture as a sequence of operations on layers; cin , k, s and d de-
+note the number of input channels, kernel size, stride, and dilation. Output shape is
+face×height×width×channels. Dashed line separates model’s encoder (above) and decoder
+(below). “Concat" implements skip connections by appending the state in parenthesis,
+numbered earlier, to the output of the previous layer. The result from the orange 1×1
+convolution at the beginning of most ConvNeXt blocks is added to the corresponding
+output channel to form a residual connection.
+
+                                      Receptive                                  Parameter count
+
+ Layer           cin   k    s    d      Field           Output shape       Weights     Biases      Total
+
+ ConvNeXt
+   Conv2d         18   1    1    1      1×1            (12, 64, 64, 136)       2 448     136        2 584
+   Conv2d         18   3    1    1      3×3            (12, 64, 64, 544)      88 128     544       88 672
+   Conv2d        544   3    1    1      5×5            (12, 64, 64, 544)   2 663 424     544    2 663 968
+   Conv2d (1)    544   1    1    1      5×5            (12, 64, 64, 136)      73 984     136       74 120
+ AvgPool2d       136   2    2    —      6×6            (12, 32, 32, 136)          0        0           0
+ ConvNeXt
+   Conv2d        136   1    1    1      6×6            (12, 32, 32, 68)       9 248       68       9 316
+   Conv2d        136   3    1    2     14 × 14         (12, 32, 32, 272)    332 928      272     333 200
+   Conv2d        272   3    1    2     22 × 22         (12, 32, 32, 272)    665 856      272     666 128
+   Conv2d (2)    272   1    1    1     22 × 22         (12, 32, 32, 68)      18 496       68      18 564
+ AvgPool2d        68   2    2    —     24 × 24         (12, 16, 16, 68)           0        0           0
+ ConvNeXt
+   Conv2d         68   1    1    1     24 × 24         (12, 16, 16, 34)       2 312       34       2 346
+   Conv2d         68   3    1    4     56 × 56         (12, 16, 16, 136)     83 232      136      83 368
+   Conv2d        136   3    1    4     88 × 88         (12, 16, 16, 136)    166 464      136     166 600
+   Conv2d        136   1    1    1     88 × 88         (12, 16, 16, 34)       4 624       34      4 658
+ ConvNeXt
+   Conv2d         34   1    1    1     88 × 88         (12, 16, 16, 68)       2 312       68        2 380
+   Conv2d         34   3    1    4    120 × 120        (12, 16, 16, 136)     41 616      136       41 752
+   Conv2d        136   3    1    4    152 × 152        (12, 16, 16, 136)    166 464      136     166 600
+   Conv2d        136   1    1    1    152 × 152        (12, 16, 16, 68)       9 248       68       9 316
+ GRU
+   Conv2d        136   1    1    1    152 × 152        (12, 16, 16, 136)     18 496      136       18 632
+   Conv2d        136   1    1    1    152 × 152        (12, 16, 16, 68)       9 248       68        9 316
+ ConvTrans2d     68    2    2    1    154 × 154        (12, 32, 32, 68)      18 496       68       18 476
+ Concat (2)      —     —    —    —       —             (12, 32, 32, 136)          0        0            0
+ ConvNeXt
+   Conv2d        136   3    1    2    154 × 154        (12, 32, 32, 272)    332 928      272     333 200
+   Conv2d        272   3    1    2    162 × 162        (12, 32, 32, 272)    665 856      272     666 128
+   Conv2d        272   1    1    1    170 × 170        (12, 32, 32, 136)     36 992      136      37 128
+ GRU
+   Conv2d        272   1    1    1    170 × 170        (12, 32, 32, 272)     73 984      272       74 256
+   Conv2d        272   1    1    1    170 × 170        (12, 32, 32, 136)     36 992      136       37 128
+ ConvTrans2d     136   2    2    1    171 × 171        (12, 64, 64, 136)     73 984      136       74 120
+ Concat (1)      —     —    —    —       —             (12, 64, 64, 272)          0        0            0
+ ConvNeXt
+   Conv2d        272   1    1    1    171 × 171        (12, 64, 64, 136)      36 992     136       37 128
+   Conv2d        272   3    1    1    173 × 173        (12, 64, 64, 544)   1 331 712     544    1 332 256
+   Conv2d        544   3    1    1    175 × 175        (12, 64, 64, 544)   2 663 424     544    2 663 968
+   Conv2d        544   1    1    1    175 × 175        (12, 64, 64, 136)      73 984     136       74 120
+ GRU
+   Conv2d        272   1    1    1    175 × 175        (12, 64, 64, 272)     73 984      272       74 256
+   Conv2d        272   1    1    1    175 × 175        (12, 64, 64, 136)     36 992      136       37 128
+ Conv2d          136   1    1    1    175 × 175        (12, 64, 64, 14)       1 904       14        1 918
+
+                                                                           9 816 752    6 066   9 822 818
+                                                 –8–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+features and express complex objects. In weather prediction, however, we find it is bet-
+ter to devote more capacity to the layers in the first level, where a wide variety of fine
+grained weather phenomena must be captured. Deeper layers at coarser resolution, on
+the other hand, need only encode larger scale atmospheric motions, which can be ade-
+quately represented with comparably fewer channels.
+       Thus, we invert the channel order, employing 136, 68, and 34 channels in each con-
+volution on the first, second, and third layer, respectively (cf., Figure 2). While this mod-
+ification improves the model performance significantly, it also increases the computational
+burden, since more computations and data processing are required to evaluate the ad-
+ditional convolutions at fine spatial resolution. Tests which preserved the total number
+of trainable parameters, but completely eliminated the deeper layers in the U-Net gave
+worse results, demonstrating that the longer-range connections and richer latent space
+structures enabled by the full U-Net architecture remain important.
+
+      3.2.3 Recurrent Modules
+       The vanilla U-Net is a feed-forward network, which treats successive inputs inde-
+pendently even if the data represents a continuous sequence over time. Feed-forward net-
+works do not have any memory capacity. They do not maintain an internal state between
+time steps. To exploit information from previous latent states, we include a gated recur-
+rent unit (GRU) (Cho et al., 2014) at the end of each decoder block, implemented as a
+convolutional GRU (Ballas et al., 2015) with 1 × 1 spatial convolutions. GRUs use a
+hidden latent state that accumulates information over time to influence the current fore-
+cast step. We chose GRUs over LSTMs (Hochreiter & Schmidhuber, 1997) since we re-
+initialize the recurrent data over each 24-h cycle, and therefore do not require forget-gates
+(as confirmed experimentally, not shown).
+
+      3.2.4 Miscellaneous Modifications
+      Several other components of the original Weyn et al. (2021) model were modified
+based on recent results from deep learning research: The capped leaky ReLU was replaced
+by capped GELU activation functions (Hendrycks & Gimpel, 2016);4 upsampling was
+changed from nearest-neighbor sampling (knn-sampling with k = 1) to a transposed
+convolution; finally, the pairs of two successive convolutions were replaced at each encoder
+and decoder level in the U-Net by a modified ConvNeXt block (Liu et al., 2022), as vi-
+sualized in Figure 2.
+
+      3.2.5 Time Stepping Scheme
+      Similarly to Weyn et al. (2021), we apply a two-in-two-out mapping with a tem-
+poral resolution twice as fine as the actual time step. For example, two atmospheric states
+3 h apart (each consisting of seven prognostic, along with three prescribed fields) are con-
+catenated and input to the model, which generates a new pair of states, each character-
+ising the atmosphere 6 h later in time. This strategy is observed to stabilize and accel-
+erate the training, since the model receives additional information about the atmosphere’s
+rate of change and only has to be called half as often.
+      The frequency spectrum of atmospheric kinetic energy has a strong peak at 24 h
+because many circulations are modulated by solar heating. We therefore evaluate the
+training loss function as the mean squared error over a 24-h period. Tests in which the
+
+
+  4 Gaussian error linear units (GELUs) are characterized by a smooth derivative that facilitates the
+
+optimization of deep learning models. We cap the maximum of the linear GELU part to 10 in order to
+prevent exploding activities in long rollouts.
+
+
+
+                                                  –9–
+         manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+                                                                  
+ s(t−18)           s(t−6)            s(t+6)                      s(t+18)                         Φ    Forward model
+                                                                                                 s    Observed state
+ s(t−12)            s(t)             s(t+12)                     s(t+24)                         ŝ   Predicted state
+                                                    L(·, ·)                   L(·, ·)            h    Hidden state
+                                                                                           t    Time [hours]
+                   ŝ(t−6)            ŝ(t+6)                    ŝ(t+18)                        L    Loss function
+             Φ       ŝ(t)   Φ       ŝ(t+12)             Φ      ŝ(t+24)
+    h0                h1                 h2                         h3
+                                                                                                                  
+                                                                 ŝ(t+18)                ŝ(t+30)             ŝ(t+42)
+                                                          Φ      ŝ(t+24)       Φ        ŝ(t+36)     Φ       ŝ(t+48)
+                                       h0                           h1                      h2                   h3
+
+Figure 3: Two time-level input-output scheme with GRU for training and inference as-
+suming 6 h time resolution. The output from the preliminary initialization step (in orange)
+is discarded, but the hidden state h1 is generated and used in the first model step. The
+hidden state h3 (in orange) at the end of the 24 h forecast is discarded as the GRU will be
+re-initialized for the next recursive inference step (lowest row). For training (top right),
+the loss function is computed from the four forecast times spanning a 24 h period at 6 h
+resolution, as indicated in red.
+
+
+
+
+MSE was evaluated over multi-day periods tended to result in a model that gradually
+approached climatology over many recursive steps.
+
+      Training our model only over one daily cycle does mean that the recurrent states
+of the GRUs are not optimized for long rollouts. To prevent the explosion of recurrent
+states when generating long multi-day forecasts, we re-initialize the recurrent states ev-
+ery 24 h as illustrated in Figure 3 for a 12-h time step with 6 h resolution. For training
+or for the first step in a long forecast rollout, the model predicts [ŝ(t+6) , ŝ(t+12) ] from ini-
+tial data [s(t−6) , s(t) ], and then in the subsequent step uses [ŝ(t+6) , ŝ(t+12) ] to predict [ŝ(t+18) , ŝ(t+24) ].
+But before this, the hidden states for the GRUs are initialized in a preliminary step by
+calling the model once with the state pair [s(t−18) , s(t−12) ] and a hidden state h0 initial-
+ized with zeros. The resulting forecast for [ŝ(t−6) , ŝ(t) ] is discarded, but the hidden state
+h1 is supplied to the GRU and paired with the actual initial data [s(t−6) , s(t) ] for the first
+step of the model. As shown by the bottom row in Figure 3, in a forecast rollout, the
+next day’s prediction begins by re-initializing the GRU starting with forecast values from
+one time step earlier and h0 set to zero to obtain h1 . Note that since the GRU is re-initialized
+every day, there would be five model steps per day when using a 6 h time step (with 3 h
+data resolution).
+
+      3.2.6 Training
+
+      Our best performing DLWP-HPX model, described above, has 9.8 M parameters
+that are trained for 300 epochs (equivalent to 931,199 update steps) over eight days on
+four NVIDIA A100 GPUs with 80 GB VRAM each. A batch size of eight per GPU is
+chosen, effectively resulting in an overall batch size of 32. We combine the Adam opti-
+mizer (Kingma & Ba, 2014) with a cosine annealing learning rate scheduler (Loshchilov
+& Hutter, 2016), setting the initial learning rate to 2 × 10−4 and gradually refining it
+to zero. To stabilize the training, we clip the gradients to the current learning rate, which
+we observe to be particularly beneficial for large recurrent models.
+
+      3.3 The Receptive Field
+
+    Several leading DLWP models (Pathak et al., 2022; Hu et al., 2022; Bi et al., 2023;
+Chen et al., 2023) are based on Vision Transformers (ViTs) (Dosovitskiy et al., 2020),
+
+
+                                                         –10–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+which were originally developed to account for non-local relationships in images; effec-
+tively working on patch embeddings. ViTs are successors of Transformers (Vaswani et
+al., 2017), which were introduced to efficiently accommodate very non-local relationships
+in natural language processing (NLP), where no fixed upper bound exists on the distance
+between words that may interact to change the meaning of a sentence. In contrast to
+ViTs, we use a U-Net to emphasize local atmospheric interactions, nevertheless each step
+of our model samples from a very large receptive field. (The “receptive field" is the set
+of grid cells the model accesses when generating output for a specific target pixel.)
+      There is a strong physical constraint on the locality of atmospheric interactions,
+which is that no atmospheric disturbances travel faster than the speed of sound, roughly
+300 m/s. Sound waves are not meteorologically significant, and are not represented in
+the data used to train ML weather models. A better measure of the speed of the fastest
+moving signals of meteorological importance is the transport by the strongest jet-stream
+winds, which could transport a passive tracer at roughly 100 m/s, or about 4300 km in
+12 h.
+       The pair of 2×2 average poolings and the dilations in the second and third levels
+of our U-Net architecture (Figure 2) substantially widen the receptive field that poten-
+tially influences the solution at a given point after each forward step of our model. Ne-
+glecting influences from special points at the corners of the twelve basic HEALPix faces,
+the receptive field at each stage of the neural network is listed in Table 1 and grows to
+a 175×175 patch of cells after the last 3 × 3 convolution in the decoder.
+      The diagonal distance between adjacent points on our 3×3 stencil (dark blue patch
+in Figure 1) on a HPX64 mesh is approximately 110 km. Thus, the receptive field for one
+step of our full HPX64 model is a patch exceeding 18 900 km on each side, which is large
+enough to include all points influenced by sound wave propagation over a 12 h time step,
+and far more than would be required to contain the fastest moving meteorologically sig-
+nificant signals present in the ERA5 training data. In particular, at every step, our HPX64
+forecast at a given point is influenced by a set of surrounding points containing roughly
+70% of all the cells covering the globe.
+
+
+4 Results
+       In the following, we first evaluate key variables in our model over a 14-day forecast
+lead time, which is slightly longer than the period over which knowledge of the initial
+atmospheric conditions gives these single deterministic forecasts some predictive skill. We
+compare our best model with the ECMWF S2S forecasts and with our previous Weyn
+et al. (2021) results. We then document the successive improvements that our changes
+in model architecture have on the RMSE and ACC scores for Z500 . Next, we examine
+the ability of the model to distinguish between the amplitudes of the daily T2m ranges
+in tropical forests, in deserts, and over the ocean. Finally, we examine the behavior of
+the simulations over sub-seasonal (eight-week) and one-year free running rollouts.
+
+     4.1 Quantitative Performance Through 14-Day Forecast Lead Time
+      To compare our model with the results from Weyn et al. (2021) and to state-of-the-
+art NWP from ECWMF, we compute both root mean squared error (RMSE) between
+observations and model predictions and anomaly correlation coefficient (ACC) scores with
+respect to the ERA5 climatology. Both metrics are compared on a 1◦ ×1◦ lat-lon mesh
+and weighted by latitude, requiring us to project our DLWP-HPX and Weyn et al. (2021)
+forecasts from the HEALPix and cubed sphere meshes onto the lat-lon grid. Because our
+ultimate focus is on sub-seasonal and seasonal forecasting, we compare against ECMWF’s
+integrated forecasting system for sub-seasonal forecasts (IFS S2S), which were initialized
+bi-weekly on Mondays and Thursdays and stepped forward at about 16 km effective res-
+
+
+                                             –11–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+Table 2: Number of trainable parameters in millions, number of spherical shells of prog-
+nostic variables, horizontal resolution in degrees latitude, and temporal resolution (∆t ) of
+the models compared in Figure 4.
+
+               Model         Parameters     Spherical     Resolution        ∆t
+                                               shells
+
+               Weyn 2021           2.7M              6          1.4◦        6h
+               Our HPX64           9.8M               7          1◦         3h
+                                                                   ◦
+               ECMWF                 —         900+            0.15       0.2 h
+               GraphCast           21M              227        0.25◦        6h
+
+
+
+
+olution for the first 15 days (then doubling to 32 km).5 For comparison with Weyn et
+al. (2021), our test set focuses on the years 2017 and 2018. In this and all the following
+cases, except a few simulations in our ablation study, computations are performed at HPX64
+and 3 h resolution (corresponding to 6 h time steps).
+      To further compare our model with a state-of-the-art DLWP model, we include Z500
+scores for GraphCast, retrieved from the interactive WeatherBench2 (Rasp et al., 2023)
+homepage.6 In contrast to the others, GraphCast scores are computed on its native 0.25◦ ×
+0.25◦ grid and for 2018 only, since the model was trained on data including 2017. Key
+parameter attributes of the model from Weyn et al. (2021), IFS S2S, GraphCast, and
+our HPX64 model are listed in Table 2.
+       The GraphCast-WeatherBench2-RMSE scores at T850 , and particularly at T2m , are
+difficult to compare with those from our model at early forecast lead times because dif-
+ferences in resolution and grid structure influence the representation of the topography
+and coastlines. Therefore we only plot GraphCast scores at Z500 . As previously docu-
+mented, the RMSE and ACC of GraphCast temperature forecasts at 0.25◦ × 0.25◦ res-
+olution, are somewhat better than those from the IFS (Lam et al., 2022).
+       As shown in Figure 4, the RMSE scores for Z500 , 24-hour-averaged T2m (because
+instantaneous T2m fields are not archived from the ECMWF S2S forecasts7 ) and T850
+all improve substantially compared to Weyn et al. (2021). Moreover, despite the small
+number of prognostic variables and coarse spatial resolution of our model, the RMSEs
+for Z500 only lag the scores for ECMWF S2S and GraphCast by about 1 day at one-week
+lead time. The HPX64 RMSE for T850 shows a similar lag in skill compared to the IFS.
+As expected theoretically,
+              √             the RMSE scores for all models appear to be asymptotically
+approaching 2 times climatology beyond two weeks when the skill of a single determin-
+istic forecast drops toward zero. We present the comparison of 24-hour-averaged T2m be-
+tween our model and IFS S2S for completeness, but it should be interpreted with cau-
+tion. The re-gridding of both the IFS S2S and the HEALPix data to the 1◦ × 1◦ lat-
+lon analysis grid introduces errors in the representation of coastlines and topography that
+significantly influence the surface temperature field. As a consequence, the RMSE val-
+ues shown in Figure 4 (b) are not representative of those in each model’s native repre-
+sentation of the T2m field.
+
+    One additional issue that arises when plotting initial RMSE (and to a lesser extent
+ACC) for the ECMWF IFS S2S model is that, unlike our DLWP-HPX model, the IFS
+
+
+  5 https://confluence.ecmwf.int/display/S2S/ECMWF+model+description
+  6 https://sites.research.google/weatherbench/deterministic-scores/
+  7 https://apps.ecmwf.int/datasets/data/s2s-realtime-daily-averaged-ecmf/levtype=sfc/type=cf/
+
+
+
+
+                                             –12–
+                     manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                                  Z500                                                      T2m                                                           T850
+           100       (a)                                             3.0
+                                                                     2.5
+                                                                         (b)                                                    4 (c)
+           80
+RMSE [m]                                                             2.0                                                        3
+
+
+
+
+                                                          RMSE [K]
+
+
+
+
+                                                                                                                     RMSE [K]
+           60
+           40                                                        1.5                                                        2
+           20                                                        1.0                                                        1
+            0                                                        0.5
+           1.0                                                       1.0                                                    1.0
+           0.8                                                       0.8                                                    0.8
+           0.6                                                       0.6                                                    0.6
+ ACC [m]
+
+
+
+
+                                                          ACC [K]
+
+
+
+
+                                                                                                                  ACC [K]
+           0.4                                                       0.4                                                    0.4
+           0.2                                                       0.2                                                    0.2
+           0.0
+                     (d)                                             0.0
+                                                                               (e)                                          0.0
+                                                                                                                                        (f)
+                 0     2   4     6      8   10   12      14                0     2   4     6      8   10   12   14                  0     2       4     6      8   10   12   14
+                               Forecast day                                              Forecast day                                                 Forecast day
+                                           Climatology                Weyn et al. 2021       HPX64         ECMWF IFS S2S                      GraphCast
+
+
+ Figure 4: Comparison of the performance of the DLWP-HPX, Weyn et al. (2021),
+ ECMWF IFS S2S, and GraphCast models. GraphCast is averaged over 104 forecasts
+ for 2018, while other forecasts are averaged over 204 forecasts from 2017 through 2018.
+ RMSE for (a) Z500 , (b) T2m , and (c) T850 ; climatology is indicated by the gray dashed
+ line. ACC for or (d) Z500 , (e) T2m and (f) T850 .
+
+
+
+
+ forecasts are not initialized with the ERA5 data. Thus, at very short forecast lead times,
+ differences between the IFS initialization and the ERA5 data introduce apparent errors
+ in the IFS forecast that are not representative of its actual performance. Lam et al. (2022)
+ accounted for this in their comparison between the IFS and GraphCast, but it requires
+ considerable extra computation. We are not claiming to outperform the IFS, so we sim-
+ ply suggest using caution when comparing errors between our models and the IFS at lead
+ times less than 2 days.
+      ACC scores for Z500 , T2m , and T850 are also shown in Figure 4(d)–(f). As with RMSE,
+there is substantial improvement relative to both the previous model from Weyn et al.
+(2021) and the IFS S2S. In meteorological contexts, an ACC score of 0.6 is typically con-
+sidered the lower limit of practical skill. The scores from our HEALPix model cross this
+threshold at about 7.5 days for Z500 and 6.5 days for T850 , both of which are about 1.5
+day sooner than the respective results for the IFS S2S and for the GraphCast Z500 fore-
+cast. Numerical comparisons of the model RMSE and ACC scores averaged over the same
+208 forecasts used to plot Figure 4 are given for 3-day and 5-day lead times in Table 3.
+        The relative importance of the various improvements in model architecture between
+ Weyn et al. (2021) and our best DLWP-HPX model is illustrated for the Z500 field in
+ Figure 5. The total number of trainable parameters is held constant at roughly 2.7 ×
+ 106 over the first five sets of changes. The RMSE rises to 50 m around 4.2 days in Weyn
+ et al. (2021) (dark green dotted curve); replacing the 64×64 cubed sphere by a HPX32
+ grid (aqua curve) delays the error growth by about 0.5 day despite the associated 50%
+ reduction in total grid points. There is also a similar substantial improvement in the ACC.
+ Continuing with the HPX32 mesh, we replace the capped ReLU by a capped GELU ac-
+ tivation function, replace knn-interpolation by strided transposed convolution, and in-
+ troduce dilated convolutions in the two lower levels of the U-Net (as detailed in Figure 2);
+ this yields the modest but distinct improvements shown by the dark-blue curves.
+      Next, we replace the pairs of convolutions in each level of the encoder and decoder
+ by a ConvNeXt block with kernel size k = 3 (dashed tan curve). This actually pro-
+ duces a slight degradation in performance, but in other configurations closer to our fi-
+
+
+                                                                                         –13–
+                     manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+  Table 3: Root mean squared errors (RMSE) and anomaly correlation coefficient (ACC)
+  scores for Weyn et al. (2021) (W21), our HPX64, and ECMWF’s IFS models, evaluated
+  on geopotential at 500 hPa (Z500 ), temperature 2 m above ground (T2m ), and temperature
+  at 850 hPa (T850 ) on lead times of 3 and 5 days.
+
+                                              Z500                                                T2m                                    T850
+                    Lead time        W21     HPX64               IFS      W21                 HPX64           IFS         W21        HPX64      IFS
+       RMSE
+
+
+
+
+                    3 days           36.26   21.88          14.91         1.17                    0.82     1.02            1.95          1.49   1.35
+                    5 days           59.01   41.91          31.30         1.67                    1.27     1.27            2.83          2.28   1.96
+                    3 days            0.90     0.96              0.98     0.84                    0.92     0.91            0.84          0.91   0.94
+       ACC
+
+
+
+
+                    5 days            0.70     0.84              0.92     0.66                    0.78     0.83            0.64          0.76   0.84
+
+           80
+
+           70
+              (a)                                                                       1.0
+                                                                                                                                                (b)
+                                                                                        0.9
+           60
+
+           50                                                                           0.8
+RMSE [m]
+
+
+
+
+                                                                              ACC [m]
+
+           40                                                                           0.7
+                                                                                                    Weyn et al. 2021
+                                              60                                                    CS64 HPX32
+           30                                                                                       GELU & TransConv & Dilation
+                                              58                                        0.6
+                                                                                                    ConvNeXt
+           20                                 56                                                    Inversion
+                                                                                        0.5         GRU
+           10                                 54                                                    2.7m 9.8m params
+                                                                                                    Add Z250
+                                              52                                        0.4         HPX32 HPX64
+           0                                       5D:06h 5D:12h 5D:18h                               t6h 3h
+
+                0      1     2   3      4      5   6         7      8     9                   0     1     2         3        4       5      6   7      8
+                                      Forecast day                                                                      Forecast day
+
+  Figure 5: Impact of successive model improvements on the accuracy of Z500 RMSE. Each
+  successive change builds on top of the previous architecture, adding the modification
+  indicated in the legend: (a) RMSE, (b) ACC. Inset in (a) provides a magnified view of the
+  error growth between 5 and 6 forecast days.
+
+
+
+
+  nal model, the ConvNeXt block does improve the performance, and importantly, it also
+  reduces the memory footprint by about 25% at a constant parameter count. A further
+  significant improvement is obtained by inverting the standard U-Net progression in chan-
+  nel depth to have the most channels at the highest spatial resolution and the fewest at
+  the lowest resolution (dark red curve). The final significant improvement in the 2.7-million
+  parameter model is obtained by adding recurrence in the form of GRU cells in the de-
+  coder (green curve).
+         After adding the GRU cells, the rise of the RMSE to 50 m is delayed to about 5.3
+  days and the drop of the ACC below 0.6 to roughly 6.8 days. The next series of changes
+  produces successive small improvements that push these values out to about 5.7 days
+  for RMSE and 7.4 days for ACC. These improvements, as sequentially plotted in Fig-
+  ure 5, are: increasing the number of trainable parameters to 9.8 × 106 , adding the Z250
+  field, increasing the horizontal resolution to HPX64 (which is more important for ACC
+  than RMSE particularly on T2m ), and decreasing the time resolution to 3 h. Benefits from
+  the use of 3-h time resolution were only obtained if the model was configured with the
+  GRUs.
+
+
+                                                                          –14–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+      The single most effective modification in the preceding set of successive improve-
+ments is the migration from the cubed sphere to the HEALPix mesh, even though the
+64 × 64 cubed sphere has twice the total number of grid-points as the HPX32 mesh. A
+likely explanation for the superiority of the HEALPix mesh is not simply that it is a more
+uniform covering of the globe than that provided by the cubed sphere, but that it allows
+us to train a single set of location-invariant kernels for use over the entire globe. Note
+that east and west have the same orientation in every HEALPix cell; we refer to this prop-
+erty as “east to the right.” In particular, the center and the east and west corners of each
+HEALPix cell are all at the same latitude. (A similar relationship holds in the north-south
+direction for meridians passing through those cells lying equatorward of the maximum
+north-south extent of the four equatorial faces in Figure 1 (a).) Thus, on the HEALPix
+mesh, eastward motion at all points and at all latitudes would be in the same direction
+across the diamond-shaped 3×3 stencil in Figure 1 (c). In contrast, at any point on ei-
+ther of the polar faces on the cubed sphere, east could map to any of four directions along
+the axes of the 3 × 3 convolutional stencil, depending on its longitude, as visualized in
+Appendix A.
+      Since most large-scale weather systems move in a generally eastward direction in
+mid and high latitudes, we believe the “east-to-the-right” property allows a fixed num-
+ber of kernel elements to more efficiently produce the required set of flow evolutions in
+the latent layers. This is because we can train one set of kernels for use everywhere on
+the HEALPix mesh instead of training separate sets of kernels for the equatorial and for
+the polar faces on the cubed sphere (Weyn et al., 2021). A HEALPix model with the
+same total number of trainable parameters as the cubed sphere model can, therefore, em-
+ploy twice as many trainable elements within each kernel.
+
+     4.2 Eliminating the Need for Boundary-Layer Parameterizations
+      Accurate forecasts of surface temperatures in NWP models rely on the empirical
+parameterization of multi-scale processes near the Earth’s surface in the atmospheric bound-
+ary layer (ABL). The bottom of the ABL includes the roughness layer (2–5 times the
+height of roughness elements such as vegetation), and the surface layer (often 10–100 m
+deep), where shear-driven turbulence dominates generation by convection. The depth
+of the full ABL, where larger-scale eddies and circulations communicate the processes
+in the surface layer to the free atmosphere, can vary from O(100) m in calm stable night-
+time conditions to several kilometers during the day over deserts.
+       No effort is made to explicitly account for ABL processes in our model; the T2m
+field is treated the same as the other six prognostic fields. The same CNN kernels are
+employed everywhere over the globe on the HEALPix mesh; the only data that might
+distinguish one location from another are the land-sea mask, the terrain elevation, and
+the TOA solar forcing; neither longitude nor latitude are provided. Yet our model does
+a good job of capturing the diurnal cycle in multi-day forecasts over very different sur-
+faces. Figure 6 shows the diurnal cycle in T2m at locations over the Amazon forest, the
+Australian desert, and two adjacent oceans over a 4-day simulation starting at 00 UTC
+on 12 March 2018.
+      Compared to over land, the diurnal T2m variations are modest over the oceans, and
+they are well captured by our model. The land-sea mask is undoubtedly important in
+distinguishing the ocean locations from those over land. More interestingly, the model
+does an excellent job of capturing the large diurnal temperature range over the Australian
+desert, while correctly generating a much lower amplitude signal over the Amazon. The
+prognostic field that has most likely facilitated this distinction is T CW V , which is sig-
+nificantly higher over the Amazon than over the Australian desert. The model also cap-
+tures the 4-day trend for increasing temperatures over Australia, which is linked to the
+evolution of larger-scale weather systems. Overall, the ability of the model to capture
+
+
+
+                                            –15–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+                         311
+                         308
+                                                                       (a)
+                         305
+
+
+               T2m [K]
+                         302
+                         299
+                         296
+                         293
+
+                         311
+                         308
+                                                                       (b)
+                         305
+               T2m [K]
+
+
+
+
+                         302
+                         299
+                         296
+                         293
+                               6 12 18 24 30 36 42 48 54 60 66 72 78 84 90 96
+                                                Forecast hour
+
+
+Figure 6: HPX64 simulation of the diurnal cycle of T2m (solid curves) at the four loca-
+tions shown in the insets starting from 00 UTC on 12 March 2018. ERA5 values for the
+same 1◦ × 1◦ lat-lon cell are shown as dashed lines. Values are plotted every 3 h.
+
+
+
+
+the diurnal T2m cycle with just seven prognostic fields, without any special treatment
+of the ABL, and without geo-specific inputs such as latitude and longitude is suggestive
+of the power and potential of DLWP-HPX.
+
+     4.3 Iterative Rollouts Over Subseasonal to Annual Time Scales
+
+       There are three time scales of primary interest for global atmospheric simulations:
+medium-range weather forecasting for lead times of up to two weeks, sub-seasonal and
+seasonal forecasts for lead times up to 6–9 months, and climate simulations over periods
+of tens to hundreds of years. Our focus is on the sub-seasonal to seasonal time scale; there-
+fore, in this section we examine the model’s performance in iterative rollouts over peri-
+ods up to one year.
+       To investigate the stability and drift in model simulations over a full annual cycle,
+we initialize it using ERA5 data for 00 UTC on 1 June 2017 (together with the 21 UTC
+fields on 31 May). Using 6-h time steps (with 3-h time resolution), we perform 1460 it-
+erations to generate a 365-day simulation. The three-day running mean of Z500 , aver-
+aged around each latitude, is plotted as a function of latitude and time in Figure 7, along
+with the corresponding averages from the ERA5 data. Despite being trained to minimize
+RMSE over a single day and not enforcing any physical constraints, the DLWP-HPX sim-
+ulation responds to the TOA solar forcing to generate the annual cycle reasonably well.
+      One region where the errors are significant is the arctic. About 5 months into the
+simulation, the simulated heights in the arctic region drop as much as 60 m below those
+in the reanalysis during the boreal winter. In contrast, at 5–8-month lead times, the heights
+
+
+                                                  –16–
+                 manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                              ERA5 Verification                             DLWP-HPX64 3h
+           80
+                 (a)                                           (b)                                          590
+
+           60
+                                                                                                            570
+           40
+
+           20                                                                                               550
+
+
+
+
+                                                                                                                Z500 [dam]
+Latitude
+
+
+
+
+           0
+
+           20                                                                                               530
+
+           40
+                                                                                                            510
+           60
+
+           80                                                                                               490
+           JUL
+
+
+
+
+                       T
+
+
+
+
+                                                    R
+
+
+
+
+                                                         JUL
+
+
+
+
+                                                                     T
+
+
+
+
+                                                                                                R
+                                  JAN
+
+
+
+
+                                                                               JAN
+                       OC
+
+
+
+
+                                                                     OC
+                                                  AP
+
+
+
+
+                                                                                              AP
+                                Forecast Month                               Forecast Month
+
+  Figure 7: Zonally averaged three-day mean of Z500 plotted as a function of time and
+  latitude for one year beginning on July 1 2017 for: (a) the ERA5 reanalysis, and (b) a
+  recursive one-year rollout of the DLWP-HPX model. Also shown are 15-day averaged
+  values of the 5600 m contour of Z500 for the ERA5 data (black lines) the DLWP-HPX
+  simulation (white dashed lines).
+
+
+
+
+  in the antarctic region increase to approximately correct values in the austral summer.
+  The asymmetry between the response in arctic and antarctic flips if the one-year rollout
+  begins six months later. When the simulation is initialized on January 2, 2018, the heights
+  in the arctic during boreal winter are approximately correct, while those in the antarc-
+  tic are too cold (Figure 8d).
+        There is also a long-term drift toward lower heights in the subtropics and mid-latitudes,
+  creating a roughly 30 m loss in Z500 by the end of the 1-year forecast.8 Climate models
+  are tuned to avoid long-term drift in the predicted fields, but operational NWP models
+  are not so tuned. For example, significant model biases that grow over a time scale of
+  several weeks are removed to create sub-seasonal ECMWF IFS S2S forecasts (Vitart, 2004;
+  Weigel et al., 2008). To facilitate comparison of model drift with the ERA5 reanalysis,
+  the pair of black lines in both panels show the 15-day mean of the zonally averaged 560-
+  dam Z500 contours in the northern and southern hemisphere. The white lines in Figure 7b
+  show the corresponding 560-dam Z500 contours for the DLWP-HPX simulation. The drift
+  toward lower heights starts to become evident after two months in the northern hemi-
+  sphere and continues to grow slowly for the remainder of the year. Differences show up
+  earlier in the southern hemisphere, but the average drift is smaller and even disappears
+  at a few times later in the year. As will be discussed in a forthcoming paper, both the
+  errors near the poles and the drift in the tropics in Z500 can be corrected by incorporat-
+  ing SST forecasts from a coupled atmosphere-ocean model.
+        The performance of three additional state-of-the-art DLWP models is compared
+  with our model using this same metric in Figure 8, which shows the evolution of zonally
+  averaged Z500 heights over a one-year rollout beginning January 2, 2018. This year is
+  part of the test set for all of the models: our DLWP-HPX, Pangu-Weather, GraphCast,
+  and FourCastNetv2 based on spherical Fourier neural operators (SFNO) (Bonev et al.,
+  2023). Details about the code used to generate these rollouts can be found in the Open
+  Research Section.
+
+           8 30 m deviation amounts to 0.5% of the full Z
+                                                         500 value and to 8.7% of the Z500 standard deviation
+ (computed from the reanalysis data of the forecasted period).
+
+
+
+                                                          –17–
+                   manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                       ERA5 Verification                  Pangu-Weather 24h                  GraphCast Earth2MIP                 SFNO Earth2MIP
+
+           50
+              (a)                                   (b)                                (c)                                 (d)                          590
+
+Latitude
+           0                                                                                                                                            570
+
+           50
+                                                                                                                                                        550
+
+
+
+
+                                                                                                                                                          Z500 [dam]
+                       DLWP-HPX64 3h                      Pangu-Weather 3h                   GraphCast DeepMind                    SFNO Makani
+
+           50
+                 (e)                                (f)                                (g)                                 (h)                          530
+Latitude
+
+
+
+
+           0                                                                                                                                            510
+
+           50
+                                                                                                                                                        490
+                     R
+
+                            JUL
+
+
+                                          T
+
+
+
+
+                                                        R
+
+                                                               JUL
+
+
+                                                                             T
+
+
+
+
+                                                                                           R
+
+                                                                                                   JUL
+
+
+                                                                                                                 T
+
+
+
+
+                                                                                                                               R
+
+                                                                                                                                      JUL
+
+
+                                                                                                                                                    T
+           JAN
+
+
+
+
+                                              JAN
+
+
+
+
+                                                                                 JAN
+
+
+
+
+                                                                                                                     JAN
+                                     OC
+
+
+
+
+                                                                        OC
+
+
+
+
+                                                                                                            OC
+
+
+
+
+                                                                                                                                               OC
+                   AP
+
+
+
+
+                                                      AP
+
+
+
+
+                                                                                         AP
+
+
+
+
+                                                                                                                             AP
+                         Forecast Month                     Forecast Month                      Forecast Month                     Forecast Month
+
+  Figure 8: Zonally averaged three-day mean of Z500 plotted as a function of time and
+  latitude: (a) for ERA5 reanalysis, (b)-(h) for recursive one-year simulations for each
+  model as identified in the titles, initialized on January 2, 2018. Also shown are 15-day
+  averaged values of the 5600 m contour of Z500 for the ERA5 data (black lines) each model
+  simulation (white dashed lines).
+
+
+
+
+         The Pangu-Weather model does not include solar forcing, and therefore, it does not
+  follow the annual cycle. When stepped forward with a 24-h time step (Figure 8b), sig-
+  nificant drift is apparent after about 1.5 months, which grows through the year without
+  pushing the simulation into grossly unrealistic states. Based on the discussion of Extended
+  Data, Fig. 7a in (Bi et al., 2023), one would not expect good performance from Pangu-
+  Weather if rolled out with a 3-h time step, and indeed the 3-h rollout starts to produce
+  significant errors after 1.5 months and generates completely unrealistic results after about
+  5 months (Figure 8f). We nevertheless, show its performance to contrast it with our 3-
+  h-time-resolution rollout (Figure 8e).
+        The version of GraphCast from NVIDIA’s Earth2MIP gives reasonable results for
+  just the first 1.5 months (Figure 8c), while that from DeepMind goes bad after a cou-
+  ple weeks (Figure 8g). The SFNO Earth2MIP model (FourCastNetv2-small) shows es-
+  sentially no drift over a full year (Figure 8d), but it does not follow the annual cycle be-
+  cause it neglects changes in solar forcing. Some artifacts (horizontal stripes) are visible
+  near the south pole within a month and at the north pole much later in the simulation.
+  In contrast, the SFNO Makani model (Figure 8h) includes solar zenith angle as an in-
+  put field, and it does follow the annual cycle reasonably well. On balance, the performance
+  of the SFNO Makani model is roughly similar to our DLWP-HPX model; it has larger
+  errors near the poles, but less drift in the tropics.
+        In an ablation study (not shown), we investigated the effect of the top-of atmosphere
+  solar forcing input on the 365-day DLWP-HPX rollout by training a model that did not
+  receive solar forcing input. In that case, the model still generated a stable forecast over
+  the entire rollout period, but did not produce the full annual cycle. Interestingly, that
+  simulation did roughly approximate the transition from summer into a perpetual autumn.
+        One qualitative way to appreciate the ability of our model to retain realistic weather
+  patterns in a 1442-step rollout is illustrated by comparing a 360.5 day simulation initial-
+  ized on 1 April 2017 (with 3-h resolution) and the corresponding 27 March 2018 reanal-
+  ysis in Figure 9. The roughly one-year lead time is well beyond the limits of atmospheric
+  predictability, so there is no reason to expect a close match between simulation and re-
+  analysis. The 360.5-day simulation time was chosen to display the simulated strong low-
+
+
+                                                                                  –18–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+Figure 9: Z500 (color fill: 50 dam contour interval) and Z1000 (black contours: 40 m
+interval) for a free-running 360.5-day simulation (1442 autoregressive steps) and the cor-
+responding ERA5 reanalysis for 00 UTC on 27 March 2018. Dashed black lines indicate
+values of Z1000 ≤ 40 m (corresponding to sea-level pressures less than roughly 1008 hPa).
+
+
+
+
+pressure center in the northeastern Pacific. The intensity of the system is typical for strong
+systems in our simulation, but its lowest Z1000 heights are about 40 m higher than those
+in the strongest systems periodically appearing in the ERA5 reanalysis. Lower-amplitude
+signals also appear in the Z1000 field, which is somewhat less than 50 m too low in the
+tropics. On balance, the overall character of this late-March weather pattern is quite plau-
+sible. In some models that use latitude-longitude meshes, obvious errors at the poles can
+show up in as little as 10 autoregressive steps (Bonev et al., 2023, Fig. 4). As evident
+in Figure 9, no artifacts are apparent in the vicinity of the North Pole after 1442 autore-
+gressive steps.
+
+      A more quantitative assessment of any tendency of our model to distort the atmo-
+spheric state by damping or amplifying mid-latitude perturbations at different wavelengths
+is provided by the plots of the Z500 power spectral density around 45 ◦ N in Figure 10.
+These spectra are averaged over 208 biweekly forecasts from the 2017-2018 test set for
+which the RMSE and ACC were plotted in Figure 4. The initial spectrum in black rep-
+resents the average state of the atmosphere in the ERA5 reanalysis.
+
+      Twelve hours (2 recursive steps) after initialization there is very little change in the
+spectra for wavelengths λ longer than 500 km (roughly 5 grid intervals), but the power
+in the shorter waves is amplified. Over the next 36 h, there is a gradual reduction in the
+amplitude at wavelengths λ < 1800 km to yield a spectrum that is somewhat damped
+over the interval 380 < λ < 1800 km and amplified at the shortest wavelengths. Sur-
+prisingly, the spectral distribution at two days remains essentially unchanged through-
+out the subsequent autogressive rollout at least out to sub-seasonal-forecast lead times
+of eight weeks (244 steps), which is consistent with the impression obtained by examin-
+ing images such as those in Figure 9.
+     What does the deviation of the spectral power from the correct ERA5 curve im-
+ply about the ability of the model to approximate a true atmospheric state? As part of
+the answer, important quantitative points of reference are the RMSE and ACC errors
+
+
+                                              –19–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+                                                 1010
+
+                                                 109
+
+
+
+
+                   Power Spectral Density (m3)
+                                                 108
+
+                                                 107
+
+                                                 106
+                                                        Initialization
+                                                 105    12 hours
+                                                        2 days
+                                                        2 weeks
+                                                 104    8 weeks
+                                                             104                  103
+                                                                     Wavelength (km)
+
+Figure 10: One dimensional power spectral density of the Z500 field around the 45◦ N
+latitude, averaged over 208 bi-weekly forecasts from 2017-2018 at: initialization (black),
+and at forecast lead times of 12 h, 2 d, 2, and 8 weeks.
+
+
+
+
+for Z500 at day 2 plotted in Figure 4. The day-2 global RMSE error over the same set
+of forecasts and verifications for which spectra are plotted in Figure 10 is about 17 m;
+the ACC is negligibly different from the correct value of 1.0. Theses values represent up-
+per bounds on the 2-day forecast error that might be produced exclusively by the spec-
+tral distortion of the Z500 field because other factors also contribute to the RMSE and
+ACC error, such as incorrectly approximating the speed and direction at which features
+propagate. Of course there is no deterministic predictability at 8-week forecast lead times,
+but since the 8-week spectrum in Figure 10 is essentially identical to that at 2 days, the
+DLWP-HPX 8-week forecasts need not be farther from some realizable atmospheric state
+than what is suggested by the modest 2-day Z500 errors in Figure 4a,d.
+
+
+5 Conclusion
+      We have presented an improved CNN-based DLWP-HPX model that stably fore-
+casts atmospheric evolution over a full one-year cycle using a very limited set of prog-
+nostic variables. The number of actual degrees of freedom characterising predictable at-
+mospheric states at forecast lead times beyond 3–5 days is not known, but is far less than
+the total number of prognostic variables carried at every grid cell in state-of-the-art NWP
+models. Here, we have demonstrated that realistic atmospheric simulations can be per-
+formed using just seven prognostic variables above each cell on a HEALPix mesh with
+110 km between the nodes.
+      The HEALPix mesh (Gorski et al., 2005) has been used in astronomy for almost
+two decades, but has previously seen very little use in atmospheric science. The mesh
+covers the sphere with a hierarchical grid of equal-area cells uniformly spaced along cir-
+cles at constant latitudes. A particularly important advantage of the HEALPix mesh for
+weather forecasting with CNNs is that it is an “east to the right” mesh, i.e., east has the
+same orientation in every HEALPix cell. Weather systems tend to travel west-to-east
+
+
+                                                                         –20–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+in mid- and high-latitudes and both east-to-west (tropical cyclones) or west-to-east (Madden-
+Julian Oscillation, convectively coupled Kelvin waves) in the tropics. The kernel weights
+in our convolutional stencils can more economically learn this behavior than on our pre-
+vious cubed sphere mesh in which the eastward orientation across the stencil varies with
+longitude, particularly on the polar faces. More importantly, because all cells have the
+same east-to-the-right orientation, we do not need to train separate sets of convolution
+filters for the equatorial and polar regions. Thus, a HEALPix model with the same to-
+tal number of trainable parameters as a cubed sphere can employ twice as many filter
+weights as that used for cubed sphere. Although switching from a cubed sphere mesh
+with 64 × 64 cells on each of the six faces to a HEALPix mesh with 32 × 32 cells on
+each of the 12 faces reduces the total number of grid points covering the sphere by half,
+it increases the time over which the Z500 RMSE remains below 40 m by almost 1/2 day
+at a 4-day forecast lead time (Figure 5).
+
+      Two other significant improvements to our model architecture were obtained by adding
+recursion via GRUs and by inverting the standard way channel depth is refined at deeper
+layers in the U-Net. In contrast to the original U-Net architecture Ronneberger et al. (2015),
+our channel depth halves instead of doubles as the spatial resolution is also halved in each
+successively deeper U-Net layer. This allows the model to devote more trainable param-
+eters to describing the wide variety of fine-scale weather patterns while using compar-
+atively fewer parameters to describe the simpler set of global weather patterns. Although
+this modification pushes the U-Net toward the basic ResNet architecture (He et al., 2016),
+we find the deeper U-Net layers continue to provide significant skill to the forecasts.
+       Additional modest improvements were implemented by switching to the GELU ac-
+tivation function and to 2×2 transposed strided convolutions when up-sampling; by in-
+creasing the total number of trainable parameters from 2.7 M to 9.8 M, adding the Z250
+field, increasing the resolution to HPX64, and increasing the time resolution to 3 h (which
+gives us a 6 h time step). The benefits of 3-h time resolution were only realized when the
+model included the GRUs. The 3-h time resolution gives a good forecast of the daily cy-
+cle of surface temperature, and the model also learns the difference in the range of that
+cycle between regions of tropical forest and desert without geo-specific input data.
+
+      Finally, we replaced the pairs of successive convolutions in Weyn et al. (2020) with
+modified ConvNeXt blocks. The switch to the ConvNeXt blocks was only advantageous
+at higher resolutions, where in addition to improving accuracy, it reduced the memory
+footprint.
+
+       At one-week forecast lead time, the resulting model is roughly 1 day behind the
+ECMWF IFS S2S forecast error in Z500 RMSE and 1.5 days behind in ACC. Our statis-
+tics are worse than those for Pangu-Weather (Bi et al., 2023) and GraphCast (Lam et
+al., 2022), both of which provide Z500 RMSE and ACC forecasts at 0.25◦ × 0.25◦ reso-
+lution that are superior to the deterministic ECMWF IFS high-resolution model aver-
+aged to the same 0.25◦ ×0.25◦ grid. Despite having less accuracy in medium range fore-
+casts, our model can be recursively stepped forward to generate better 500 hPa forecasts
+over seasonal and one-year rollouts than GraphCast and Pangu-Weather. It is also su-
+perior to the SFNO version of FourCastNetv2 currently on NVIDIA Earth2MIP, though
+it behaves similarly to the recently checkpointed version of SFNO Makani. Realistic low
+pressure systems and upper-level trough and ridge patterns continue to be generated by
+our model at the end of the one-year rollout.
+
+     Deep learning models for weather forecasting are evolving rapidly, with important
+advancements using a wide variety of architectures. A common methodology in atmo-
+spheric science research involves the investigation of some phenomena using a hierarchy
+of models with decreasing complexity, such as GCMs with full physics parameterizations,
+simpler nonlinear numerical models with minimal parameterizations, and linear models
+with analytic solutions. Our DLWP-HPX model provides an example of what can be achieved
+
+
+
+                                            –21–
+                                      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                                                                      90 N
+
+
+
+
+Equat orial faces Nort h polar face
+                                                                (a)                              (b)
+                                                                      45 N
+
+
+
+
+                                                                             Lat it ude [ deg]
+                                                                      0
+Sout h polar face
+
+
+
+
+                                                                      45 S
+
+
+
+
+                                                                      90 S
+
+
+Figure A1: Lines of latitudes depicted as blue streamline arrows on the cubed sphere
+(a) and on the HEALPix (b). While the lines corresponding to constant eastward motion
+describe arcs of different radii on the cubed sphere mesh, the same motion translates to
+straight lines on the HEALPix mesh.
+
+
+
+
+when training a parsimonious model on a server with just 4 NVIDIA A100 GPUs. It may
+be particularly useful for scientific investigations when it is advantageous to work with
+a minimal set of unknown variables to more concisely characterize sensitivities that might
+be revealed by techniques such as backpropagation with respect to loss functions customized
+for analysis, as opposed to model training (Ebert-Uphoff et al., 2021). As an example,
+note that the large-scale structure of the atmosphere is represented in our deepest U-Net
+layer on each time step by 34 latent-state variables on a coarse-resolution (440 km) grid.
+This information is decoded during each time step, along with finer resolution latent-state
+data from the skip connections, to give the updated physical state of the global system.
+We are currently designing classifier modules configured as a follower network to receive
+this deep latent-state information to explore the low-frequency variability of the atmo-
+sphere.
+         There are many avenues along which our DLPW-HPX model might be improved.
+  One would be to adding additional prognostic fields while carefully examining the result-
+  ing performance. Another one would lie in refining the CNN architecture, where the choice
+  of particular inductive biases may be crucial (Thuemmel et al., 2023). A related impor-
+  tant aspect of improving the modelled processes might be to incorporate explicit phys-
+  ical constraints, yielding physics-informed differentiable artificial neural networks (Beucler
+  et al., 2021; Shen et al., 2023). Other natural extensions of this work lie in examining
+  the performance of the DLPW-HPX model in ensemble forecasts, which are crucial to
+  sub-seasonal and seasonal prediction and to couple the atmospheric model with the ocean,
+  thus moving toward a deep learning earth system model (Bauer et al., 2023). Prelimi-
+  nary results suggest that coupling our model with a deep learning ocean model that pre-
+  dicts sea surface temperatures (which are not incorporated in the current model) stabi-
+  lizes the simulations and removes all model drift in multi-decadal rollouts.
+
+
+  Appendix A Deep Learning on the HEALPix
+                                      A1 Seamless Evolution of Location Invariant Kernels
+        The Hierarchical Equal Area isoLatitude Pixelization (HEALPix) is a partitioning
+  of the sphere that has found wide application in astronomy since it was introduced by
+  Gorski et al. (2005). It divides the sphere into 12 base faces that can be hierarchically
+  subdivided into patches of equal size. A key property for training CNNs on this mesh
+  is the isolatitudinal alignment, that is, patches are aligned along lines of latitude and each
+  patch has the same orientation, which we describe as “east to the right” in Section 4.1.
+
+
+                                                                                 –22–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+      To contrast and emphasize the difficulty that CNN kernels are facing on the cubed
+sphere mesh, we plot the lines of constant latitude on the six faces of the cubed sphere
+and on the twelve faces of the HEALPix in Figure A1. Except for the equator, all lines
+of constant latitude are bent on the cubed sphere, imposing challenges for a limited set
+of convolution kernels that must evolve location invariant pattern detectors and functions.
+For example, weather systems tend to migrate eastward in mid- and high-latitudes, and
+the kernels need to learn a wider range of behaviors to propagate eastward motions at
+the top-left versus the bottom-right corners of the polar faces of the cubed sphere face.
+      On the other hand, lines of constant latitude map to straight lines on the HEALPix
+mesh. This facilitates the formulation of location-invariant convolutional kernels for the
+propagation of weather systems, allowing the same set of kernels to be used over the en-
+tire globe. In contrast to the cubed sphere, it is not necessary to train separate sets of
+kernels for the equatorial and polar faces. Therefore, without increasing the model’s to-
+tal number of trainable parameters, the convolutional kernels on the HEALPix mesh can
+accommodate more latent layers than on the cubed sphere.
+
+     A2 Technical Implementation Details
+
+      Since deep learning libraries are optimized for image processing tasks, we consider
+each of the HEALPix’s 12 base faces as a regular two-dimensional tensor, i.e., we inter-
+pret the sphere as a composition of twelve images (cf. Figure 1 and Figure A2).
+      To simulate the spatial propagation of dynamics beyond individual faces, such that
+weather patterns can evolve globally on the sphere, we implement custom padding op-
+erations to concatenate the relevant information of all neighboring faces to each respec-
+tive face of interest.
+      Figure A2 showcases our planet’s coastlines projected on the HEALPix faces in (a)
+and outlines the spatial organization of the twelve faces in (b). The arrangement of neigh-
+boring faces is exemplarily detailed for the northern (N) and southern (S) hemisphere,
+as well as for the equatorial faces (E). To simulate the neighborhood of, say, face E3, the
+face N2 must be concatenated to the left of E3, while face S3 is concatenated to the right.
+On the northern and southern hemispheres, neighboring faces are partially required to
+be rotated, as indicated in Figure A2 (c), (d), and (e).
+      A particular case occurs in the north and south corners of the tropical faces, where
+no natural neighbor exists—cf. Figure 1 and Figure A2 (f) for an illustration. To sim-
+ulate the ninth neighbor of the respective corner, we interpolate the values from the ac-
+cording faces on the northern/southern hemisphere, by simply averaging the two corre-
+sponding values and writing the result in the simulated neighboring face. For example,
+to simulate the top left neighboring face of E3, we average the respective values from N2
+and N3, as detailed by the straight red arrows in Figure A2 (g). Values that do not lie
+on the main diagonal of the simulated face are not required to be interpolated, but are
+copied from the adjacent faces instead, denoted by the curved red arrows in Figure A2
+(g). The exemplary corner padding shows the case for the application of a 3 × 3 kernel
+with dilation of 1 or 2. Note that a 5 × 5 kernel could be applied in the same way. Im-
+portantly, the padding should not extend one neighboring face, which depends on the
+resolution of the HEALPix mesh and the configuration of the applied convolution (ker-
+nel size and dilation). Otherwise, a hierarchy of padding operations would be required
+to be implemented and considered.
+
+
+
+Open Research Section
+     Instructions for training, and a trained model for inference, are available at https://
+github.com/CognitiveModeling/dlwp-hpx/. In addition, PyTorch code for training
+
+
+                                            –23–
+         manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+   (a)                                              (b)
+
+
+
+
+   (c)                              (d)                          (e)
+
+
+
+
+   (f)                              (g)
+
+
+
+
+Figure A2: 2D HEALPix face arrangement and padding. (a) depicts the distribution
+of coastlines over the twelve HEALPix faces. (b) enumerates the twelve faces of the
+HEALPix with each four faces on the northern and southern hemisphere and around the
+equator. (c), (d), and (e): Exemplary alignment and rotations of neighboring faces before
+applying the padding operation on northern (c), equatorial (d), and southern faces (e). (f)
+emphasizes the special corner case, which is detailed in (g) to visualize the padding. The
+missing corner pixel is filled by averaging the two values from the adjacent cells (row and
+column indices of each cell displayed as super- and subscripts, respectively).
+
+
+
+
+                                             –24–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+the DLWP-HPX model is available in the repository at https://github.com/NVIDIA/
+modulus/tree/main/examples/weather/dlwp_healpix. All spherical shells of data from
+ERA5 (Hersbach et al., 2020) were downloaded from Copernicus, where variables on var-
+ious constant pressure levels, such as Z500 or T850 , and variables on single levels, such
+as T2m or T CW V , are hosted open to the public, available at https://cds.climate.copernicus
+.eu/cdsapp#!/dataset/reanalysis-era5-pressure-levels?tab=form and https://
+cds.climate.copernicus.eu/cdsapp#!/dataset/reanalysis-era5-single-levels
+?tab=overview.
+      To generate 1-year rollouts for Pangu-Weather, GraphCast, and FourCastNet2 (SFNO),
+as plotted in Figure 8, we considered the respective public repositories with the pretrained
+model weights. More concretely, we generated the SFNO Earth2MIP (fcnv2_sm) and
+GraphCast Earth2MIP (graphcast) forecasts with NVIDIA’s earth2mip package,9 specif-
+ically developing a custom script for long rollouts.10 Checkpoints for the SFNO Makani
+forecast may be found in the NVIDIA NGC catalog.11 Interestingly, the original GraphCast
+DeepMind code base12 produced slightly different results and saturated even faster than
+the Earth2MIP version, which might result from different random seeds. For the Deep-
+Mind version of GraphCast, we downloaded the model weights13 provided through their
+repository. Pangu-Weather forecasts in 24 h and 3 h resolution (with respective check-
+point files for the 24 h14 and 3 h15 models) were generated by using the original repos-
+itory.16
+
+
+Acknowledgments
+We would like to thank Mauro Bisson from NVIDIA Corp. for providing optimized CUDA
+kernels for the HEALPix padding implementation, and Jonathan Weyn who previously
+implemented a code base on which this work was built. We thank Peter Düben, Imme
+Ebert-Uphoff, and a third anonymous reviewer for encouraging us to generate and com-
+pare the 1-year rollouts for other state-of-the-art DLWP methods and for other valuable
+suggestions. This work received funding from Deutsche Forschungsgemeinschaft (DFG,
+German Research Foundation) under Germany’s Excellence Strategy EXC 2064 – 390727645
+and from the Office of Naval Research under grants N0014-21-1-2827 and N00014-22-1-
+2807. We thank the Deutscher Akademischer Austauschdienst (DAAD, German Academic
+Exchange Service) as well as the International Max Planck Research School for Intelli-
+gent Systems (IMPRS-IS) for supporting Matthias Karlbauer. Nathaniel was supported
+by a National Defense Science and Engineering Graduate Fellowship. We are grateful
+to NVIDIA and Stan Posey for the donation of A100 GPU cards. This research was ad-
+ditionally supported by a grant from the NVIDIA Applied Research Accelerator Program
+and utilized an NVIDIA DGX-100 Workstation. Moreover, this work benefited substan-
+tially from the barrier-free high quality ERA5 dataset provided by the ECMWF.
+
+
+Author Roles
+      Matthias implemented model, training and evaluation routines in PyTorch, as well
+as the HEALPix-related projection scripts under consideration of the healpy package,
+
+
+  9 https://github.com/NVIDIA/earth2mip
+  10 https://github.com/NVIDIA/earth2mip/blob/main/examples/utils/workflows/1_year_run.py
+  11 https://catalog.ngc.nvidia.com/orgs/nvidia/teams/modulus/models/sfno_73ch_small
+  12 https://github.com/google-deepmind/graphcast
+   13 https://storage.googleapis.com/dm_graphcast/params/GraphCast%20-%20ERA5%201979-2017%20
+
+-%20resolution%200.25%20-%20pressure%20levels%2037%20-%20mesh%202to6%20-%20precipitation%
+20input%20and%20output.npz
+   14 https://drive.google.com/file/d/1lweQlxcn9fG0zKNW8ne1Khr9ehRTI6HP/view
+   15 https://drive.google.com/file/d/1EdoLlAXqE9iZLt9Ej9i-JW9LTJ9Jtewt/view
+   16 https://github.com/198808xc/Pangu-Weather
+
+
+
+
+                                             –25–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+and drafted the manuscript together with Dale who supervised this project closely and
+who also made the model schematic in Figure 2. Nathaniel was involved in discussions
+about model evolution and code structures and generated Figure 6, Figure 7, and Fig-
+ure 10. Raul was involved in model discussions and generated Figure 9. Thorsten helped
+with implementing the distributed PyTorch pipeline for multi-GPU training and with
+accelerating the process pipeline. Noah Brenowitz and Boris Bonev generated the 365-
+days rollouts with the Earth2MIP and Makani packages for SFNO and GraphCast. Mar-
+tin co-supervised this project and helped with proofreading and writing.
+
+
+References
+Ballas, N., Yao, L., Pal, C., & Courville, A. (2015). Delving deeper into convolutional
+      networks for learning video representations. arXiv preprint arXiv:1511.06432 .
+Battaglia, P. W., Hamrick, J. B., Bapst, V., Sanchez-Gonzalez, A., Zambaldi, V.,
+      Malinowski, M., . . . others (2018). Relational inductive biases, deep learning,
+      and graph networks. arXiv preprint arXiv:1806.01261 .
+Bauer, P., Dueben, P., Chantry, M., Doblas-Reyes, F., Hoefler, T., McGovern, A.,
+      & Stevens, B.       (2023).   Deep learning and a changing economy in weather
+      and climate prediction.       Nature Reviews Earth & Environment, 4 (8), 507–
+      509. Retrieved from https://doi.org/10.1038/s43017-023-00468-z doi:
+      10.1038/s43017-023-00468-z
+Bauer, P., Thorpe, A., & Brunet, G.        (2015).   The quiet revolution of numerical
+      weather prediction. Nature, 525 (7567), 47–55.
+Benjamin, S. G., Brown, J. M., Brunet, G., Lynch, P., Saito, K., & Schlatter, T. W.
+     (2019). 100 years of progress in forecasting and nwp applications. Meteorological
+      Monographs, 59 , 13–1.
+Beucler, T., Pritchard, M., Rasp, S., Ott, J., Baldi, P., & Gentine, P. (2021). Enforc-
+      ing analytic constraints in neural networks emulating physical systems. Physical
+      Review Letters, 126 (9), 098302.
+Bi, K., Xie, L., Zhang, H., Chen, X., Gu, X., & Tian, Q. (2023). Accurate medium-
+      range global weather forecasting with 3d neural networks. Nature. doi: doi.org/
+      10.1038/s41586-023-06185-3
+Bonev, B., Kurth, T., Hundt, C., Pathak, J., Baust, M., Kashinath, K., & Anandku-
+      mar, A. (2023). Spherical fourier neural operators: Learning stable dynamics on
+      the sphere. arXiv preprint arXiv:2306.03838 .
+Charney, J. G., Fjörtoft, R., & Neumann, J. V. (1950). Numerical Integration of the
+      Barotropic Vorticity Equation. Tellus A, 2 (4).
+Chen, K., Han, T., Gong, J., Bai, L., Ling, F., Luo, J.-J., . . . Ouyang, W. (2023).
+      Fengwu: Pushing the skillful global medium-range weather forecast beyond 10
+      days lead. arXiv preprint arXiv:2304.02948 .
+Cho, K., van Merrienboer, B., Gulcehre, C., Bougares, F., Schwenk, H., & Bengio, Y.
+     (2014). Learning phrase representations using rnn encoder-decoder for statistical
+      machine translation. In Conference on empirical methods in natural language
+      processing (emnlp 2014).
+Dosovitskiy, A., Beyer, L., Kolesnikov, A., Weissenborn, D., Zhai, X., Unterthiner,
+      T., . . . others (2020). An image is worth 16x16 words: Transformers for image
+      recognition at scale. arXiv preprint arXiv:2010.11929 .
+Dueben, P. D., & Bauer, P. (2018). Challenges and design choices for global weather
+      and climate models based on machine learning. Geoscientific Model Develop-
+      ment, 11 (10), 3999–4009.
+Ebert-Uphoff, I., Lagerquist, R., Hilburn, K., Lee, Y., Haynes, K., Stock, J., . . .
+      Stewart, J. Q. (2021). CIRA guide to custom loss functions for neural networks
+      in environmental sciences – version 1. arXiv preprint arXiv:2106.09757 .
+Gori, M., Monfardini, G., & Scarselli, F. (2005). A new model for learning in graph
+      domains. In Proceedings. 2005 ieee international joint conference on neural net-
+
+
+                                           –26–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+      works, 2005. (Vol. 2, pp. 729–734).
+Gorski, K. M., Hivon, E., Banday, A. J., Wandelt, B. D., Hansen, F. K., Reinecke,
+      M., & Bartelmann, M.         (2005).    Healpix: A framework for high-resolution
+      discretization and fast analysis of data distributed on the sphere. The Astro-
+      physical Journal , 622 (2), 759.
+Guibas, J., Mardani, M., Li, Z., Tao, A., Anandkumar, A., & Catanzaro, B. (2021).
+      Efficient token mixing for transformers via adaptive fourier neural operators. In
+      International conference on learning representations.
+He, K., Zhang, X., Ren, S., & Sun, J. (2016). Deep residual learning for image recog-
+      nition. In Proceedings of the ieee conference on computer vision and pattern
+      recognition (pp. 770–778).
+Hendrycks, D., & Gimpel, K. (2016). Gaussian error linear units (gelus). arXiv
+      preprint arXiv:1606.08415 .
+Hersbach, H., Bell, B., Berrisford, P., Hirahara, S., Horányi, A., Muñoz-Sabater, J.,
+      . . . others (2020). The era5 global reanalysis. Quarterly Journal of the Royal
+      Meteorological Society, 146 (730), 1999–2049.
+Hochreiter, S., & Schmidhuber, J. (1997). Long short-term memory. Neural computa-
+      tion, 9 (8), 1735–1780.
+Hu, Y., Chen, L., Wang, Z., & Li, H.        (2022).    Swinvrnn: A data-driven ensem-
+      ble forecasting model via learned distribution perturbation.       arXiv preprint
+      arXiv:2205.13158 .
+Huang, H., Lin, L., Tong, R., Hu, H., Zhang, Q., Iwamoto, Y., . . . Wu, J.       (2020).
+      Unet 3+: A full-scale connected unet for medical image segmentation.           In
+      Icassp 2020-2020 ieee international conference on acoustics, speech and signal
+      processing (icassp) (pp. 1055–1059).
+Keisler, R. (2022). Forecasting global weather with graph neural networks. arXiv
+      preprint arXiv:2202.07575 .
+Kingma, D. P., & Ba, J. (2014). Adam: A method for stochastic optimization. arXiv
+      preprint arXiv:1412.6980 .
+Kipf, T. N., & Welling, M. (2016). Semi-supervised classification with graph convolu-
+      tional networks. arXiv preprint arXiv:1609.02907 .
+Krachmalnicoff, N., & Tomasi, M.          (2019).    Convolutional neural networks on
+      the healpix sphere: a pixel-based algorithm and its application to cmb data
+      analysis. Astronomy & Astrophysics, 628 , A129.
+Kurth, T., Subramanian, S., Harrington, P., Pathak, J., Mardani, M., Hall, D., . . .
+      Anandkumar, A. (2022). Fourcastnet: Accelerating global high-resolution
+      weather forecasting using adaptive fourier neural operators.       arXiv preprint
+      arXiv:2208.05419 .
+Lam, R., Sanchez-Gonzalez, A., Willson, M., Wirnsberger, P., Fortunato, M., Pritzel,
+      A., . . . others (2022). Graphcast: Learning skillful medium-range global weather
+      forecasting. arXiv preprint arXiv:2212.12794 .
+Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhattacharya, K., Stuart, A.,
+      & Anandkumar, A. (2020). Fourier neural operator for parametric partial
+      differential equations. arXiv preprint arXiv:2010.08895 .
+Liu, Z., Lin, Y., Cao, Y., Hu, H., Wei, Y., Zhang, Z., . . . Guo, B. (2021). Swin trans-
+      former: Hierarchical vision transformer using shifted windows. In Proceedings of
+      the ieee/cvf international conference on computer vision (pp. 10012–10022).
+Liu, Z., Mao, H., Wu, C.-Y., Feichtenhofer, C., Darrell, T., & Xie, S. (2022). A con-
+      vnet for the 2020s. In Proceedings of the ieee/cvf conference on computer vision
+      and pattern recognition (pp. 11976–11986).
+Lopez-Gomez, I., McGovern, A., Agrawal, S., & Hickey, J. (2022). Global extreme
+      heat forecasting using neural weather models. arXiv preprint arXiv:2205.10972 .
+Lorenz, E. N. (1969). The predictability of a flow which possesses many scales of mo-
+      tion. Tellus, 21 (3), 289–307.
+
+
+                                            –27–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+Loshchilov, I., & Hutter, F. (2016). Sgdr: Stochastic gradient descent with warm
+      restarts. In International conference on learning representations.
+Palmer, T. (2019). The ecmwf ensemble prediction system: Looking back (more than)
+      25 years and projecting forward 25 years. Quarterly Journal of the Royal Mete-
+      orological Society, 145 , 12–24.
+Pathak, J., Subramanian, S., Harrington, P., Raja, S., Chattopadhyay, A., Mardani,
+      M., . . . others    (2022).    Fourcastnet: A global data-driven high-resolution
+      weather model using adaptive fourier neural operators.             arXiv preprint
+      arXiv:2202.11214 .
+Perraudin, N., Defferrard, M., Kacprzak, T., & Sgier, R. (2019). Deepsphere: Efficient
+      spherical convolutional neural network with healpix sampling for cosmological
+      applications. Astronomy and Computing, 27 , 130–146.
+Pfaff, T., Fortunato, M., Sanchez-Gonzalez, A., & Battaglia, P. W. (2020). Learning
+      mesh-based simulation with graph networks. arXiv preprint arXiv:2010.03409 .
+Rasp, S., Hoyer, S., Merose, A., Langmore, I., Battaglia, P., Russel, T., . . . others
+      (2023). Weatherbench 2: A benchmark for the next generation of data-driven
+      global weather models. arXiv preprint arXiv:2308.15560 .
+Rasp, S., & Thuerey, N. (2021). Data-driven medium-range weather prediction with a
+      resnet pretrained on climate simulations: A new model for weatherbench. Jour-
+      nal of Advances in Modeling Earth Systems, 13 (2), e2020MS002405.
+Ronneberger, O., Fischer, P., & Brox, T. (2015). U-net: Convolutional networks for
+      biomedical image segmentation. In International conference on medical image
+      computing and computer-assisted intervention (pp. 234–241).
+Scarselli, F., Gori, M., Tsoi, A. C., Hagenbuchner, M., & Monfardini, G. (2008). The
+      graph neural network model. IEEE transactions on neural networks, 20 (1), 61–
+      80.
+Scher, S., & Messori, G. (2018). Predicting weather forecast uncertainty with machine
+      learning. Quarterly Journal of the Royal Meteorological Society, 144 (717), 2830–
+      2841.
+Scher, S., & Messori, G. (2019). Weather and climate forecasting with neural net-
+      works: using GCMs with different complexity as study-ground. Geoscientific
+      Model Development, 12 , 2797–2809.
+Shen, C., Appling, A. P., Gentine, P., Bandai, T., Gupta, H., Tartakovsky, A., . . .
+      Lawson, K. (2023). Differentiable modelling to unify machine learning and
+      physical models for geosciences. Nature Reviews Earth & Environment, 4 (8),
+      552–567.       Retrieved from https://doi.org/10.1038/s43017-023-00450-9
+      doi: 10.1038/s43017-023-00450-9
+Thuemmel, J., Karlbauer, M., Otte, S., Zarfl, C., Martius, G., Ludwig, N., . . . others
+      (2023). Inductive biases in deep learning models for weather prediction. arXiv
+      preprint arXiv:2304.04664 .
+Tobler, W. R. (1970). A computer movie simulating urban growth in the detroit re-
+      gion. Economic geography, 46 (sup1), 234–240.
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., . . .
+      Polosukhin, I. (2017). Attention is all you need. Advances in neural information
+      processing systems, 30 .
+Vitart, F. (2004). Monthly forecasting at ECMWF. Monthly Weather Review , 132 ,
+      2761–2779. doi: 10.1175/MWR2826.1
+Weigel, A. P., Baggenstos, D., Liniger, M. A., Vitart, F., & Appenzeller, C. (2008).
+      Probabilistic Verification of Monthly Temperature Forecasts. Monthly Weather
+      Review , 136 , 5162–5182. doi: 10.1175/2008MWR2551.1
+Weyn, J. A., Durran, D. R., & Caruana, R. (2019). Can machines learn to predict
+      weather? using deep learning to predict gridded 500-hpa geopotential height
+      from historical weather data. Journal of Advances in Modeling Earth Systems,
+      11 (8), 2680–2693.
+Weyn, J. A., Durran, D. R., & Caruana, R. (2020). Improving data-driven global
+
+
+                                           –28–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+     weather prediction using deep convolutional neural networks on a cubed sphere.
+     Journal of Advances in Modeling Earth Systems, 12 (9), e2020MS002109.
+Weyn, J. A., Durran, D. R., Caruana, R., & Cresswell-Clay, N. (2021). Sub-seasonal
+     forecasting with a large ensemble of deep-learning weather prediction models.
+     Journal of Advances in Modeling Earth Systems, 13 (7), e2021MS002502.
+Zhou, Z., Rahman Siddiquee, M. M., Tajbakhsh, N., & Liang, J. (2018). Unet++:
+     A nested u-net architecture for medical image segmentation. In Deep learning
+     in medical image analysis and multimodal learning for clinical decision support
+    (pp. 3–11). Springer.
+
+
+
+
+                                          –29–
+

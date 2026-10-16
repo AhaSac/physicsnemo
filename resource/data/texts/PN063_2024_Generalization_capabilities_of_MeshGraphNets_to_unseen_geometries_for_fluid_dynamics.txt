@@ -1,0 +1,1359 @@
+                                                            Generalization capabilities of MeshGraphNets
+                                                                   to unseen geometries for fluid dynamics
+
+                                                      Robin Schmöcker1 , Alexander Henkes2 , Julian Roth1 , and Thomas Wick1,3
+
+                                         1
+                                             Leibniz Universität Hannover, Institut für Angewandte Mathematik, AG Wissenschaftliches
+                                                                    Rechnen, Welfengarten 1, 30167 Hannover, Germany
+                                                              2
+                                                                  Computational Mechanics Group, ETH Zürich, Switzerland
+arXiv:2408.06101v1 [cs.LG] 12 Aug 2024
+
+
+
+
+                                          3
+                                              Université Paris-Saclay, CentraleSupélec, ENS Paris-Saclay, CNRS, LMPS - Laboratoire de
+                                                                    Mécanique Paris-Saclay, 91190 Gif-sur-Yvette, France
+
+
+
+                                                                                             Abstract
+
+                                                    This works investigates the generalization capabilities of MeshGraphNets (MGN) [Pfaff et al.
+                                                 Learning Mesh-Based Simulation with Graph Networks. ICML 2021] to unseen geometries for fluid
+                                                 dynamics, e.g. predicting the flow around a new obstacle that was not part of the training data.
+                                                 For this purpose, we create a new benchmark dataset for data-driven computational fluid dynamics
+                                                 (CFD) which extends DeepMind’s flow around a cylinder dataset by including different shapes and
+                                                 multiple objects. We then use this new dataset to extend the generalization experiments conducted
+                                                 by DeepMind on MGNs by testing how well an MGN can generalize to different shapes. In our
+                                                 numerical tests, we show that MGNs can sometimes generalize well to various shapes by training on
+                                                 a dataset of one obstacle shape and testing on a dataset of another obstacle shape.
+
+
+
+                                         1      Introduction
+
+                                         For many engineering applications, we need to have fast and accurate simulations of fluid dynamics.
+                                         In this work we focus on the modeling of fluids by the incompressible Navier-Stokes equations [28, 66,
+                                         55, 30, 68, 31, 25, 40]. With regard to numerical modeling, various spatial discretization techniques
+                                         are known such as the finite volume method [50] and the finite element method [30]. Temporal
+                                         discretization is often based on finite difference schemes [31, 68] or space-time discretizations [49, 11, 5].
+                                         The arising nonlinear and linear systems are often solved with iterative techniques or multigrid schemes.
+                                         Implementations on CPUs can be computationally expensive and can take a long time to run. To
+                                         overcome this, we can use parallelization to multiple processors or GPUs [67, 39, 6, 5] or only refine the
+                                         mesh in regions where the solution is not accurate enough [10, 14, 11, 56]. Nevertheless, even though
+                                         this can speed up the simulation, fluid simulations can still be prohobitively expensive for multi-query
+                                         problems, e.g. different material parameters, different geometries, or different boundary conditions.
+                                               Therefore, for real-time simulations or multi-query problems, we need to find a way to speed up
+                                         the simulation even further, e.g. by means of data-driven methods. A popular method to reduce the
+
+                                                                                                 1
+computational cost is to collect a large dataset of fluid simulations and project the dynamics onto a small
+set of eigen modes using the proper orthogonal decomposition [58]. On the one hand, using this kind of
+reduced order model is well-studied and we have error bounds for the reduced basis approximation [57].
+On the other hand, proper orthogonal decomposition is an intrusive method, which makes it difficult to
+implement for nonlinear problems [9, 19, 20, 24, 7, 51, 4] and changing meshes [33].
+    Another approach is to use machine learning methods to predict the fluid dynamics [44]. This
+kind of approaches are appealing since they are generally non-intrusive and easier to implement, but
+they can be difficult to interpret [26, 70, 63, 15], can be sensitive to the training data and can be
+difficult to generalize to unseen data [52]. Albeit all these limitations, neural networks are frequently
+used for regression in the latent space [37], superresolution of coarse solutions [48] or physics-informed
+approaches [18]. More recently, convolutional neural networks have been used to learn the full solution
+field of fluid simulations [42]. Despite their success in computer vision tasks [43], convolutional neural
+networks work best on cartesian grids and not for complex geometries, e.g. random obstacles in the
+flow field, where parts of the neural network input that is not part of the domain needs to be masked
+[34]. To overcome this restriction of architectures that are based on cartesian grids, like convolutional
+neural networks or fourier neural operators, graph neural networks [17, 16, 60] can be used to directly
+work on the finite element mesh [47].
+    In this work, we will focus on a graph neural network-based solution introduced by Google DeepMind
+[59, 54]. The method is based on the idea of encoding the system state into a mesh graph, applying
+a graph neural network to this graph to predict the change of the system, and then applying this
+change to the simulation state. This method has found wide adoption for physics simulations with
+applications in weather forecasting (GraphCast) [45] and multiscale simulations for better efficiency [27].
+The application of these neural networks is usually to inverse problems [2] or for fast fluid simulations
+on unseen geometries [21, 69]. The latter is the focus of this work. We numerically investigate the
+generalization capabilities [64] of MeshGraphNets to unseen geometries for fluid dynamics by predicting
+the flow around a new obstacle that was not part of the training data. For this purpose we create
+new benchmark datasets [13] for the instationary incompressible Navier-Stokes equations that extend
+DeepMind’s flow around a cylinder dataset by including different shapes and multiple objects.
+    The outline of this paper is as follows. In Section 2, we introduce neural networks, MeshGraphNets
+method and the Navier-Stokes equations. Next, in Section 3, we present the experiment setup and
+discuss the generalization of MeshGraphNets that have been trained on one obstacle shape to another
+obstacle shape. Our work is summarized in Section 4.
+
+
+2    MeshGraphNets
+
+We briefly recapitulate the MeshGraphNets (MGN) method introduced by Pfaff et al. in [54]. MGNs
+are a deep learning approach for predicting the evolution of complex physics systems by applying graph
+neural networks to a mesh graph. The method is based on the idea of encoding the system state into a
+mesh graph, applying a graph neural network to this graph to predict the change of the system, and
+then applying this change to the simulation state. The method is autoregressive, meaning that the
+
+                                                    2
+previous output can be used as the new input, allowing for the simulation to be rolled out to obtain
+the next states. The method is trained using a differentiable loss function and noise is added to the
+training data to force the MGN to correct any mistakes before they can accumulate in future states.
+   We first give an abstract definition of neural networks and then introduce the concept of MGNs for
+fluid dynamics simulations governed by the Navier-Stokes equations.
+
+
+2.1   Neural Networks
+
+An artificial neural network (ANN) is a parametrized, nonlinear function composition. By the universal
+function approximation theorem [38], arbitrary Borel measurable functions can be approximated by
+ANN. There are several different formulations for ANN, which can be found in standard references such
+as [12, 32, 1, 29, 22]. Following [35], most ANN formulations can be unified. An ANN N is a function
+from an input space Rdx to an output space Rdy , defined by a composition of nonlinear functions h(l) ,
+such that
+
+
+                                 N : Rdx → Rdy
+                                      x 7→ N (x) = h(l) ◦ . . . ◦ h(0) = y,         l = 1, . . . , nL .               (1)
+
+
+Here, x denotes an input vector of dimension dx and y an output vector of dimension dy . The nonlinear
+functions h(l) are called layers and define an l-fold composition, mapping input vectors to output
+vectors. Consequently, the first layer h(0) is defined as the input layer and the last layer h(nL ) as the
+output layer, such that
+                                         h(0) = x ∈ Rdx ,        h(nL ) = y ∈ Rdy .                                   (2)
+
+The layers h(l) between the input and output layer, called hidden layers, are defined as
+                                n                       o                                          
+                            (l)   (l)                               (l)
+                    h(l) −
+                         < h• = h•,η , η = 1, . . . , nu ,         h•,η = φ(l) ◦ ϕ(l) Wη(l) • h(l−1) ,                (3)
+
+        (l)                                                      (l)
+where h•,η is the η-th neural unit of the l-th layer h• and nu is the total number of neural units per
+                                                                             < denotes an abbreviation
+layer, while • denotes a product. Following the notation in [41], the symbol −
+                                                                < (O1 , O2 , ...). In (3), the details of
+of a tuple of mathematical objects (O1 , O2 , ...), such that O −
+                           (l)
+type-specific layers h• are gathered in general layers h(l) from (1). The specification follows from the
+                                                                                          (l)
+•-operator, which denotes the operation between the weight vector Wη of the η-th neural unit in the
+              (l)                                                 (l−1)
+l-th layer h• and the output of the preceding layer h•                    , where the bias term is absorbed [1]. If • is
+                                                                           (l)
+the ordinary matrix multiplication • = ·, then the layer h·                      is called dense layer. In the context of
+GNNs, the choice of the operator as • = ⊕, where ⊕ is a permutation invariant aggregation operator,
+yields the so-called message passing network [16].
+   Furthermore, ϕ(l) : R → R is a nonlinear activation function and φ(l) is a function of the previous
+layer, such that φ(l) : h(l−1) 7→ φ(l) (h(l−1) ). If φ(l) is the identity function, the layer h(l) is called a
+                                                 (l)
+feedforward layer. All weight vectors Wη of all layers h(l) can be gathered in a single expression, such
+
+
+
+
+                                                             3
+that
+                                                n     o
+                                             θ = Wη(l) ,                                              (4)
+
+where θ inherits all parameters of the ANN N (x) from (1). Consequently, the notation N (x; θ)
+emphasises the dependency of the outcome of an ANN on the input on the one hand and the current
+                                                                                     (l)
+realization of the weights on the other hand. The specific combination of layers h• from (3), neural
+        (l)
+units h•,η and activation functions ϕ(l) from (3) is called topology of the ANN N (x; θ). The weights θ
+from (4) are typically found by gradient-based optimization with respect to a task-specific loss function
+[32].
+
+
+2.2     Mesh Graph Networks
+
+In this section, we introduce MGN, a deep learning approach for predicting the evolution of complex
+physics systems by applying graph neural networks to a mesh graph. This is based on the paper [54] by
+Pfaff et al. which is an extension of their previous paper on graph network based simulations [59]. In
+the following and overall in this paper, we introduce and test MGNs for the Flow around the Cylinder
+benchmark (abbreviated as Cylinder Flow). However, we notice that our developments can be applied
+to other computational fluid dynamics numerical tests as well.
+
+
+2.2.1    Incompressible Navier-Stokes equations
+
+Let Ω ⊂ R2 be some domain with sufficiently smooth boundary ∂Ω. Moreover, let (0, T ) be the time
+interval with end time value T > 0. To generate training data, we model incompressible, viscous fluid
+flow with constant density and temperature by the Navier-Stokes equations
+
+
+                           ∂t v − ∇x · σ + (v · ∇x )v = 0 in Ω × (0, T ),
+                                              ∇x · v = 0 in Ω × (0, T ),
+                                                   v = vD    on ∂Ω × (0, T ),
+                                                v(0) = v 0   in Ω × {0},
+
+
+where for the stress σ we use the unsymmetric stress tensor
+                                             
+                                             v
+                                     σ := σ   = −pI + ν∇x v.
+                                             p
+
+Plugging the definition of the unsymmetric stress tensor into the Navier-Stokes equations leads to the
+following formulation:
+
+Formulation 2.1 (Incompressible Navier-Stokes equations). Find the vector-valued velocity v : Ω ×
+
+
+
+
+                                                   4
+(0, T ) → R2 and the scalar-valued pressure p : Ω × (0, T ) → R such that
+
+
+                            ∂t v + ∇x p − ν∆x v + (v · ∇x )v = 0      in Ω × (0, T ),
+                                                     ∇x · v = 0       in Ω × (0, T ),
+                                                             v = vD    on ∂Ω × (0, T ),
+                                                       v(0) = v 0      in Ω × {0}.
+
+
+Here, ν > 0 is the kinematic viscosity, v 0 is the initial velocity and vD is a possibly time-dependent
+Dirichlet boundary value. In the following, we directly address the time-discrete problem. To this
+end, sk = (vk , pk ) : Ω 7→ R3 denotes the system state (i.e. the velocity and pressure field) with domain
+Ω ⊆ R2 at time ∆t · k with the time step size ∆t > 0 and the time step index k ∈ N. Additionally,
+we use s̃k = (ṽk , p̃k ) : Ω 7→ R3 to denote our prediction for sk . To create the dataset, we employ the
+finite element method using an incremental pressure correction scheme (IPCS) [46] which is based on
+Chorin’s method [23].
+
+          (0, 0.41)                                  Γwall                                       (2.2, 0.41)
+
+
+        Γin              Γcylinder                             Ω                                       Γout
+
+
+          (0, 0)                                     Γwall                                       (2.2, 0)
+
+              Figure 1: Domain of the Navier-Stokes benchmark problem (Cylinder Flow) [62]
+
+
+
+2.2.2     MGN idea
+
+On a high level, the MGN approach can be explained as follows: First, we triangulate the domain to
+represent it as a mesh graph. We then encode the current system state sk into the graph’s nodes and
+edges. Next, we use a graph neural network to predict quantities which can be used to directly compute
+how sk evolves to sk+1 . In Cylinder Flow, we will use an MGN to directly predict the pressure field
+pk+1 , and the change in velocity δv = vk+1 − vk . Fig. 2 visualizes this process.
+
+                                     (G, sk )
+
+
+
+
+                                                                                           sk
+              sk                                                   M GN (G, sk )                   s̃k+1
+                      Encoder                        MGN                                Update
+
+    Figure 2: High-level overview of how MGNs predict the next state given the current state sk .
+
+
+                                                       5
+   By construction, MGNs are autoregressive which means we can use the previous output as new
+input. Hence we can rollout a state sk to obtain sk+1 , sk+2 , . . . . We will now discuss this on a more
+detailed level.
+
+
+2.2.3     System state encoding
+
+In this step, we want to encode the system state sk into a graph. As a first step, the domain
+Ω has to be triangulated to obtain a mesh graph G = (V, E) where V ⊆ N are the vertices and
+E ⊆ {e ∈ P(V ) : |e| = 2} are the edges.
+   Next, we encode the position information into the graph: Let e = {ν1 , ν2 } ∈ E and xν1 , xν2 ∈ Ω be
+the domain coordinates associated with these two vertices. We assign the distance ∥xν1 − xν2 ∥2 and
+the relative displacement xν1 − xν2 as features to e. It would also be possible to encode the absolute
+positions in the nodes. Experiments showed, however, that this is not a viable option [54]. To better
+capture the structure of the mesh, the node type is added as a feature to each vertex. In the case of
+Cylinder Flow there are four types of nodes:
+
+   • fluid nodes,
+
+   • wall (top, bottom, and cylinder) nodes,
+
+   • inflow nodes,
+
+   • outflow nodes.
+
+Besides the node type we also add the values of the fields of sk needed to predict sk+1 as features to
+each vertex. For example, in the case of Cylinder Flow, each vertex ν ∈ V with associated coordinates
+x ∈ Ω gets the value of the velocity field vk at position x. Though pressure is also part of sk , it is not
+encoded as vk already determines the pressure values hence they are not needed to predict sk+1 . The
+resulting graph and its associated features now approximately model sk .
+
+
+2.2.4     Graph processing
+
+In this step, we use the graph-encoding of the previous step to predict sk+1 . For the incompressible
+Navier-Stokes equations, we directly predict the pressure pk+1 and the change in velocity δv = vk+1 −vk .
+The processing is done in three different steps.
+
+   1. First, to prepare the features for processing, we use a feedforward-network to encode the edge
+        features and another feedforward-network to encode the vertex features at each edge/vertex. We
+        say that the features are embedded into latent space. In theory, this step is not needed. However,
+        in practice without this step, the network would not perform well. This is because in the next
+        step, these features will iteratively be updated to finally arrive at the prediction for the quantity
+        change. If we do not encode the features in this first step, the information captured in these
+        intermediate states is always restricted to the dimension of the input features. Therefore, this
+        step can be viewed as widening the information bottleneck.
+
+
+                                                      6
+   2. Next, we process the previously encoded features. First, we apply a neural network N M to all
+        edges to update their edge features. Let e = {ν1 , ν2 } ∈ E and F(ν1 ), F(ν2 ), F(e) be the features
+        associated with this edge/nodes. The updated edge features F ′ (e) are given as follows:
+
+
+                                         F ′ (e) = N M (F(e), F(ν1 ), F(ν2 )).                           (5)
+
+
+        Using F ′ (e), we update the node-features using another neural network N V . Let ν ∈ V and
+        Nν ⊆ E be the set of edges connected to ν. Again, we denote their associated features with F(ν)
+        and F ′ (e) for e ∈ Nν . The updated features F ′ (ν) are defined as follows:
+                                                                              !
+                                                                  X
+                                         F ′ (ν) = N V    F(ν),          F ′ (e) .                       (6)
+                                                                  e∈Nν
+
+
+        After this, we simply replace F(ν) by F ′ (ν) and F(e) by F ′ (e) for each vertex/edge. This is
+        called one message passing block (MPB). In total, we apply L identical message passing blocks to
+        the features (i.e. N M , N V are fixed).
+
+        Note that within each message passing block, information can flow only from one vertex to all its
+        neighbors, because its information first passes to its edges by N M and then to its neighbors by
+        N V . Hence with L MPBs only vertices with a distance of less than L steps can be reached which
+        means that even though in theory nodes can influence each other no matter their distance, this is
+        not captured by this processing step.
+
+   3. In this last step, we apply a final feedforward-net (called the decoder) to the latent features of
+        each vertex obtained after the last MPB step. This output will then be used to directly update
+        the system state as will be described in the following.
+
+
+2.2.5     Updating the system state
+
+Assume that qk+1 : V 7→ R3 is the output of our MGN with input sk . We interpret qk+1 as the
+derivative of the velocity field vk and the pressure pk+1 , i.e. qk+1 = (q1,k+1 , q2,k+1 ) ≈ (∂t vk , pk+1 )
+where ∂t vk denotes the time derivative of the velocity field at time ∆t · k. Our prediction s̃k+1 at node
+ν ∈ V with coordinates x ∈ Ω is then given by
+
+
+                                s̃k+1 (x) = (vk (x) + ∆t · q1,k+1 (ν), q2,k+1 (ν)).                      (7)
+
+
+2.2.6     Training MGNs
+
+In this section, we discuss the training details of MGNs. First, note that each step as detailed in the
+previous section is differentiable. Hence, the predicted quantities at each vertex are differentiable with
+respect to the parameters of all neural networks that were used. Therefore, we can define a differentiable
+loss L at each node ν ∈ V with coordinates x ∈ Ω by taking the mean-squared-error of the MGN
+
+
+
+
+                                                         7
+prediction and the ground truth field values. Hence, the loss L is
+
+                                             1
+                                       L(ν) = ∥s̃k+1 (x) − sk+1 (x)∥22 .                               (8)
+                                             3
+
+The MGN can then be trained using gradient descent on L averaged on each vertex. Note that this
+requires access to the ground truth values sk at the vertices or approximations of these which might
+not always be efficiently available.
+        Though this training setup works in theory, experiments [54] showed that this does not suffice to
+predict states far in the future and not just the next time step. This problem is addressed by adding
+noise to the training data and thus forcing the MGN to correct any mistakes before they can accumulate
+in future states. For all simulations in the training data, at every time step k and at each vertex
+ν ∈ V with coordinates x ∈ Ω, we independently sample normally distributed noise ε = (ε1 , ε2 ) with
+ε1 , ε2 ∼ N (0, σ) with zero mean and a fixed variance σ ∈ R+ . This noise is then added to the velocity
+field vk (x) to obtain the noisy velocity field vknoisy (x) = vk (x) + ε. Then, instead of vk , the noisy
+velocity field vknoisy is fed as the input to the MGN whose next state prediction we then denote by
+s̃noisy
+  k+1 which is then used in Equation (8) instead of s̃k+1 . The target sk+1 remains unchanged. This
+modification allows the MGN to learn how to denoise the system state thereby learning how to reduce
+error accumulation as shown experimentally by DeepMind [54].
+
+
+3        Generalization Capabilities of MeshGraphNets and Numerical Sim-
+         ulations
+
+In this section, we will present experimental results on the generalization of MGNs to unseen datasets.
+First, in Section 3.1 we will describe our experiment setup. Then, in Section 3.2 we will present the
+datasets of the generalization experiments, followed by the results in Section 3.3 and the runtimes in
+Section 3.4. The code used for these experiments is publicly available [65].
+
+
+3.1       Setup of the experiments
+
+In this section, we will describe the exact setup for the MGNs used for the generalization experiments.
+We will also describe which evaluation metrics for the MGNs were used for the subsequent experiments.
+
+
+3.1.1       Implementation
+
+For the generalization experiments, we use the implementation contained in NVIDIA’s Modulus, a
+machine learning framework for physics [36, 53]. More specifically, the exact implementation contained
+in examples/cfd/vortex_shedding_mgn1 from NVIDIA Modulus [53] was used for experimentation
+with modifications only affecting logging and the learning rate schedule which is now only updated
+after every epoch such that the learning rate in epoch l is η1 γ l−1 for some initial learning rate η1 and
+learning rate decay γ.
+    1
+        https://github.com/NVIDIA/modulus/tree/main/examples/cfd/vortex_shedding_mgn
+
+
+
+                                                       8
+3.1.2     MGN architecture details
+
+We highlight some notable architectural choices of the MGNs.
+
+      • Input and target normalization: The training data set is used to compute the mean and variance
+        of all edge features and of the velocity and pressure for the node features. The features of all
+        inputs and targets are then normalized using their corresponding mean and variance.
+
+      • Residual connections: The MGN will be extremely deep, therefore residual connections are added
+        such that the input of each MBP is directly added to its output.
+
+      • Layer normalization: Since we will be using a batch size of one but still want to normalize the
+        hidden-layer outputs to reduce the covariate shift (i.e. gradients in layer i tend to highly depend
+        on the outputs of layer i − 1), we employ layer normalization [8] at the output of the edge/node
+        encoder and after each MPB (before the residual connection). Layer normalization transforms an
+        output x ∈ Rn as follows:
+                                                x − E[x]
+                                             y=p           ·α+β                                         (9)
+                                                Var[x] + ϵ
+        where E[x] is subtracted componentwise and
+
+                                             n                    n
+                                           1X                   1X
+                                  E[x] =      xi ,   Var[x] =      (xi − E[x])2                        (10)
+                                           n                    n
+                                            i=1                  i=1
+
+
+        where α, β ∈ R are learnable parameters and ϵ > 0 for numerical stability. We used ϵ = 10−5 .
+
+
+3.1.3     Hyperparameters
+
+The exact hyperparameters from examples/cfd/vortex_shedding_mgn2 from NVIDIA Modulus
+[53] were used for the subsequent experiments. The only exception is the learning rate decay factor γ
+since we used a slightly different implementation of the learning rate decay schedule as described in
+Subsection 3.1.1. Table 1 lists the hyperparameters.
+  2
+      https://github.com/NVIDIA/modulus/tree/main/examples/cfd/vortex_shedding_mgn
+
+
+
+
+                                                     9
+                            Parameter                            Value            Comment
+                              Epochs                              25         Iterate entire dataset
+                                                                                   per epoch
+                             Batch size                            1
+                      Initial learning rate η1                  0.0001
+                      Learning rate decay γ                     0.82540      ηl = η1 γ l−1 at epoch l.
+                    Message passing blocks L                       15
+            Encoders/Decoder/Processors hidden layers              2
+             Encoders/Decoder/Processors hidden dim               128
+                       Node embedding size                        128
+                       Edge embedding size                        128
+                        Activation function                      ReLU
+                             Optimizer                           Adam
+                     Parameter initialization                  PyTorch          PyTorch v1.11.0
+                                                                default
+                           Training noise                      N (0, 0.02)
+
+                           Table 1: Hyperparameters used for the experiments.
+
+
+3.1.4     Evaluation criteria
+
+For each experiment, we use at least 10% of the total dataset for evaluation. The exact evaluation
+datasets will be mentioned in the corresponding experiment. Let K ∈ N denote the number of
+simulations, let J ∈ N denote the number of time steps in each simulation, and let Ik ∈ N denote the
+number of mesh nodes in the k-th simulation with k ≤ K of the evaluation dataset. For evaluation,
+we measure eight quantities. The first four are derived from the root-mean-squared-error (RMSE)
+of the velocity. Let vi,j,k ∈ R2 denote the velocity vector at mesh node i ≤ Ik and time step j ≤ J
+in the k-th (k ≤ K) simulation of the evaluation dataset obtained by performing the IPCS (more
+details on the dataset generation in the next section). Furthermore, we use ṽi,j,k to denote the MGN
+velocity prediction from vi,j−1,k if j > 1 and vi,1,k if j = 1. Lastly, by v̂i,j,k we denote the MGN velocity
+prediction from v̂i,j−1,k if j > 1 and vi,1,k if j = 1. From which MGN the predictions come will be
+specified every time one of the following error quantities is reported.
+                                  (v)
+   • Velocity 1-step error ϵ1 : This error is the RMSE for all the next state velocity predictions of
+        all timesteps of all simulations which is given by
+                                             v
+                                             u K J Ik
+                                         (v)
+                                             uX X X ||vi,j,k − ṽi,j,k ||2
+                                        ϵ1 = t                           2
+                                                                           .                             (11)
+                                                       2Ik · J · K
+                                                 k=1 j=1 i=1
+
+
+                                     (v)
+   • Velocity 50-steps error ϵ50 : Each simulation is rolled out for 50 timesteps. The RMSE is then
+        taken for the rollout velocity at each of the first 50 time steps compared to the IPCS result for all
+        simulations. This given by
+                                              v
+                                              u K 50 Ik
+                                         (v)
+                                              uX X X ||vi,j,k − v̂i,j,k ||2
+                                        ϵ50 = t                           2
+                                                                            .                            (12)
+                                                        2Ik · 50 · K
+                                                 k=1 j=1 i=1
+
+
+
+
+                                                      10
+                                        (v)
+      • Velocity all-steps error ϵall : Each simulation is fully rolled out. The RMSE then compares
+        the rollout velocity prediction at each time step to the IPCS velocity for all simulations. Formally,
+        this is                                  v
+                                                 u K J Ik
+                                           (v)
+                                                 uX X X ||vi,j,k − v̂i,j,k ||2
+                                          ϵall = t                           2
+                                                                               .                        (13)
+                                                           2Ik · J · K
+                                                      k=1 j=1 i=1
+
+                                          (v)
+      • Velocity all-steps median ϵall,median : We first calculate the all-steps RMSE for each individual
+        simulation k ≤ K as                         v
+                                                    u J Ik
+                                            (v)
+                                                    uX X ||vi,j,k − v̂i,j,k ||2
+                                           ϵall,k = t                         2
+                                                                                .                       (14)
+                                                                2Ik · J
+                                                        j=1 i=1
+
+                     (v)                                              (v)        (v)
+        The error ϵall,median is then given by the median of (ϵall,1 , . . . , ϵall,K ).
+
+      We ran each experiment with three different seeds. For each of the above error quantities, we report
+the mean and the maximum deviation from the mean across all three seeds. For example, we would
+report the three values {0, 3, 12} as 5 ± 7.
+                                                (p)   (p)   (p)       (p)
+      The remaining four error quantities ϵ1 ,ϵ50 ,ϵall , and ϵall,median come from doing the same with
+the pressure predictions.
+
+
+3.2      Generalization experiments: Datasets
+
+The experiments in this section have the aim of expanding DeepMind’s MGN generalization experiments.
+DeepMind claims that their MGN has strong generalization capabilities due to using a relative encoding
+on the mesh graphs, however, they report no experimental evidence for this for their Cylinder Flow
+based dataset at all [54]. Additionally, in their Airfoil experiments of compressible Navier-Stokes
+equations, which is a related problem to Cylinder Flow, they only test the MGN by using values for the
+system parameters (such as the inflow speed) that are slightly out of the training distribution. What
+they do not do is test the MGN on qualitatively different meshes such as one where a different shape
+other than a circle is used.
+      Therefore, in this section, we apply a trained MGN to similar but qualitatively different datasets
+than it was trained on in which the cylinder may be stretched or squeezed (cylinder_stretch),
+the cylinder might be replaced with a triangle or rectangle (cylinder_tri_quad), there could even
+be multiple cylinders (2cylinders), or all modifications mixed together (mixed_all) or simply no
+modifications (standard_cylinder).
+      The datasets consist of approximations of solutions (velocity v and pressure p) to the Cylinder Flow
+problem. The datasets are created by varying the inflow profile or applying changes to the cylinder.
+Whenever possible, the distributions for the parameters we used were reverse-engineered from Google
+Deepmind’s dataset [54] assuming that uniform distributions were used. One notable difference to
+the DFG3 2D-2 benchmark problem [62] is that the pipe is a bit shorter (1.6 instead of 2.2 length) to
+speed up computation. Other than that, the range of parameters includes this benchmark problem. We
+note that the mean values for certain quantities such as the x-position of the cylinder are not always
+  3
+      DFG stands for German Research Foundation
+
+
+                                                            11
+equal to the one in the benchmark problem as we had to include some wiggle room to avoid unphysical
+situations (e.g. the cylinder intersects the inflow).
+   The domain Ω for a single simulation is always of the form Ω = [(0, 1.6) × (0, 0.41)]\C ⊆ R2 , where
+C ⊆ R2 is distributed depending on the dataset.
+
+   • standard_cylinder: In this dataset C is always a circle with midpoint (x, y) where x ∼
+      U[0.15, 0.5] and y ∼ U[0.1, 0.3] are sampled independently. The radius is sampled from r ∼
+      U[0.02, 0.08].
+
+   • cylinder_stretch: Same as in standard_cylinder except that the circle may now be an ellipse
+      with height h ∼ U[0.02, 0.08] and width w ∼ U[0.02, 0.08].
+
+   • cylinder_tri_quad: There is a 13 chance that a circle as in standard_cylinder is chosen.
+      There is another 13 chance that a square with a midpoint sampled the same way as the ellipse’s
+                                √        √
+      and side length s ∼ U[0.02 2, 0.08 2] and a random orientation with a uniformly sampled angle
+      is chosen. And another 13 chance that an equilateral triangle with side length s ∼ U[0.078, 0.182]
+      and a random orientation with a uniformly sampled angle and midpoint sampled the same way
+      as the ellipse’s is chosen as C.
+
+   • 2cylinders: C = C1 ∪ C2 . Here C1 is an object as in standard_cylinder. With a 12 chance, we
+      choose C2 = ∅ and otherwise C2 is sampled the same as C1 except that the mean-midpoint is now
+     (0.825, 0.2) instead of (0.325, 0.2).
+
+   • mixed_all: C = C1 ∪ C2 . Here C1 is an object as in cylinder_tri_quad except that each object
+      is randomly stretched or squeezed (a circle is stretched as in cylinder_stretch, a square samples
+      width and height independently as its side length, and a triangle stretches around its midpoint
+      with the factor s ∼ U[0.7, 1.3] in the x-direction and 1s in the y-direction). With a 14 chance C2 is
+      sampled the same as C1 except that the midpoint is now shifted by 0.5 in the x-direction, i.e. it is
+      now (0.825, 0.2). However, with a 34 chance we choose C2 = ∅.
+
+   All of the above-described domains are triangulated with pygmsh [61] using the parameters
+mesh_size = 0.0225 for the domain and mesh_size = 0.0098 for the geometric objects to have a
+finer mesh around the region of interest. We chose these parameters to get to a similar mesh size
+that DeepMind used for their dataset. Furthermore, to avoid extreme edge cases, we exclude meshes
+where the rectangular bounding box of the object(s) come(s) within a distance of less than 0.02 to the
+boundary ∂Ω. For standard_cylinder with the circle being centered at (0.325, 0.2) and r = 0.05 we
+obtain a mesh with 2069 vertices and 3924 triangles/cells. For the slightly elongated pipe of width
+2.2 and circle centered at (0.2, 0.2) we get 2582 vertices and 4898 cells. Note that we do not use this
+elongated mesh for the experiments. We will only use it later to compare quantities of interest with the
+benchmark results to verify our computation. Fig. 3 shows one sample mesh for each mesh set.
+
+
+
+
+                                                    12
+            (a) standard_cylinder                                          (b) cylinder_stretch
+
+
+
+
+            (c) cylinder_tri_quad                                              (d) 2cylinders
+
+
+
+
+                                                  (e) mixed_all
+
+                     Figure 3: One example mesh from each of the five datasets.
+
+
+   The inflow profile is determined the same way for each mesh in each dataset. First, we sample
+U ∼ U[0.25, 2.25]. The inflow profile is then given by:
+                                                      
+                                       4y(0.41 − y)
+                 v(x, y, t) =       U·              , 0 , (x, y, t) ∈ ({0} × [0, 0.41]) × I.      (15)
+                                          0.412
+
+
+
+For a given mesh, the solution velocity v and pressure p is approximated using the IPCS. FEniCS
+[3] was used as the solver using inf-sup stable quadratic elements for velocity and linear elements
+for the pressure. Each simulation within a dataset contains the velocity and pressure values at each
+vertex in the mesh that was used for the approximation from t = 0.01s to t = 3s in 0.01s intervals,
+i.e. t ∈ {m, 2m, . . . , 300m} with m = 1/100s. As the initial velocity for the solver, we simply used
+v, p ≡ 0. Since this violates the boundary conditions, we exclude t = 0s and begin with t = 1/100s
+since at that time the boundary conditions are approximately satisfied. Even though the intervals are
+of size 0.01, the solver used an adaptive ∆t under the hood that scales with the inflow peak. We used
+∆t = 0.00025 for an inflow peak of 1.25. In total, each dataset contains 440 simulations where 400 are
+used for training, and 40 for evaluation.
+   The above-described datasets can be generated by following the instructions provided in README.md
+of the codebase [65]. As mentioned in the introduction, these datasets combined, constitute a new
+benchmark for fluid simulations that extends DeepMind’s Cylinder Flow based dataset [54].
+
+
+3.2.1   Comparison to DFG 2D-2 benchmark
+
+
+
+To verify our experiment setup for generating datasets, we computed some quantities of interest and
+compared them to the Navier-Stokes 2D-2 benchmark results by Schäfer and Turek [62]. For this, we
+
+
+                                                       13
+simulated the flow on the pipe with width 2.2 and circle center at (0.2, 0.2) for 30 seconds to make sure
+that the flow was fully developed. We considered the interval [29.9295s, 29.9625s] (the last interval
+between two maxima of the lift coefficient) for our measurements. We measured the maximum value
+of the drag coefficient cD and the lift coefficient cL within this interval and the pressure difference
+∆p at the interval-midpoint tmid = 29.9460s. We ran this computation on a system with six Intel(R)
+Core(TM) i5-9600K @ 3.70GHz CPUs with 32 GB of RAM. Table 2 shows our results.
+
+                            Quantity     Results     Benchmark results
+
+                            St            3.0303        [0.2950, 0.3050]
+                            max cD        3.1668        [3.2200, 3.2400]
+                            max cL        1.0210        [0.9900, 1.0100]
+                            ∆p            2.5017        [2.4600, 2.5000]
+
+                      Table 2: Quantities of interest for DFG 2D-2 benchmark.
+
+
+   We note that our values slightly deviate from the benchmark results but are still deemed acceptable.
+
+
+3.3   Generalization experiments: Results
+
+We tested the generalization capabilities of the MGNs. For this, we tested each MGN on every dataset.
+E.g. train on cylinder_stretch and evaluate on 2cylinders and do this for every possible dataset-pair.
+Table 3 (resp. 4, 5, 6, 7) shows the results if an MGN was trained on all of the five datasets and
+evaluated on standard_cylinder (resp. cylinder_stretch, cylinder_tri_quad, 2cylinders,
+mixed_all) in terms of the pressure and velocity RMSE as described in Section 3.1.4. Additionally,
+these tables also contain the RMSEs for newly initialized MGNs that were not trained to act as a
+benchmark for comparison. All reported velocity errors have been rounded to five decimal places and
+all pressure errors have been rounded to four decimal places.
+
+
+
+
+                                                   14
+                                         Velocity RMSE ×10−3
+
+        Train Dataset           1-step          50-steps            all-steps        all-steps median
+
+        standard_cylinder     2.32 ± 0.02     32.93 ± 5.15       89.19 ± 17.2          24.22 ± 4.01
+        cylinder_stretch       2.56 ± 0.01      40.0 ± 3.67      100.52 ± 14.05         33.97 ± 0.64
+        cylinder_tri_quad      2.72 ± 0.01     36.46 ± 2.39       94.84 ± 8.77          34.97 ± 3.58
+        2cylinders             2.52 ± 0.03     35.22 ± 4.12       89.3 ± 13.22          35.03 ± 3.44
+        mixed_all              2.98 ± 0.01     40.72 ± 1.86      115.44 ± 11.12         39.08 ± 0.9
+        None                  32.29 ± 3.05   473.44 ± 214.41    1398.48 ± 618.28      1369.2 ± 635.18
+
+                                         Pressure RMSE ×10−2
+
+            Train Dataset           1-step        50-steps        all-steps      all-steps median
+
+            standard_cylinder    6.54 ± 0.08     5.69 ± 0.3     10.3 ± 0.42         1.77 ± 0.2
+            cylinder_stretch      7.31 ± 0.06    7.36 ± 0.14    11.71 ± 1.48        2.03 ± 0.14
+            cylinder_tri_quad      9.39 ± 0.5     9.57 ± 0.7     12.42 ± 1.0        2.36 ± 0.25
+            2cylinders           11.58 ± 0.94    12.45 ± 0.99   14.27 ± 0.86         6.34 ± 1.06
+            mixed_all            12.25 ± 0.82    13.78 ± 0.94    16.6 ± 0.63        3.99 ± 0.65
+            None                 38.84 ± 3.83    36.2 ± 3.89    38.34 ± 3.09        20.77 ± 6.11
+
+Table 3: RMSE if evaluated on standard_cylinder. None means that a newly initialized network
+without any training was evaluated. The lowest RMSE of each column has been marked.
+
+
+                                         Velocity RMSE ×10−3
+
+        Train Dataset           1-step          50-steps            all-steps        all-steps median
+
+        standard_cylinder    7.33 ± 0.15       54.4 ± 9.12       199.34 ± 10.76         55.02 ± 12.11
+        cylinder_stretch    3.52 ± 0.03       43.1 ± 3.22         221.25 ± 21.11        42.16 ± 7.85
+        cylinder_tri_quad    4.5 ± 0.05       53.38 ± 7.16         217.1 ± 30.32        40.71 ± 6.3
+        2cylinders           6.15 ± 0.12      85.71 ± 7.76         265.68 ± 6.82        73.28 ± 7.94
+        mixed_all            3.91 ± 0.03      56.36 ± 6.82        210.39 ± 13.78        42.71 ± 5.38
+        None                49.51 ± 3.23     903.62 ± 552.82    3111.27 ± 2347.83     3119.95 ± 2352.9
+
+                                         Pressure RMSE ×10−2
+
+          Train Dataset            1-step         50-steps         all-steps       all-steps median
+
+          standard_cylinder      16.37 ± 0.11    10.68 ± 0.93     29.53 ± 0.58         4.14 ± 0.2
+          cylinder_stretch      11.46 ± 0.03     9.03 ± 1.31     28.65 ± 1.87         4.1 ± 0.26
+          cylinder_tri_quad      14.38 ± 0.15    11.98 ± 0.88     30.87 ± 2.54       3.71 ± 0.13
+          2cylinders             16.46 ± 0.37    17.93 ± 1.11     35.81 ± 0.57         9.35 ± 0.5
+          mixed_all              15.7 ± 0.18     15.95 ± 0.45     30.69 ± 0.79        7.22 ± 1.54
+          None                   57.65 ± 1.04    50.74 ± 0.73     57.45 ± 0.84       22.68 ± 1.76
+
+Table 4: RMSE if evaluated on cylinder_stretch. None means that a newly initialized network
+without any training was evaluated. The lowest RMSE of each column has been marked.
+
+
+
+
+                                                     15
+                                             Velocity RMSE ×10−3
+
+        Train Dataset           1-step           50-steps            all-steps        all-steps median
+
+        standard_cylinder     7.74 ± 0.19        80.62 ± 1.5       163.55 ± 11.32       53.12 ± 10.49
+        cylinder_stretch      5.48 ± 0.11       84.47 ± 4.18       188.36 ± 3.39        59.97 ± 10.07
+        cylinder_tri_quad    3.58 ± 0.03       48.09 ± 4.94       154.45 ± 1.73         51.1 ± 5.53
+        2cylinders            6.81 ± 0.09       77.47 ± 2.13       183.06 ± 3.36        62.54 ± 10.71
+        mixed_all             3.76 ± 0.06       59.59 ± 7.42       197.34 ± 3.37         63.13 ± 2.65
+        None                 45.22 ± 1.03     624.81 ± 216.15    2032.21 ± 1206.92    2024.38 ± 1217.24
+
+                                          Pressure RMSE ×10−2
+
+            Train Dataset           1-step         50-steps        all-steps      all-steps median
+
+            standard_cylinder     12.24 ± 0.07     13.8 ± 0.06    20.95 ± 0.33        5.22 ± 0.37
+            cylinder_stretch      12.48 ± 0.45    14.29 ± 0.17     23.7 ± 0.39        6.59 ± 1.5
+            cylinder_tri_quad     9.62 ± 0.2      9.96 ± 0.49     18.79 ± 0.7        5.09 ± 0.45
+            2cylinders            16.35 ± 0.07     19.1 ± 0.29    24.59 ± 0.18       10.21 ± 0.65
+            mixed_all             14.38 ± 0.26    15.44 ± 1.14    24.04 ± 0.22        8.2 ± 0.47
+            None                  48.06 ± 2.78    46.23 ± 1.45     50.79 ± 0.7       37.96 ± 0.87
+
+Table 5: RMSE if evaluated on cylinder_tri_quad. None means that a newly initialized network
+without any training was evaluated. The lowest RMSE of each column has been marked.
+
+
+                                             Velocity RMSE ×10−3
+
+         Train Dataset           1-step          50-steps           all-steps        all-steps median
+
+         standard_cylinder     7.79 ± 0.2       54.37 ± 2.64      191.26 ± 10.76        101.61 ± 11.7
+         cylinder_stretch      7.31 ± 0.06      62.11 ± 2.79       191.01 ± 8.7        110.08 ± 17.34
+         cylinder_tri_quad     7.01 ± 0.11      61.59 ± 1.03      214.92 ± 13.39       121.21 ± 13.65
+         2cylinders            3.8 ± 0.03      49.92 ± 2.53      172.97 ± 22.63         86.5 ± 6.04
+         mixed_all             4.64 ± 0.02       65.34 ± 6.9      198.22 ± 15.02       103.37 ± 10.99
+         None                  47.8 ± 2.06    878.86 ± 177.63    2861.77 ± 457.12     2864.81 ± 472.92
+
+                                          Pressure RMSE ×10−2
+
+           Train Dataset            1-step         50-steps         all-steps       all-steps median
+
+           standard_cylinder     25.68 ± 0.36     18.73 ± 0.12     31.57 ± 0.78        15.54 ± 0.39
+           cylinder_stretch      24.8 ± 0.02      18.6 ± 0.09      31.12 ± 0.94        16.77 ± 1.3
+           cylinder_tri_quad     25.46 ± 0.29     19.85 ± 0.16      33.8 ± 1.34         18.3 ± 1.42
+           2cylinders           22.43 ± 0.25      20.43 ± 0.31    29.63 ± 1.86        15.51 ± 1.18
+           mixed_all             23.71 ± 0.33     21.93 ± 0.57     31.96 ± 1.52         18.4 ± 0.76
+           None                  57.04 ± 0.78     53.15 ± 2.59     58.17 ± 1.86        39.02 ± 1.33
+
+Table 6: RMSE if evaluated on 2cylinders. None means that a newly initialized network without any
+training was evaluated. The lowest RMSE of each column has been marked.
+
+
+
+
+                                                      16
+                                              Velocity RMSE ×10−3
+
+         Train Dataset           1-step           50-steps            all-steps        all-steps median
+
+         standard_cylinder     18.99 ± 0.04     172.27 ± 1.92        305.93 ± 6.97         133.08 ± 7.23
+         cylinder_stretch      13.0 ± 0.06      175.75 ± 3.76        310.26 ± 1.72        150.07 ± 18.13
+         cylinder_tri_quad      9.23 ± 0.12     132.15 ± 5.87        320.14 ± 16.5       82.41 ± 17.75
+         2cylinders            16.27 ± 0.23     184.82 ± 3.45       317.82 ± 11.12       141.39 ± 16.34
+         mixed_all             7.39 ± 0.1      113.16 ± 3.18       299.35 ± 14.67           92.7 ± 2.04
+         None                  60.08 ± 2.74    956.38 ± 392.02    3394.79 ± 1824.51     3439.83 ± 1862.33
+
+                                          Pressure RMSE ×10−2
+
+           Train Dataset            1-step          50-steps         all-steps        all-steps median
+
+           standard_cylinder      52.97 ± 0.7      52.41 ± 0.77     68.22 ± 0.94         11.47 ± 0.61
+           cylinder_stretch       40.59 ± 0.22     47.55 ± 0.62     64.19 ± 0.46         13.83 ± 3.62
+           cylinder_tri_quad      36.37 ± 0.7      39.12 ± 1.73     61.56 ± 1.79        11.43 ± 3.33
+           2cylinders             44.38 ± 0.47      54.2 ± 1.05     68.97 ± 0.51         15.95 ± 1.43
+           mixed_all             32.07 ± 0.39     36.96 ± 0.79     59.23 ± 2.07          14.73 ± 2.27
+           None                   90.13 ± 1.46      80.7 ± 1.71     90.04 ± 1.31         32.46 ± 4.51
+
+Table 7: RMSE if evaluated on mixed_all. None means that a newly initialized network without any
+training was evaluated. The lowest RMSE of each column has been marked.
+
+
+3.3.1   General observations
+
+Before we draw any conclusions, we will put into context what these RMSE values mean. All models
+produce physically reasonable predictions on every dataset and the following observations apply to all
+training-evaluation dataset pairs. There are three main ways in which the MGN prediction differs from
+our FEM simulation.
+   Firstly, the MGN prediction for all models sometimes does not predict vortex shedding. This is
+more likely to happen for inflow peaks that are at the border where vortex shedding starts to occur.
+Fig. 4 shows an example of this. All figures presented in this and the following sections show only the
+pressure or velocity field prediction at the final time step. However, for each figure, we uploaded the
+full simulation animation as a gif file to this work’s GitHub repository [65].
+
+
+
+
+                                                       17
+Figure 4: Plot of the Euclidean norm of the velocity field at the final time step for a FEM simulation
+(bottom) and the corresponding MGN prediction (top) of a mesh coming from the cylinder_stretch
+dataset. The prediction has an all-steps RMSE of circa 0.076 and stems from an MGN that was trained
+on cylinder_stretch.
+
+
+   Secondly, the MGN sometimes fails to estimate the propagation speed of the vortices. This causes
+the MGN prediction to look out of sync at later time steps. This is especially prevalent for high inflow
+peaks. Fig. 5 shows two examples of this. Fig. 5 also demonstrates that the RMSE does not always
+capture how qualitatively wrong the prediction is as a higher inflow peak causes the average magnitude
+of the velocity field and thereby its error to be higher.
+
+
+
+
+                      (a)                                                      (b)
+
+Figure 5: Plot of the Euclidean norm of the velocity field at the final time step for two FEM
+simulations (bottom) and their corresponding MGN predictions (top) of two meshes coming from
+the standard_cylinder dataset. The prediction (a) has an all-steps RMSE of circa 0.193 and (b)
+has an all-steps RMSE of circa 0.086. Both predictions stem from an MGN that was trained on
+standard_cylinder.
+
+
+   Thirdly, when the MGN (and this is mostly the case for unseen shapes) predicts vortex shedding, it
+predicts a wrong pattern of the vortices. Fig. 6 shows an example of this.
+
+
+
+
+                                                    18
+Figure 6: Plot of the Euclidean norm of the velocity field at the final time step for a FEM simulation
+(bottom) and the corresponding MGN prediction (top) of a mesh coming from the 2cylinders dataset.
+The prediction has an all-steps RMSE of circa 0.318 and stems from an MGN that was trained on
+standard_cylinder. Note that the vortex pattern at the smaller circle differs from the IPCS solution
+as the MGN predicts pairs of vortices whereas the IPCS does not.
+
+
+   Unsurprisingly, all models thrive in handling the low inflow peak regime where no vortex shedding
+occurs. Fig. 7 shows an example of this.
+
+
+
+
+Figure 7: Plot of the Euclidean norm of the velocity field at the final time step for a FEM simulation
+(bottom) and the corresponding MGN prediction (top) of a mesh coming from the standard_cylinder
+dataset. The prediction has an all-steps RMSE of circa 0.012 and stems from an MGN that was trained
+on standard_cylinder.
+
+
+   Thus far we have only shown the velocity field and not the pressure field. This is because the
+pressure field is uninteresting as its deviation from the FEM pressure solution directly correlates with
+the deviation from the velocity field since the MGN directly predicts the pressure from the velocity
+field. Fig. 8 shows the pressure field together with the velocity field and their prediction for an average
+cylinder_flow instance.
+
+
+
+
+                                                    19
+                   (a) Velocity                                               (b) Pressure
+
+Figure 8: Plot of the pressure field (right) and the Euclidean norm of the velocity field (left) at the final
+time step for a FEM simulation (bottom) and its corresponding MGN prediction (top) of one mesh
+coming from the standard_cylinder dataset. The velocity prediction (a) has an all-steps RMSE of
+roughly 0.032 and the pressure prediction (b) has an all-steps RMSE of approximately 0.016. Both
+predictions stem from an MGN that was trained on standard_cylinder.
+
+
+3.3.2   Predictions for coinciding train and test datasets
+
+We observed that if the MGN is trained on the same dataset it is evaluated on and it predicts vortex
+shedding, then these vortices have mostly the same characteristics as the IPCS solution which is only
+partially the case for differing train and evaluation datasets as we shall see later. Fig. 9 shows one
+simulation and its prediction for each of the five datasets when the network was trained on the same
+dataset. The simulations were picked to have an RMSE near the RMSE median for that dataset.
+
+
+3.3.3   Predictions for differing train and test datasets
+
+Though the RMSE values in all metrics do not differ much in relative terms between different training-
+evaluation dataset pairs, we can observe discrepancies when looking at the simulations. Fig. 10 shows
+predictions of a model trained on standard_cylinder and evaluated on a selection of simulations from
+different datasets. This figure shows that if vortex shedding is predicted, it is essentially a coin flip
+whether the correct vortex pattern is predicted on a previously unseen shape. This is not reflected in
+the RMSE as an out-of-sync but characteristically correct vortex prediction can have the same RMSE
+as a straight-up wrong pattern.
+
+
+3.3.4   Intermediate conclusions
+
+Judging purely from the reported RMSE values, one could argue that MGNs generalize well for all
+training-evaluation dataset pairs. All training-evaluation dataset pairs’ velocity RMSE is almost always
+an order of magnitude below what a freshly initialized MGN would produce in all metrics. For most
+datasets (unsurprisingly) the model that was evaluated and trained on the same dataset performs best.
+However, the other models which were trained on different datasets perform only slightly worse in
+relative terms.
+   In general, MGNs are strong at predicting flow on a coarse level, therefore they almost always
+produce a physically reasonable prediction even for unseen shapes. However, their main weakness is
+
+
+                                                     20
+correctly predicting the vortex patterns which is arguably the most difficult and interesting part of the
+prediction. This problem is more likely to occur when the mesh contains a shape that was never seen
+in training. However, we do note that though not always, MGNs can oftentimes correctly predict a
+vortex pattern for a shape that was not seen in training.
+   Given that our experiment setup is not optimal since one could use a larger MGN, finer meshes, more
+precisely generated datasets, one could achieve a significantly higher accuracy which is likely to translate
+to the generalization tasks. Therefore, one has to take into consideration that these experiments do not
+show the full potential of MGNs.
+
+
+
+
+   (a) Dataset: standard_cylinder, RMSE: 0.029               (b) Dataset: cylinder_stretch, RMSE: 0.075
+
+
+
+
+   (c) Dataset: cylinder_tri_quad, RMSE: 0.056              (d) Dataset: cylinder_tri_quad, RMSE: 0.060
+
+
+
+
+       (e) Dataset: 2cylinders, RMSE: 0.111                     (f) Dataset: mixed_all, RMSE: 0.061
+
+Figure 9: Plot of the Euclidean norm of the velocity field at the final time step for six FEM simulations
+(bottom) and their corresponding MGN predictions (top) of six meshes coming from the dataset
+mentioned in the corresponding subcaption. Each subcaption also contains the all-steps RMSE for the
+corresponding simulation rounded to three decimal places. The predictions stem from MGNs that were
+trained on the same dataset on which the predictions were performed.
+
+
+
+
+                                                    21
+(a) Dataset: cylinder_tri_quad, RMSE: 0.118. Vortex         (b) Dataset: cylinder_tri_quad, RMSE: 0.196. Vortex
+pattern correctly predicted.                                pattern falsely predicted.
+
+
+
+
+(c) Dataset: cylinder_tri_quad, RMSE: 0.197. Vortex         (d) Dataset: mixed_all, RMSE: 0.558. Vortex pattern
+pattern correctly predicted.                                falsely predicted.
+
+
+
+
+(e) Dataset: 2cylinders, RMSE: 0.389. Vortex pattern        (f) Dataset: 2cylinders, RMSE: 0.318. Vortex pattern
+correctly predicted.                                        falsely predicted.
+
+
+
+
+                             (g) Dataset: cylinder_stretch, RMSE: 0.055. Vortex
+                             pattern correctly predicted.
+
+Figure 10: Plot of the Euclidean norm of the velocity field at the final time step for three FEM
+simulations (bottom) and their corresponding MGN predictions (top) of six meshes coming from the
+dataset mentioned in the corresponding subcaption. Each subcaption also contains the all-steps RMSE
+for the corresponding simulation rounded to three decimal places. All predictions stem from the same
+MGN that was trained on standard_cylinder.
+
+                                                       22
+3.4   Generalization experiments: Runtimes
+
+In this section, we compare the runtime of an MGN to that of the IPCS on standard_cylinder using
+the implementation and hyperparameters we described in the experiment setup. For the MGN we
+differentiate between using a GPU and only using a CPU. The aim is to find the number of simulations
+one wants to generate at which it is computationally more efficient to use an MGN over the IPCS. All
+runtimes reported in the following are extrapolations.
+    Firstly, we consider the case where we only use a CPU. In this case, we consider a system with
+six Intel(R) Core(TM) i5-9600K @ 3.70GHz CPUs with 32 GB of RAM. Using this system, we need
+roughly 0.3125h to generate a single simulation using the IPCS which results in circa 125h to generate
+the entire standard_cylinder train dataset. We then need roughly 1138h to train the MGN and
+then approximately 0.048h to generate a new simulation using the MGN. At inference time, this is an
+approximately 6.5 times speedup.
+    Next, we consider the case where we have access to a GPU for training and inference of the MGN.
+Keeping everything as above and using the Alienware m17 R5 AMD laptop with the GeForce RTX
+3070 Ti as the GPU with 8 GB of RAM only for the MGN training and inference, we get a total MGN
+training time of roughly 58h and then approximately 0.0031h to generate a new simulation. At inference
+time, this is an approximately 100.8 times speedup.
+
+
+4     Conclusion
+
+In this work, we investigated MGNs by extending the generalization experiments of DeepMind [54]
+by evaluating MGNs on meshes with previously unseen shapes. For this, we first created five datasets
+standard_cylinder, cylinder_stretch, cylinder_tri_quad, 2cylinders, and mixed_all, which
+contain simulations of fluid flow around one or two objects of different shapes. We showed that MGNs
+in general can produce physically reasonable predictions for meshes with unseen shapes. Additionally,
+our MGNs managed to correctly predict vortex patterns for many unseen shapes. However, when a
+shape has not yet been seen in training the MGN is equally likely to falsely predict the vortex pattern
+for inflow peaks at which vortex shedding occurs. Nevertheless, for many engineering appliactions it
+is sufficient to have a coarse approximation of the flow field and the inference of the MGN is in our
+simulations up to 100 times faster than the classical numerical solver.
+    In the future, one could consider differently shaped domains as opposed to the rectangular one chosen
+here and other fluid benchmark problems like lid-driven cavity or backward facing step. Additionally,
+one could also consider adding system parameters like the viscosity to the MGN and consider varying it
+during training and see how well the MGN generalizes in this case.
+
+
+
+
+                                                   23
+5     Declarations
+
+5.1    Availability of data and material
+
+The code for this article is available at https://github.com/codebro634/modulus [65]. All other data
+will be made available on reasonable request.
+
+
+5.2    Competing interests
+
+The authors declare that they have no known competing financial interests or personal relationships
+that could have appeared to influence the work reported in this paper.
+
+
+5.3    Funding and acknowledgements
+
+The third and fourth authors acknowledge the funding of the German Research Foundation (DFG)
+within the framework of the International Research Training Group on Computational Mechanics
+Techniques in High Dimensions GRK 2657 under Grant Number 433082294. The second author
+acknowledges support by an ETH Zurich Postdoctoral Fellowship.
+
+
+5.4    Credit Authorship Contribution Statement
+
+R. Schmöcker: Conceptualization, Methodology, Software, Validation, Formal analysis,
+                  Investigation, Writing – original draft, Visualization.
+A. Henkes:       Validation, Formal analysis, Investigation, Writing – original draft,
+                  Writing – review & editing, Advisory.
+J. Roth:          Conceptualization, Methodology, Validation, Formal analysis, Investigation,
+                  Writing – original draft, Writing – review & editing, Visualization, Supervision.
+T. Wick:          Conceptualization, Formal analysis, Resources, Writing - review & editing,
+                  Supervision, Funding acquisition.
+
+
+
+
+References
+
+ [1] C. C. Aggarwal. Neural Networks and Deep Learning: A Textbook. Springer International Publishing,
+      2018.
+
+ [2] K. R. Allen, T. Lopez-Guevara, K. L. Stachenfeld, A. Sanchez-Gonzalez, P. W. Battaglia, J. B.
+      Hamrick, and T. Pfaff. Inverse Design for Fluid-Structure Interactions using Graph Network
+      Simulators. In Neural Information Processing Systems, 2022.
+
+ [3] M. S. Alnaes, J. Blechta, J. Hake, A. Johansson, B. Kehlet, A. Logg, C. Richardson, J. Ring, M. E.
+      Rognes, and G. N. Wells. The FEniCS Project Version 1.5. Archive of Numerical Software, 3,
+      2015.
+
+
+
+
+                                                   24
+ [4] D. Amsallem, M. J. Zahr, and C. Farhat. Nonlinear model order reduction based on local
+    reduced-order bases. Int. J. Numer. Methods Eng., 92(10):891–916, 2012.
+
+ [5] M. Anselmann and M. Bause. A Geometric Multigrid Method for Space-Time Finite Element
+    Discretizations of the Navier–Stokes Equations and its Application to 3D Flow Simulation. ACM
+    Trans. Math. Softw., 49(1), mar 2023.
+
+ [6] D. Arndt, N. Fehn, G. Kanschat, K. Kormann, M. Kronbichler, P. Munch, W. A. Wall, and
+    J. Witte. ExaDG: High-Order Discontinuous Galerkin for the Exa-Scale. In H.-J. Bungartz,
+    S. Reiz, B. Uekermann, P. Neumann, and W. E. Nagel, editors, Software for Exascale Computing -
+    SPPEXA 2016-2019, pages 189–224, Cham, 2020. Springer International Publishing.
+
+ [7] P. Astrid, S. Weiland, K. Willcox, and T. Backx. Missing Point Estimation in Models Described
+    by Proper Orthogonal Decomposition. IEEE Trans. Autom. Control, 53:2237–2251, 2008.
+
+ [8] J. L. Ba, J. R. Kiros, and G. E. Hinton. Layer Normalization, 2016. https://doi.org/10.48550/
+    arXiv.1607.06450.
+
+ [9] M. Barrault, Y. Maday, N. Nguyen, and A. Patera. An ‘empirical interpolation’ method: application
+    to efficient reduced-basis discretization of partial differential equations. C.R. Math., 339:667–672,
+    2004.
+
+[10] R. Becker and R. Rannacher. An optimal control approach to a posteriori error estimation in finite
+    element methods. Acta Numerica, 10:1–102, 2001.
+
+[11] M. Besier and R. Rannacher. Goal-oriented space-time adaptivity in the finite element Galerkin
+    method for the computation of nonstationary incompressible flow. Int. J. Num. Meth. Fluids,
+    70:1139–1166, 2012.
+
+[12] C. M. Bishop. Pattern recognition and machine learning. Springer, 2006.
+
+[13] F. Bonnet, J. A. Mazari, T. Munzer, P. Yser, and P. Gallinari. An extensible Benchmarking
+    Graph-Mesh dataset for studying Steady-State Incompressible Navier-Stokes Equations. In ICLR
+    2022 Workshop on Geometrical and Topological Representation Learning, 2022.
+
+[14] M. Braack and T. Richter. Solutions of 3D Navier–Stokes benchmark problems with adaptive
+    finite elements. Comput. Fluids, 35(4):372–392, 2006.
+
+[15] T. Bricken, A. Templeton, J. Batson, B. Chen, A. Jermyn, T. Conerly, N. Turner, C. Anil,
+    C. Denison, A. Askell, R. Lasenby, Y. Wu, S. Kravec, N. Schiefer, T. Maxwell, N. Joseph,
+    Z. Hatfield-Dodds, A. Tamkin, K. Nguyen, B. McLean, J. E. Burke, T. Hume, S. Carter,
+    T. Henighan, and C. Olah. Towards Monosemanticity: Decomposing Language Models With
+    Dictionary Learning. Transformer Circuits Thread, 2023. https://transformer-circuits.pub/
+    2023/monosemantic-features/index.html.
+
+
+
+
+                                                  25
+[16] M. M. Bronstein, J. Bruna, T. Cohen, and P. Veličković. Geometric Deep Learning: Grids, Groups,
+    Graphs, Geodesics, and Gauges, 2021. https://doi.org/10.48550/arXiv.2104.13478.
+
+[17] M. M. Bronstein, J. Bruna, Y. LeCun, A. Szlam, and P. Vandergheynst. Geometric Deep Learning:
+    Going beyond Euclidean data. IEEE Signal Processing Magazine, 34(4):18–42, 2017.
+
+[18] S. Cai, Z. Mao, Z. Wang, M. Yin, and G. E. Karniadakis. Physics-informed neural networks
+    (PINNs) for fluid mechanics: a review. Acta Mech. Sin., 37(12):1727–1738, Dec 2021.
+
+[19] S. Chaturantabut and D. Sorensen. Nonlinear Model Reduction via Discrete Empirical Interpolation.
+    SIAM J. Sci. Comput., 32:2737–2764, 2010.
+
+[20] S. Chaturantabut and D. Sorensen. A State Space Error Estimate for POD-DEIM Nonlinear
+    Model Reduction. SIAM J. Numer. Anal., 50:46–63, 2012.
+
+[21] J. Chen, E. Hachem, and J. Viquerat. Graph neural networks for laminar flow prediction around
+    random two-dimensional shapes. Phys. Fluids, 33(12):123607, 12 2021.
+
+[22] F. Chollet. Deep Learning with Python, volume 361. Manning New York, 2018.
+
+[23] A. J. Chorin. Numerical Solution of the Navier-Stokes Equations. Math. Comput., 22(104):745–762,
+    1968.
+
+[24] Z. Drmač and S. Gugercin. A New Selection Operator for the Discrete Empirical Interpolation
+    Method—Improved A Priori Error Bound and Extensions. SIAM J. Sci. Comput., 38(2):A631–A648,
+    2016.
+
+[25] H. Elman, D. Silvester, and A. Wathen. Finite Elements and Fast Iterative Solvers. Oxford
+    University Press, 2014.
+
+[26] D. Erhan, Y. Bengio, A. Courville, and P. Vincent. Visualizing Higher-Layer Features of a Deep
+    Network. Technical Report, Univeristé de Montréal, 01 2009.
+
+[27] M. Fortunato, T. Pfaff, P. Wirnsberger, A. Pritzel, and P. Battaglia. MultiScale MeshGraphNets.
+    In ICML 2022 2nd AI for Science Workshop, 2022.
+
+[28] G. Galdi. An Introduction to the Mathematical Theory of the Navier-Stokes Equations: Steady-State
+    Problems. Springer Monographs in Mathematics. Springer New York, 2011.
+
+[29] A. Géron. Hands-on machine learning with Scikit-Learn, Keras, and TensorFlow: Concepts, tools,
+    and techniques to build intelligent systems. O’Reilly Media, 2019.
+
+[30] V. Girault and P.-A. Raviart. Finite Element method for the Navier-Stokes equations. Number 5
+    in Computer Series in Computational Mathematics. Springer-Verlag, 1986.
+
+[31] R. Glowinski. Finite element methods for incompressible viscous flow. In Numerical Methods for
+    Fluids (Part 3), volume 9 of Handbook of Numerical Analysis, pages 3–1176. Elsevier, 2003.
+
+
+                                                 26
+[32] I. Goodfellow, Y. Bengio, A. Courville, and Y. Bengio. Deep learning, volume 1. MIT press
+    Cambridge, 2016.
+
+[33] C. Gräßle, M. Hinze, J. Lang, and S. Ullmann. POD model order reduction with space-adapted
+    snapshots for incompressible flows. Adv. Comput. Math., 45:2401–2428, 2019.
+
+[34] V. Grimm, A. Heinlein, and A. Klawonn. Learning the solution operator of two-dimensional
+    incompressible Navier-Stokes equations using physics-aware convolutional neural networks, 2023.
+    https://doi.org/10.48550/arXiv.2308.02137.
+
+[35] M. B. Hauser. Principles of Riemannian geometry in neural networks. PhD thesis, 2018.
+
+[36] O. Hennigh, S. Narasimhan, M. A. Nabian, A. Subramaniam, K. Tangsali, M. Rietmann, J. del
+    Aguila Ferrandis, W. Byeon, Z. Fang, and S. Choudhry. NVIDIA SimNet: an AI-accelerated
+    multi-physics simulation framework, 2020. https://doi.org/10.48550/arXiv.2012.07938.
+
+[37] J. Hesthaven and S. Ubbiali. Non-intrusive reduced order modeling of nonlinear problems using
+    neural networks. J. Comput. Phys., 363:55–78, 2018.
+
+[38] K. Hornik, M. Stinchcombe, and H. White. Multilayer feedforward networks are universal approxi-
+    mators. Neural networks, 2(5):359–366, 1989.
+
+[39] V. John. A comparison of parallel solvers for the incompressible Navier–Stokes equations. Comput.
+    Visualization Sci., 1(4):193–200, Jul 1999.
+
+[40] V. John. Finite Element Methods for Incompressible Flow Problems. Springer, 2016.
+
+[41] A. U. Kennington. Differential geometry reconstructed: a unified systematic framework. http:
+    //www.topology.org/tex/conc/dg.html, 2024.
+
+[42] D. Kochkov, J. A. Smith, A. Alieva, Q. Wang, M. P. Brenner, and S. Hoyer. Machine learn-
+    ing–accelerated computational fluid dynamics. PNAS, 118(21):e2101784118, 2021.
+
+[43] A. Krizhevsky, I. Sutskever, and G. E. Hinton. Imagenet classification with deep convolutional
+    neural networks. In F. Pereira, C. Burges, L. Bottou, and K. Weinberger, editors, Advances in
+    Neural Information Processing Systems, volume 25. Curran Associates, Inc., 2012.
+
+[44] J. N. Kutz. Deep learning in fluid dynamics. J. Fluid Mech., 814:1–4, 2017.
+
+[45] R. Lam, A. Sanchez-Gonzalez, M. Willson, P. Wirnsberger, M. Fortunato, F. Alet, S. Ravuri,
+    T. Ewalds, Z. Eaton-Rosen, W. Hu, A. Merose, S. Hoyer, G. Holland, O. Vinyals, J. Stott, A. Pritzel,
+    S. Mohamed, and P. Battaglia. Learning skillful medium-range global weather forecasting. Science,
+    382(6677):1416–1421, 2023.
+
+[46] H. P. Langtangen and A. Logg. Solving PDEs in Python. Simula SpringerBriefs on Computing.
+    Springer Cham, 1 edition, 2017.
+
+
+
+                                                  27
+[47] Z. Li, N. B. Kovachki, C. Choy, B. Li, J. Kossaifi, S. P. Otta, M. A. Nabian, M. Stadler, C. Hundt,
+    K. Azizzadenesheli, and A. Anandkumar. Geometry-Informed Neural Operator for Large-Scale 3D
+    PDEs. In Thirty-seventh Conference on Neural Information Processing Systems, 2023.
+
+[48] N. Margenberg, D. Hartmann, C. Lessig, and T. Richter. A neural network multigrid solver for
+    the Navier-Stokes equations. J. Comput. Phys., 460:110983, 2022.
+
+[49] S. Mittal, A. Ratner, D. Hastreiter, and T. Tezduyar. Space-time finite element computation
+    of incompressible flows with emphasis on flow involving oscillating cylinders. Internat. Video J.
+    Engrg. Res., 1:83–86, 1991.
+
+[50] F. Moukalled, L. Mangani, and M. Darwish. The Finite Volume Method in Computational Fluid
+    Dynamics. Springer, 2016.
+
+[51] N. Nguyen, A. Patera, and J. Peraire. A ‘best points’ interpolation method for efficient approxima-
+    tion of parametrized function. Int. J. Numer. Methods Eng., 73:521 – 543, 01 2008.
+
+[52] R. Novak, Y. Bahri, D. A. Abolafia, J. Pennington, and J. Sohl-Dickstein. Sensitivity and
+    Generalization in Neural Networks: an Empirical Study. In International Conference on Learning
+    Representations, 2018.
+
+[53] NVIDIA Modulus Team. NVIDIA Modulus. https://github.com/NVIDIA/modulus/tree/main.
+
+[54] T. Pfaff, M. Fortunato, A. Sanchez-Gonzalez, and P. Battaglia. Learning Mesh-Based Simulation
+    with Graph Networks. In International Conference on Learning Representations, 2021.
+
+[55] R. Rannacher. Finite Element Methods for the Incompressible Navier-Stokes Equations, pages
+    191–293. Birkhäuser Basel, Basel, 2000.
+
+[56] J. Roth, J. P. Thiele, U. Köcher, and T. Wick. Tensor-Product Space-Time Goal-Oriented Error
+    Control and Adaptivity With Partition-of-Unity Dual-Weighted Residuals for Nonstationary Flow
+    Problems. Comput. Methods Appl. Math., 24(1):185–214, 2024.
+
+[57] G. Rozza, D. B. P. Huynh, and A. T. Patera. Reduced basis approximation and a posteriori error
+    estimation for affinely parametrized elliptic coercive partial differential equations. Arch. Comput.
+    Methods Eng., 15(3):1–47, Sep 2007.
+
+[58] G. Rozza, G. Stabile, and F. Ballarin. Advanced Reduced Order Methods and Applications in
+    Computational Fluid Dynamics. Society for Industrial and Applied Mathematics, Philadelphia,
+    PA, 2022.
+
+[59] A. Sanchez-Gonzalez, J. Godwin, T. Pfaff, R. Ying, J. Leskovec, and P. Battaglia. Learning to
+    Simulate Complex Physics with Graph Networks. In H. D. III and A. Singh, editors, Proceedings
+    of the 37th International Conference on Machine Learning, volume 119 of Proceedings of Machine
+    Learning Research, pages 8459–8468. PMLR, 13–18 Jul 2020.
+
+
+
+                                                  28
+[60] B. Sanchez-Lengeling, E. Reif, A. Pearce, and A. B. Wiltschko. A Gentle Introduction to Graph
+    Neural Networks. Distill, 2021. https://distill.pub/2021/gnn-intro.
+
+[61] N. Schlömer. pygmsh: A Python frontend for Gmsh. https://github.com/nschloe/pygmsh [Last
+    accessed 10.05.2024], 2018.
+
+[62] M. Schäfer, S. Turek, F. Durst, E. Krause, and R. Rannacher. Benchmark Computations of
+    Laminar Flow Around a Cylinder. Vieweg+Teubner Verlag, pages 547–566, 1996.
+
+[63] K. Simonyan, A. Vedaldi, and A. Zisserman. Deep Inside Convolutional Networks: Visualising
+    Image Classification Models and Saliency Maps. In Workshop at International Conference on
+    Learning Representations, 2014.
+
+[64] H. Tang and Y. Liu. Towards Understanding Generalization of Graph Neural Networks. In
+    International Conference on Machine Learning, 2023.
+
+[65] K. Tangsali, M. A. Nabian, N. Geneva, R. Schmöcker, A. Subramaniam, D. Foster, O. Hennigh,
+    D. Pruitt, M. Stadler, R. Cherukuri, M. Koch, S. Wang, N. D. Brenowitz, A. Kamenev, B. M. L.
+    Borgne, J. Yang, L. Pegolotti, M. Mardani, S. Jones, S. Roy, and T. Kurth. codebro634/modulus:
+    v1.0.0. https://doi.org/10.5281/zenodo.11504394, June 2024.
+
+[66] R. Temam. Navier-Stokes Equations: Theory and Numerical Analysis. AMS/Chelsea publication.
+    AMS Chelsea Pub., 2001.
+
+[67] T. E. Tezduyar, M. Behr, S. Mittal, and A. A. Johnson. Computation of unsteady incompressible
+    flows with the Finite Element Methods Space-Time Formulations, Iterative Strategies and Massively
+    Parallel Implementations, volume 143 of New Methods in Transient Analysis, PVP-Vol. 246,
+    AMD-Vol. 143, pages 7–24. ASME, New York, 1992.
+
+[68] S. Turek. Efficient Solvers for Incompressible Flow Problems: An Algorithmic and Computational
+    Approach. Lecture Notes in Computational Science and Engineering. Springer-Verlag, 1999.
+
+[69] H. Wu, H. Luo, H. Wang, J. Wang, and M. Long. Transolver: A Fast Transformer Solver for
+    PDEs on General Geometries. In International Conference on Machine Learning, 2024.
+
+[70] M. D. Zeiler and R. Fergus. Visualizing and Understanding Convolutional Networks. In D. Fleet,
+    T. Pajdla, B. Schiele, and T. Tuytelaars, editors, Computer Vision – ECCV 2014, pages 818–833,
+    Cham, 2014. Springer International Publishing.
+
+
+
+
+                                                 29
+

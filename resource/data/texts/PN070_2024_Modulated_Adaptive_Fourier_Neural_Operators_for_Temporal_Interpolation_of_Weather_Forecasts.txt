@@ -1,0 +1,455 @@
+                                                     Modulated Adaptive Fourier Neural Operators for
+                                                      Temporal Interpolation of Weather Forecasts
+
+
+                                                                        Jussi Leinonen                                Boris Bonev
+arXiv:2410.18904v1 [physics.ao-ph] 24 Oct 2024
+
+
+
+
+                                                                      NVIDIA Corporation                          NVIDIA Corporation
+                                                                     Santa Clara, CA 95051                       Santa Clara, CA 95051
+                                                                    jleinonen@nvidia.com                         bbonev@nvidia.com
+
+                                                                       Thorsten Kurth                                Yair Cohen
+                                                                      NVIDIA Corporation                         NVIDIA Corporation
+                                                                     Santa Clara, CA 95051                      Santa Clara, CA 95051
+                                                                     tkurth@nvidia.com                          yacohen@nvidia.com
+
+
+
+                                                                                                 Abstract
+                                                             Weather and climate data are often available at limited temporal resolution, either
+                                                             due to storage limitations, or in the case of weather forecast models based on deep
+                                                             learning, their inherently long time steps. The coarse temporal resolution makes it
+                                                             difficult to capture rapidly evolving weather events. To address this limitation, we
+                                                             introduce an interpolation model that reconstructs the atmospheric state between
+                                                             two points in time for which the state is known. The model makes use of a novel
+                                                             network layer that modifies the adaptive Fourier neural operator (AFNO), which
+                                                             has been previously used in weather prediction and other applications of machine
+                                                             learning to physics problems. The modulated AFNO (ModAFNO) layer takes an
+                                                             embedding, here computed from the interpolation target time, as an additional
+                                                             input and applies a learned shift–scale operation inside the AFNO layers to adapt
+                                                             them to the target time. Thus, one model can be used to produce all intermediate
+                                                             time steps. Trained to interpolate between two time steps 6 h apart, the ModAFNO-
+                                                             based interpolation model produces 1 h resolution intermediate time steps that
+                                                             are visually nearly indistinguishable from the actual corresponding 1 h resolution
+                                                             data. The model reduces the RMSE loss of reconstructing the intermediate steps
+                                                             by approximately 50% compared to linear interpolation. We also demonstrate its
+                                                             ability to reproduce the statistics of extreme weather events such as hurricanes and
+                                                             heat waves better than 6 h resolution data. The ModAFNO layer is generic and is
+                                                             expected to be applicable to other problems, including weather forecasting with
+                                                             tunable lead time.
+
+
+                                                 1    Introduction
+                                                 The urgent need to address climate change is driving an increasing demand for climate and weather
+                                                 data and more accurate predictions. Beyond meteorological services, such data are used by numerous
+                                                 sectors such as insurance, investing, energy, transport, infrastructure management and emergency
+                                                 responders.
+                                                 The demand for higher resolution, customized data products and probabilistic forecasts (typically
+                                                 achieved with ensemble forecasts, i.e. executing a simulation multiple times from different initial
+                                                 conditions) is rapidly increasing the atmospheric data storage requirements, with the largest data
+                                                 archives approaching exabyte size (ECMWF, 2024). Such data volumes are only feasible to manage
+                                                 for the largest data centers, and even then at great cost.
+
+                                                 Preprint.
+Weather forecast models based on machine learning (ML) have recently achieved skill competitive
+with state-of-the-art numerical weather prediction (NWP) models while requiring orders of magnitude
+less time, energy and money to produce a forecast (Pathak et al., 2022; Kurth et al., 2023; Ebert-
+Uphoff and Hilburn, 2023; Lam et al., 2023; Chen et al., 2023; Price et al., 2024; Zhong et al., 2024).
+ML weather models make it plausible to avoid the long-term storage of simulation results, instead
+executing forecasts on demand and thus drastically requiring data storage costs.
+Most ML forecast models execute long time steps, for example 6 h for GraphCast (Lam et al., 2023)
+and FourCastNet (Pathak et al., 2022). This can leave gaps in the data, especially when predicting
+rapidly evolving extreme weather events. PanguWeather (Bi et al., 2023) consists of multiple models
+with different time steps (1 h, 3 h, 6 h and 24 h) to achieve a 1 h resolution, but this requires the
+training of multiple models and may introduce inconsistencies in the final simulation: For example, a
+23 h forecast is executed as 3 × 6 h + 3 h + 2 × 1 h, which is not guaranteed to be consistent with
+following prediction, which is obtained from a single time step of the 24 h model.
+In this work, we assume that our input data has coarse temporal resolution, whether due to archiving
+constraints or as a result of using a long time step ML weather model, and treat the recovery of
+the intermediate time steps as an interpolation rather than forecasting problem. Since deep neural
+networks have proven to be suitable for building powerful weather forecasting models, it can be
+expected that a network that learns to model the physics of the atmosphere should be able to produce
+a much better result than simple (e.g. linear) interpolation methods. Based on this premise, we
+introduce an adaptable architecture to predict arbitrary time steps using a single model. This is based
+on the adaptive Fourier neural operator (AFNO) used in the original FourCastNet model, with an
+additional time-dependent modulation in both the spatial and spectral domains to adjust the network
+to the desired time step.
+Contributions: We introduce the modulated adaptive Fourier neural operator (ModAFNO), which
+applies a scale–shift operation to spatial and spectral domain feed-forward neural networks to
+condition their output on the time step. The utility of the approach is demonstrated with a weather
+interpolation model, which uses ModAFNO to reconstruct global weather states at 1-hourly resolution
+from 6-hour resolution input data.
+
+2     Model
+The problem considered in this work is formulated as follows: given the global atmospheric states at
+times t0 and t1 , as well as additional context variables and a target time t with t0 ≤ t ≤ t1 , predict
+the state at time t.
+
+2.1   Architecture
+
+We base our model on the AFNO neural network architecture, which was used in the original
+FourCastNet model and has been shown to be adaptable to many physical problems (Guibas et al.,
+2022; NVIDIA, 2023; Leinonen et al., 2023). The AFNO implementation in NVIDIA Modulus
+(https://github.com/NVIDIA/modulus), available under the Apache-2.0 License, was used as
+the baseline. The ModAFNO architecture is also now available in Modulus.
+The AFNO FourCastNet employs a patch encoding layer, a series of AFNO blocks, and a decoding
+layer. The AFNO blocks learn neural network operations both in the spatial domain and in the Fourier
+spectral domain. Formally, the kth AFNO block, operating on the output xk−1 of the previous block,
+can represented as
+                      Filterk (x)   =    IDFT(Sλ (MLPfk (DFT(x))))                                   (1)
+                               yk   =    LayerNormfk (Filterk (xk−1 )) + xk−1                        (2)
+                               xk   =    LayerNormsk (MLPsk (yk )) + yk                              (3)
+In Eq. 1, representing the spectral-domain filter, DFT and IDFT are the discrete 2D Fourier transform
+and the inverse 2D DFT, respectively, Sλ (x) = sign(x) max(|x| − λ, 0) is a sparsity-promoting
+soft-thresholding operation, and MLPfk is a feed-forward neural network (i.e. multilayer perceptron,
+MLP) operating in the spectral domain. Since the output of the DFT is complex-valued, MLPfk
+is a complex-valued network. In Eq. 2, the filter result is normalized with layer normalization
+
+
+                                                   2
+          (a) Interpolation model              (b) ModAFNO                    (c) ModMLP
+                Input     Target time                                                       Embedding
+                                                    DFT 2D        Embedding
+
+              Encoder        MLP                                                 Linear       MLP
+                                                    ModMLP
+                                                                                            Scale
+         12x ModAFNO      Embedding
+                                                    IDFT 2D                                 Shift
+              Decoder                                                          Activation
+                Output                              ModMLP
+                                                                                 Linear
+
+
+
+Figure 1: a) Overview of the ModAFNO interpolation network. b) The modulated AFNO layer.
+A time-dependent embedding is added to the MLPs in the spectral and spatial domains to enable
+temporal interpolation. c) Detailed view of the modulated MLP. A separate MLP produces the scale
+and shift activations from the time embedding.
+
+(LayerNorm). In Eq. 3, MLPsk acts in the spatial domain and is a real-valued MLP that performs
+channel mixing with shared weights for each point; the result of this MLP is then passed through
+layer normalization. Residual connections are applied in both Eqs. 2 and 3.
+To allow the AFNO to adapt to a desired time step, we introduce an embedding-dependent scale–shift
+operation to the AFNO layer in both the spatial and spectral stages, as illustrated in Fig. 1. This
+novel architectural feature is inspired by the use of a similar operation in convolutional networks in
+MetNet-2 (Espeholt et al., 2022) and MetNet-3 (Andrychowicz et al., 2023). The resulting modulated
+AFNO (ModAFNO) block can be expressed as
+                ModFilterk (x, q)        =      IDFT(Sλ (ModMLPfk (DFT(x), q)))                          (4)
+                        yk =                    LayerNormfk (ModFilterk (xk−1 , q)) + xk−1   (5)
+                        xk =                    LayerNormsk (ModMLPsk (yk , q)) + yk .       (6)
+The modulated MLPs (ModMLP) in the spectral (Eq. 4) and spatial (Eq. 6) domains are of the form
+              ModMLPfk (x, q)       =         Linearfk,2 (ReLU(Linearfk,1 (x) · wkf (q) + bfk (q)))      (7)
+              ModMLPsk (x, q)       =         Linearsk,2 (GELU(Linearsk,1 (x) · wks (q) + bsk (q)))  (8)
+that is, they follow the typical flow of an MLP with linear layers combined with a nonlinear activation
+function, except a scale–shift operation is used to modulate the MLP in both the spectral and spatial
+domains. In both cases, the scale factors w and the shifts b only have channel and batch dimensions
+and are shared across all positions, adding only a small amount of computation. The spectral domain
+factors wf and bf are complex numbers, hence a complex multiplication and addition are performed
+in ModMLPf , while the corresponding operations in ModMLPs are real-valued. The choice of
+activation functions follows the original AFNO architecture. The encoder and decoder architectures
+are also inherited unchanged from AFNO.
+The embedding q can, in principle, condition the network to many different types of inputs. In our
+model, we want the embedding to depend on the interpolation target time t; therefore we compute q
+using a sinusoidal time embedding EMB that is passed through an MLP. Then, each of wkf (q), bfk (q),
+wks (q), bsk (q) is computed from q using a learned MLP that is unique to each stage k.
+                                                                     
+                                                   q            t − t0
+                                     q = MLP EMB                                                 (9)
+                                                               t1 − t0
+                                {f,s}                        w{f,s}
+                             wk         (q)     =    MLPk             (q)                               (10)
+                                {f,s}                   b{f,s}
+                               bk (q)           =    MLPk      (q).                                     (11)
+
+2.2     Implementation and training
+
+2.2.1    Data
+We used data from the global ECMWF Reanalysis v5 (ERA5; Hersbach, Bell, Berrisford, Hirahara,
+et al., 2020) from the European Centre for Medium-Range Weather Forecasts (ECMWF) to train
+
+
+                                                              3
+our model. This dataset gives an estimate of the historical state of the atmosphere at 1 h temporal
+resolution on a 0.25◦ resolution latitude–longitude grid (with 721 × 1440 grid points per time step
+and variable). It is available under the open Licence to Use Copernicus Products at the Copernicus
+Climate Data Store (Hersbach, Bell, Berrisford, Biavati, et al., 2023) or Google Cloud (https:
+//cloud.google.com/storage/docs/public-datasets/era5). ERA5 is also the dataset used
+to train most global weather forecast models, including FourCastNet, PanguWeather and GraphCast.
+The data downloaded from ERA5 for model training comprise pressure level height (z), temperature
+(T ), specific humidity (q) as well as winds in the west–east (u) and north–south (v) directions. These
+are at 13 pressure levels each (50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850 and 1000 hPa).
+Furthermore, wind u/v components at 10 m and 100 m heights from the surface, temperature at 2 m
+height, surface pressure, mean sea level pressure and total column water vapor are included, giving a
+total of 73 variables. The data were acquired at the full 1 h temporal resolution and span the years
+1980–2017, with a total data volume of approximately 95 TB.
+To provide context information to the model, we add external forcings that are either constant or can
+be computed using known equations from time stamps. The constant inputs are the sine and cosine of
+latitude and longitude (which act as a positional embedding), land-sea mask and surface elevation;
+the single computed input is the cosine of the solar zenith angle.
+
+2.2.2   Implementation
+
+The model consists of the encoder, 12 ModAFNO layers and the decoder. It processes the entire
+global ERA5 grid, except for the southernmost latitude since the model is limited to even-numbered
+dimensions. It thus has spatial input and output dimensions of 720 × 1440 (reduced from 721 rows
+due to the removal of the southernmost latitude). The model has one tensor input, constructed
+by concatenating the states at t0 and t1 (normalized to zero mean and unit variance), the constant
+context variables, and the solar zenith angle at t0 , t and t1 , giving a total of 155 input channels
+(2 × 73 atmospheric state variables and 9 auxiliary inputs). It also has one scalar input containing the
+interpolation target time t, and a tensor output with 73 channels.
+Given the similarity of the AFNO and ModAFNO models, we initially trained followed the training
+setup of the AFNO FourCastNet. However, we found that this training configuration sometimes
+produced artifacts at the edges of the 8 × 8 tiles used by the encoder and decoder. We reduced the
+tile size to 2 × 2 and the number of channels to 512, and removed the block-diagonal structure from
+the spectral part (effectively reducing the number of blocks to 1) to stabilize training. leading to a
+model with fewer parameters but higher computational and memory requirements. This configuration
+produced a model with better skill than the original and resolved the artifact issue. Further reduction
+of the tile size to 1 × 1 produced a model with lower skill but much higher memory requirements;
+thus we did not explore this further. Other than the abovementioned hyperparameters, we used model
+and training configurations identical to the AFNO FourCastNet.
+
+2.2.3   Training
+
+We trained the model with 6 million samples of training data, using the Adam optimizer (Kingma
+and Ba, 2014) starting with a learning rate of 5 × 10−4 and decaying to 0 over the training period
+using a cosine learning rate schedule. Mean square error weighted by the cosine of the latitude (i.e.
+proportional to the area of the grid points) was used as the training objective. The years 1980–2016
+were used for training while 2017 was held back for testing. The training was performed on an
+NVIDIA DGX SuperPOD, using 64 NVIDIA H100 GPUs and a global batch size of 64, requiring
+approximately 1300 GPU hours. GPU memory usage was approximately 72 GB/GPU during training
+and 22 GB/GPU during inference.
+
+
+3   Results
+
+To evaluate the effectiveness of our method, we evaluate the trained model using statistics of the
+reconstruction error, as well as a set of weather scenarios, which include Storm Ophelia, Hurricane
+Irma and the European heatwave of August 2017. The method is compared to ground truth obser-
+vations at 6-hourly and 1-hourly resolutions, as well as linear interpolation. Since we restrict our
+
+
+                                                   4
+                                                                     2017-10-16
+                            06:00 UTC   07:00 UTC       08:00 UTC    09:00 UTC 10:00 UTC   11:00 UTC   12:00 UTC
+
+1h truth
+Linear interp. 1h interp.
+
+
+
+
+                                        0           5               10       15       20
+                                                         Maximum wind speed [m/s]
+   Figure 2: Example of ModAFNO interpolation of wind speeds from Storm Ophelia approaching
+   Ireland on October 16, 2017. Top row: the actual ERA5 wind speed; middle row: the ModAFNO
+   interpolated wind speed; bottom row: wind speed obtained with linear interpolation.
+
+
+   problem definition to reconstructing the weather between two known time steps, we do not consider
+   interpolation methods that use more than two time steps to produce each output.
+
+   3.1                      Interpolated wind speeds during Storm Ophelia
+
+  We demonstrate results from the ModAFNO interpolation model in Fig. 2. This example shows
+  Storm Ophelia on the Atlantic Ocean approaching Ireland on October 16, 2017. The ModAFNO
+  interpolation result is compared to the true 1 h data and linear interpolation. The interpolation result
+  is visually nearly indistinguishable from the true 1 h data, correctly capturing the motion of the storm
+  center on the top right and the front on the left side of the image. Meanwhile, the linear interpolation
+  demonstrates the shortcomings of the 6 h data by duplicating the fast-moving features in the middle
+  frames, producing unrealistic weather states.
+
+   3.2                      Interpolation error
+
+  In Fig. 3, we show the statistics of the interpolation RMSE of the ModAFNO model against the linear
+  interpolation baseline as a function of the interpolation time. The errors were computed from 1000
+  random samples from the test dataset, using the values normalized to zero mean and unit variance to
+  give approximately equal weight to each of the 73 variables. The linear interpolation has zero error at
+  the endpoints by definition, while the ModAFNO model has a small amount of error remaining at
+  the endpoints due to the lossy nature of its encoding and decoding. At the other interpolation times,
+  ModAFNO achieves approximately 50% reduction in RMSE compared to the linear interpolation.
+  The errors of both models display highly skewed statistics.
+
+   3.3                      Maximum wind speeds in Hurricane Irma
+
+  To demonstrate the advantages of the 1 h time interpolation, we reconstructed the wind speeds along
+  the path of Hurricane Irma of September 2017, moving through the Caribbean towards Florida. In
+  Fig. 4, we show the maximum wind speed, which is a good indicator of the level of wind-caused
+  damage, computed from the original 6 h resolution (left), interpolation of the 6 h data to 1 h (middle),
+  and the actual 1 h data (right). The 6 h resolution data displays the maximum wind speeds fluctuating
+  between weak and strong along the path, owing to the region of peak winds moving too fast for the
+  6 h time resolution to capture it smoothly. The 1 h interpolation captures the true maximum wind
+
+
+                                                                         5
+                              0.175                                                  ModAFNO
+                                                                                     Linear
+                              0.150
+
+                              0.125
+
+            Normalized RMSE   0.100
+
+                              0.075
+
+                              0.050
+
+                              0.025
+
+                              0.000
+                                      0      1      2         3        4         5      6
+                                                 Time from sequence start [h]
+
+Figure 3: Normalized RMSE error of the interpolation for the ModAFNO model (blue) and linear
+interpolation (orange) as a function of the interpolation time. The line with triangles indicates the
+mean of the pointwise RMSE while the box plots indicate the median (midline of the box), the 25th
+and 75th percentiles (ends of the box) and the 9th and 91st percentiles (whiskers).
+
+          6 h data                           1 h ModAFNO interp.                       1 h data
+
+
+
+
+                              0       5     10        15         20         25        30
+                                          Maximum wind speed [m/s]
+Figure 4: Maximum 10 m wind speed during Hurricane Irma in the Caribbean and Florida on
+September 2–8, 2017. Left: obtained with 6 h temporal resolution. Middle: with ModAFNO
+interpolation to 1 h resolution. Right: the true maximum at 1 h resolution.
+
+
+speeds much more accurately, even though some error remains particularly at the southern flank of
+the path of maximum winds.
+
+3.4   Extreme temperatures in a European heat wave
+
+To demonstrate that the interpolation model has learned information about the physics of the atmo-
+sphere, we demonstrate another case of extreme weather prediction in the form of the temperatures
+during a European heatwave in August 2017. On August 3–4, the peak temperatures in Milan, Italy,
+occurred on both days approximately halfway between the 6 h time steps given at 12 and 18 UTC.
+Thus, the 6 h forecast would miss these extremes and underestimate the peak temperatures. In the
+
+
+                                                           6
+                               36
+
+                               34
+
+                               32
+             Temperature [C]
+                               30
+
+                               28
+
+                               26
+                                                                                  Linear interp.
+                                                                                  1h interp.
+                               24                                                 1h truth
+                                    0   6   12       18     24       30      36        42          48
+                                             Time from 2017-08-03 00:00 UTC [h]
+
+Figure 5: 2 m temperature at the grid square containing the city of Milan, Italy, during a heat wave
+on August 3–4, 2017, as indicated by linear interpolation between 6 h resolution time steps (orange
+dotted line), interpolation to 1 h resolution (blue solid line) and the true 1 h resolution data (green
+dashed line).
+
+
+plot shown in Fig. 5, we show that the 6 h forecast linearly interpolated between time steps indeed
+predicts peak temperatures approximately 2 ◦ C lower than the actual temperature. Meanwhile, the
+1 h interpolated forecast correctly infers that the hottest part of the day occurs between the endpoints
+of the interpolation period, and predicts the correct temperature with an accuracy of 0.5 ◦ C (slightly
+overestimating on both days) and the timing of the highest temperature to within 1 h.
+
+
+4   Discussion and summary
+
+A major advantage of ML weather forecast models over traditional NWP model is their orders of
+magnitude higher speed and hence cost efficiency. This advantage partially derives from the long
+time step used in ML weather models, such as 6 hours in FourCastNet and GraphCast. However,
+this temporal resolution is insufficient for capturing quickly moving or rapidly evolving weather
+phenomena. Similar issues can arise when weather data is archived at a coarse temporal resolution
+due to storage constraints. To alleviate these issues, we have introduced a weather interpolation model
+that fills in the gaps between 6 h time steps at 1 h temporal resolution using a modulated AFNO layer
+that adapts to the desired target time step. We show that this model significantly outperforms linear
+interpolation at predicting the intermediate weather states. It also exhibits better skill than linear
+interpolation with extreme weather events such as fast-moving hurricanes and temperature maxima
+in heat waves.
+Ideally, a model trained with a continuous input indicating the time step would generalize well
+enough to predict the weather state at any point between the endpoints of the interpolation spaced
+6 h apart. Thus, it should be possible to inference the model at arbitrarily high temporal resolution.
+Unfortunately, this turns out not to be the case with the model trained in this work: attempts to
+inference it at half-hour time intervals (e.g. 3.5 h from the beginning) produced artifacts that render
+the prediction unusable. Thus, the model appears to have only properly learned the target times found
+in the training data, which are only available at integer hours. Generalizing the model training better
+to enable temporally continuous inference remains a challenge for further work.
+Beyond the ability to resolve rapidly evolving weather events, we expect that ModAFNO and
+similar solutions are also applicable to the challenge of containing the ever-increasing data storage
+requirements of weather forecast and climate data. Availability of fast and accurate interpolation
+
+
+                                                          7
+makes it feasible to store only limited amounts of data, using the interpolation to recover the
+intermediate time steps that were not stored, at a cost of a small amount of error due to the imperfect
+reconstruction. This capability will be particularly attractive if the model can be trained to generalize
+to arbitrary target times steps rather than just 1 h time steps, as in this case it will enable the estimation
+of atmospheric states at arbitrary temporal resolution, which can be highly valuable in applications
+such as nowcasting.
+The modulation concept in ModAFNO can also be reasonably expected to be adaptable to similar
+network architectures such as the spherical Fourier neural operator (Bonev et al., 2023). Furthermore,
+its use is not limited to interpolation and we expect it can be used to train weather forecast models
+with adjustable lead times. The embedding used to adjust ModAFNO can also be derived from other
+contexts besides lead time, allowing other types of conditional networks to be constructed.
+
+
+References
+Andrychowicz, Marcin et al. (2023). Deep Learning for Day Forecasts from Sparse Observations.
+  arXiv: 2306.06079 [physics.ao-ph].
+Bi, Kaifeng et al. (2023). “Accurate medium-range global weather forecasting with 3D neural
+  networks”. In: Nature 619, pp. 533–538. DOI: 10.1038/s41586-023-06185-3.
+Bonev, Boris et al. (2023). “Spherical Fourier Neural Operators: Learning Stable Dynamics on
+  the Sphere”. In: Proceedings of the 40th International Conference on Machine Learning. Ed. by
+  Andreas Krause et al. Vol. 202. Proceedings of Machine Learning Research. PMLR, pp. 2806–2823.
+   URL : https://proceedings.mlr.press/v202/bonev23a.html.
+Chen, Kang et al. (2023). FengWu: Pushing the Skillful Global Medium-range Weather Forecast
+  beyond 10 Days Lead. arXiv: 2304.02948 [cs.AI].
+Ebert-Uphoff, Imme and Kyle Hilburn (2023). “The outlook for AI weather prediction”. In: 619,
+  pp. 473–474. DOI: 10.1038/d41586-023-02084-9.
+ECMWF (2024). Key facts and figures. Accessed: 2024-05-16. URL: https://www.ecmwf.int/
+  en/about/media-centre/key-facts-and-figures.
+Espeholt, Lasse et al. (2022). “Deep learning for twelve hour precipitation forecasts”. In: Nature
+  Communications 13.1, p. 5145. DOI: 10.1038/s41467-022-32483-x.
+Guibas, John et al. (2022). “Efficient Token Mixing for Transformers via Adaptive Fourier Neural
+  Operators”. In: The Tenth International Conference on Learning Representations. URL: https:
+  //arxiv.org/abs/2111.13587.
+Hersbach, Hans, Bill Bell, Paul Berrisford, Gionata Biavati, et al. (2023). ERA5 hourly data on single
+  levels from 1940 to present. DOI: 10.24381/cds.adbb2d47.
+Hersbach, Hans, Bill Bell, Paul Berrisford, Shoji Hirahara, et al. (2020). “The ERA5 global reanal-
+  ysis”. In: Quarterly Journal of the Royal Meteorological Society 146.730, pp. 1999–2049. DOI:
+  https://doi.org/10.1002/qj.3803.
+Kingma, Diederik P and Jimmy Ba (2014). “Adam: A method for stochastic optimization”. In:
+  3rd International Conference for Learning Representations, San Diego, California, USA. URL:
+  https://arxiv.org/abs/1412.6980.
+Kurth, Thorsten et al. (2023). “FourCastNet: Accelerating Global High-Resolution Weather Fore-
+  casting Using Adaptive Fourier Neural Operators”. In: Proceedings of the Platform for Advanced
+  Scientific Computing Conference. PASC ’23. Davos, Switzerland: Association for Computing
+  Machinery. DOI: 10.1145/3592979.3593412.
+Lam, Remi et al. (2023). “Learning skillful medium-range global weather forecasting”. In: Science
+  382.6677, pp. 1416–1421. DOI: 10.1126/science.adi2336.
+Leinonen, Jussi et al. (2023). Latent diffusion models for generative precipitation nowcasting with
+  accurate uncertainty quantification. arXiv: 2304.12891 [physics.ao-ph].
+NVIDIA (2023). Darcy Flow with Adaptive Fourier Neural Operator. URL: https://docs.nvidia.
+  com/deeplearning/modulus/modulus-v2209/user_guide/neural_operators/darcy_
+  afno.html.
+Pathak, Jaideep et al. (2022). FourCastNet: A Global Data-driven High-resolution Weather Model
+  using Adaptive Fourier Neural Operators. arXiv: 2202.11214 [physics.ao-ph].
+Price, Ilan et al. (2024). GenCast: Diffusion-based ensemble forecasting for medium-range weather.
+  arXiv: 2312.15796 [cs.LG].
+Zhong, Xiaohui et al. (2024). FuXi-ENS: A machine learning model for medium-range ensemble
+  weather forecasting. arXiv: 2405.05925 [cs.LG].
+
+
+                                                      8
+

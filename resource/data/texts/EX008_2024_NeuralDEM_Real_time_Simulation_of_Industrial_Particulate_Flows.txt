@@ -1,0 +1,1813 @@
+                                                   NeuralDEM – Real-time Simulation of
+                                                       Industrial Particulate Flows
+
+
+                                               Benedikt Alkin†,∗,1,2 Tobias Kronlachner†,∗,1,3 Samuele Papa†,‡,1,4,5
+                                               Stefan Pirker3 Thomas Lichtenegger1,3 Johannes Brandstetter@,1,2
+arXiv:2411.09678v2 [cs.LG] 27 Feb 2025
+
+
+
+
+                                                                          1
+                                                                            Emmi AI GmbH, Linz, Austria
+                                                    2
+                                                        ELLIS Unit Linz, Institute for Machine Learning, JKU Linz, Austria
+                                                         3
+                                                           Department of Particulate Flow Modelling, JKU Linz, Austria
+                                                               4
+                                                                 University of Amsterdam, Amsterdam, Netherlands
+                                                           5
+                                                             The Netherlands Cancer Institute, Amsterdam, Netherlands
+
+
+
+                                                                                  Abstract
+
+                                             Advancements in computing power have made it possible to numerically simulate
+                                             large-scale fluid-mechanical and/or particulate systems, many of which are inte-
+                                             gral to core industrial processes. Among the different numerical methods avail-
+                                             able, the discrete element method (DEM) provides one of the most accurate rep-
+                                             resentations of a wide range of physical systems involving granular and discontin-
+                                             uous materials. Consequently, DEM has become a widely accepted approach for
+                                             tackling engineering problems connected to granular flows and powder mechan-
+                                             ics. Additionally, DEM can be integrated with grid-based computational fluid
+                                             dynamics (CFD) methods, enabling the simulation of chemical processes taking
+                                             place, e.g., in fluidized beds. However, DEM is computationally intensive because
+                                             of the intrinsic multiscale nature of particulate systems, restricting either the du-
+                                             ration of simulations or the number of particles that can be simulated. Moreover,
+                                             the non-trivial relationship between microscopic DEM and macroscopic material
+                                             parameters necessitates extensive calibration procedures. Towards this end, Neu-
+                                             ralDEM presents a first end-to-end approach to replace slow and computationally
+                                             demanding numerical DEM routines with fast, adaptable deep learning surrogates.
+                                             NeuralDEM is capable of picturing long-term transport processes across differ-
+                                             ent regimes using macroscopic observables without any reference to microscopic
+                                             model parameters. First, NeuralDEM treats the Lagrangian discretization of DEM
+                                             as an underlying continuous field, while simultaneously modeling macroscopic
+                                             behavior directly as additional auxiliary fields. Second, NeuralDEM introduces
+                                             multi-branch neural operators scalable to real-time modeling of industrially-sized
+                                             scenarios – from slow and pseudo-steady to fast and transient. Such scenarios have
+                                             previously posed insurmountable challenges for deep learning models. Notably,
+                                             our largest NeuralDEM model is able to faithfully model coupled CFD-DEM flu-
+                                             idized bed reactors of 160k CFD cells and 500k DEM particles for trajectories of
+                                             28 s which amounts to 2800 machine learning timesteps. NeuralDEM will open
+                                             many new doors to advanced engineering and much faster process cycles.
+                                             Project page: https://emmi-ai.github.io/NeuralDEM/.
+
+
+
+                                         This work is a preprint.
+                                         †
+                                           core contributor, ∗ equal contribution, ‡ work done during internship.
+                                         @ Correspondence to: brandstetter@ml.jku.at , johannes@emmi.ai
+Contents
+
+1   Introduction                                                                                      3
+
+2   Background                                                                                        5
+    2.1   Discrete element method . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .       5
+          2.1.1    Coupled particle-fluid simulations . . . . . . . . . . . . . . . . . . . . . .     6
+    2.2   Neural operators learning for scientific and engineering applications . . . . . . . .       7
+          2.2.1    Discretization convergence . . . . . . . . . . . . . . . . . . . . . . . . . .     8
+          2.2.2    Deep learning for particulate systems . . . . . . . . . . . . . . . . . . . .      8
+
+3   NeuralDEM                                                                                         8
+    3.1   Physics representation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .      9
+    3.2   Multi-branch neural operators . . . . . . . . . . . . . . . . . . . . . . . . . . . .      10
+    3.3   Scalar parameter conditioning . . . . . . . . . . . . . . . . . . . . . . . . . . . .      11
+    3.4   Flexible model architecture for variable simulation use-cases. . . . . . . . . . . . .     12
+
+4   Numerical experiments                                                                            13
+    4.1   Simulation setup and problem scale . . . . . . . . . . . . . . . . . . . . . . . . .       13
+    4.2   Hopper . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .     14
+          4.2.1    Multi-branch neural operator architecture for hopper experiments . . . . .        16
+          4.2.2    Flow regime and visualization via occupancy and transport field . . . . . .       16
+          4.2.3    Outflow rate, drainage time, and residual material via occupancy field . . .      16
+          4.2.4    Residence time . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .    17
+          4.2.5    Generalization capabilities . . . . . . . . . . . . . . . . . . . . . . . . . .   18
+          4.2.6    Macroscopic parameter conditioning . . . . . . . . . . . . . . . . . . . . .      18
+          4.2.7    Refilling operation mode . . . . . . . . . . . . . . . . . . . . . . . . . . .    20
+          4.2.8    Runtime: NeuralDEM enables real-time simulations . . . . . . . . . . . .          20
+    4.3   Fluidized bed reactors . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .   21
+          4.3.1    Multi-branch neural operator architecture for fluidized bed reactor experiments 21
+          4.3.2    Modeling the dynamics of the system . . . . . . . . . . . . . . . . . . . .       21
+          4.3.3    Physics evaluation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .    23
+          4.3.4    Mixing behavior . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .     24
+          4.3.5    Runtime: NeuralDEM enables real-time simulations . . . . . . . . . . . .          25
+
+5   Discussion                                                                                       25
+    5.1   Conclusion . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .     25
+    5.2   Existing modeling limitations . . . . . . . . . . . . . . . . . . . . . . . . . . . . .    25
+    5.3   Future work . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .    26
+
+6   Acknowledgements                                                                                 26
+
+
+
+
+                                                   2
+         Particle-based
+
+
+         numerical simulation
+
+
+
+
+         NeuralDEM field-based
+
+
+         physics representation
+
+
+
+
+       Multi-physics (CFD-DEM)
+
+                                                                NeuralDEM simulation of fluid velocity
+          numerical simulation
+
+
+
+
+                                               NeuralDEM
+
+
+                                               framework        NeuralDEM simulation of particle mixing
+
+
+
+
+    Particle simulation
+   Fluid simulation
+
+
+     (500k particles)        (160k cells)
+
+
+
+
+Figure 1: NeuralDEM presents an end-to-end approach to replace discrete element method (DEM)
+routines and coupled multiphysics simulations with deep learning surrogates. Top: Hopper simu-
+lations. NeuralDEM treats inputs and outputs as continuous fields, while modeling macroscopic
+behavior directly as additional auxiliary fields. Bottom: Fluidized bed reactors. NeuralDEM is built
+to model complex multiphysics simulations, i.e., scenarios which necessitate the interaction of DEM
+and computational fluid dynamics (CFD). For fluidized bed reactors, air enters the domain from the
+bottom plane (CFD problem) and pushes the particles up (DEM problem). Both parts and the inter-
+action thereof is modeled via the new multi-branch neural operator approach of NeuralDEM.
+
+
+
+1     Introduction
+
+In recent years, real-time numerical simulations [2, 20, 34, 41, 100], have emerged as new modeling
+paradigm, enabling immediate analysis and decision-making based on live data and conditions. Un-
+like traditional simulations, which may take hours or even days to run, real-time simulations provide
+instantaneous feedback, allowing users to interact with and adjust parameters on the fly. Moreover,
+in engineering, fast simulations are driving the design of safer and more efficient structures and ma-
+chines by accurately predicting their behavior under different conditions, thereby allowing extensive
+scans of vast parameter spaces, and eliminating the need for expensive physical prototypes.
+
+
+                                                            3
+Especially for numerically expensive problems as found, e.g., in computational particle mechanics
+and/or fluid dynamics (CFD), selecting the appropriate numerical simulation tool requires weigh-
+ing accuracy against speed. Among the different numerical methods available, the discrete element
+method (DEM) [23] provides one of the most accurate representations of a wide range of physical
+systems involving particulate matter, by tracking and computing the behavior of each grain. Conse-
+quently, DEM has become a widely accepted approach for tackling engineering problems connected
+to disperse and discontinuous materials, particularly in granular flows and powder mechanics. Typ-
+ical target areas comprise mining and mineral processing [7, 71, 103], steelmaking [4, 5, 61], phar-
+maceutics [11, 29, 33], agriculture and food processing [92, 99, 106], and additive manufacturing
+and powder bed fusion [17, 73, 104].
+However, the inherent multiscale nature of particulate systems makes DEM computationally costly
+in several well-known regards. (i) Large-scale granular flows consist of a huge number of particles,
+each interacting with the surrounding ones. For every grain, its equation of motion (EOM) needs to
+be solved in a coupled fashion. Current DEM studies dealing with process-relevant problems use
+many 100k [24, 53] or even a few million [25] particles, while, e.g., an industrial shaft furnace or flu-
+idized bed reactor contains several orders of magnitude more. Although GPU-based codes [28, 32]
+can handle more grains than those on CPUs and are significantly faster for the same problem size,
+they are still far away from convenient runtimes for demanding industrial processes, especially if a
+fluid phase is involved [65, 101]. (ii) The high material stiffness of solid particles severely limits the
+numerical timestep that can be used in the solution procedure of the EOMs. Often, its value is in
+the range of microseconds, whereas process-relevant durations may be minutes or hours. (iii) There
+is no straightforward relationship between the microscopic DEM parameters and macroscopically
+observed behavior. Instead, optimization techniques need to be used to find a set of DEM parameters
+that reproduces certain characterization measurements (e.g., angle of repose and shear cell measure-
+ments). Such a calibration routine [22] needs to be performed for any type of material before the
+actual simulation of interest can be approached. Any change in the material properties (e.g., due to
+different size distribution, degradation, moisture uptake) requires a new calibration.
+Issue (i) is usually mitigated by employing coarse-graining techniques that replace many small par-
+ticles with a large parcel [13, 81]. If the interaction parameters of these parcels are chosen appro-
+priately – either using scaling rules or a calibration routine – the accuracy impairments compared to
+the fine-grained ground truth are often acceptable. However, the limitation of small timesteps and
+the need for parameter calibration persist and make DEM slow and sometimes too cumbersome for
+a quick application within engineering workflows.
+We present NeuralDEM, the first end-to-end deep learning alternative for modeling industrial pro-
+cesses. NeuralDEM introduces multi-branch neural operators inspired by multi-modal diffusion
+transformers (MMDiT) [27] and is scalable to real-time modeling of industrially-sized relevant sce-
+narios. In NeuralDEM, we introduce two key components. The first is modeling the Lagrangian
+discretization given by DEM simulations directly from a compressed Eulerian perspective, i.e., a
+field-based point of view. Our method – through model conditioning – can generalize across macro-
+scopic quantities such as inflow velocity or internal friction angle, addressing issue (iii). Inter-
+estingly, this new modeling point of view aligns well with recent findings that a DEM-simulated
+system’s effective degrees of freedom are orders of magnitude less than the microscopic degrees
+of freedom [59]. This has the benefit of allowing direct modeling of macroscopic processes, e.g.,
+mixing or transport processes, via additional auxiliary continuous fields. The second key compo-
+nent is multi-physics modeling via repeated interactions between physics phases. Multi-physics is
+prevalent when modeling the interaction of fluid dynamics and particulate systems in fluidized bed
+simulations. NeuralDEM, additionally, learns to stably simulate the system using longer timesteps,
+addressing issue (ii). Together, these properties allow tackling all common issues with DEM, mak-
+ing systems with large numbers of particles computationally feasible, allowing the use of longer
+timesteps, and enabling direct conditioning on macroscopic characterization measurements, without
+the need for fine-tuning the microscopic DEM parameters.
+We test NeuralDEM and demonstrate its capability to picture various transport processes, e.g., mass,
+species, residence time, or mixing, in two scenarios, both of which are simulated with several 100k
+DEM particles: (i) slow and pseudo-steady hoppers with varying hopper angles, internal friction an-
+gles and flow regimes, and (ii) fast and transient fluidized bed reactors with varying inflow velocities.
+In all scenarios, we investigate the correct physics modeling of, e.g., outflow ratios, residence time,
+mixing ratio, and others. We observe that NeuralDEM generalizes to unseen parameter choices,
+
+
+                                                    4
+and, that NeuralDEM produces faithful physics simulations for long time horizons. Most notably,
+our largest NeuralDEM model is able to physically-correctly model coupled CFD-DEM fluidized
+bed reactors of 160k CFD cells and 500k DEM particles for trajectories of 28 s, which amounts to
+2800 machine learning timesteps * . These findings will open many new doors to advanced engineer-
+ing and much faster process cycles.
+
+2     Background
+In this section, we introduce the relevant core phenomena of DEM. A more in-depth explanation can
+be found, e.g., in the review article form Blais et al. [14] or the textbook from Norouzi et al. [75].
+Further, we introduce neural operators and discuss their applicability to model particulate systems.
+
+2.1     Discrete element method
+
+
+
+
+                                                                          F (pc)
+                                                                F (pc)
+                                                                          F (ext)
+
+
+                                                               F (pf)
+
+
+
+
+Figure 2: Discrete element method. The force on a particle consists of particle-particle contacts
+Fi(pc) , the external force Fi(ext) , and the interaction with a surrounding fluid phase Fi(pf) .
+
+In a system of solid particles with masses mi , radii ri , positions ri , and velocities vi , each of them
+has to obey Newton’s second law
+                                     d
+                                        mi vi = Fi(ext) + Fi(pc) + Fi(pf) .                              (1)
+                                     dt
+Particle i experiences forces of external origin, most important gravity Fi(ext) ≈ mi g, contact forces
+with the nearby grains and walls Fi(pc) = j̸=i Fi,j , and the influence of a surrounding fluid phase
+                                           P
+
+Fi(pf) if present and relevant.
+The contact force between solid particles i and j is commonly approximated with spring-dashpot
+                             (n)                            (t)
+models for both the normal Fi,j  and tangential component Fi,j  ,
+                             (n)           (n)               (n)
+                           Fi,j  = −k (n) δi,j ni,j + γ (n) vi,j                                         (2)
+                                       h                                               i
+                             (t)                  (t)               (t)       (n)
+                           Fi,j  = min − k (t) δi,j   ti,j + γ (t) vi,j , µ|Fi,j  |ti,j ,                (3)
+
+where the tangential force is limited by Coulomb’s friction law. Material properties enter these
+expressions in terms of the spring stiffnesses k (n,t) , damping coefficients γ (n,t) and sliding friction µ.
+                                                                              (n,t)
+k (n,t) give rise to the reaction against normal and tangential overlap δi,j        between two grains in the
+                                                (n,t)
+respective directions ni,j and ti,j , and γ           account for viscous dissipation caused by the normal
+                                      (n,t)
+and tangential relative velocities vi,j     during contact. While simple geometric shapes such as perfect
+      * See https://emmi-ai.github.io/NeuralDEM/ for qualitative comparisons of full sequences.
+
+
+
+
+                                                         5
+spheres allow computing values for the material parameters from measurable properties like Young’s
+and shear modulus [42], actual, imperfect grains necessitate calibration towards characterization
+experiments [22].
+The magnitude of the numerical timestep to solve Equation (1) is limited by the requirement to
+properly resolve contacts between grains. More specifically, the timestep needs to be significantly
+smaller than the duration of contact of colliding particles (“Hertz time”) and the time it takes density
+waves generated upon impact to travel over the grain surface (“Rayleigh time”). For stiff materials,
+this often amounts to steps in the range of microseconds.
+
+2.1.1   Coupled particle-fluid simulations
+Particles will also experience a force from a surrounding fluid phase. While it may be neglected
+if no significant relative velocities occur, it can be a crucial factor for particle dynamics otherwise.
+The dominant contributions are usually caused by gradients of the pressure and by the drag force,
+i.e., the resistance against relative velocity between fluid and grain, so that
+                                      Fi(pf) ≈ −Vi ∇p + β uf − vi .
+                                                                    
+                                                                                                     (4)
+The drag coefficient β depends on the particle size and the local flow conditions. A multitude of
+empirical correlations can be found in the literature to take into account the impact of Reynolds
+number, particle volume fraction αp , size distribution, etc. [44].
+The fluid velocity itself is governed by the filtered Navier-Stokes equations [6]
+                                 ∂
+                                    αf + ∇ · αf uf = 0                                              (5)
+                                 ∂t
+                                 ∂
+                                    αf uf + ∇ · αf uf uf = ∇ · σf − f (pf)                          (6)
+                                 ∂t
+which differ from their single-phase counterpart in two regards. The presence of particles reduces
+the locally available volume to a fraction αf = 1 − αp , and the density of force Equation (4) exerted
+by the fluid on the particles is felt by the fluid in opposite direction because of Newton’s third law.
+The coupled solution of the CFD Equations (5) and (6) and the DEM Equation (1) gives rise to
+CFD-DEM simulations.
+For a proper definition of the field quantities αp and f (pf) , Lagrangian particle information needs to
+be mapped onto Eulerian fields. To this end, a filter function gl (r), e.g., a Gaussian with width l, is
+employed in terms of
+                                           X
+                                  αp (r) ≡      gl (|r − ri |)Vi                                     (7)
+                                                   i
+                                                  P                     (pf)
+                                      (pf)         i gl (|r − ri |)Vi Fi
+                                  f          (r) ≡ P                         .                        (8)
+                                                      i gl (|r − ri |)Vi
+
+An analogous definition as Equation (8) can be invoked to define the spatial field distribution of
+any particle property. As a matter of fact, the target quantities of most particle simulations are
+not necessarily connected to single-particle properties located exactly at the positions of each grain.
+Instead, one might be interested in the spatial distribution of, e.g., particle volume fraction, residence
+time or temperature. Two strategies are available to obtain these fields: (i) One carries out a DEM
+simulation and postprocesses particle data according to Equation (8). The trajectory and properties
+of each grain are only needed as an intermediate step for the DEM simulation. (ii) One can try
+to directly formulate particle EOMs in an Eulerian fashion by filtering the Lagrangian ones and
+solving them disregarding discrete properties. As demonstrated by the two-fluid model [30], this
+can significantly reduce computational costs but can come with a serious degree of uncertainty [18]
+because not all particle properties lend themselves to a straight-forward formulation in terms of
+fields.
+Even if the resulting inaccuracies are acceptable, such simulations are still cumbersome because of
+the restriction to small timesteps (which is also present in an Eulerian formulation) and the lack
+of a direct relationship between macroscopic behavior and microscopic parameters. An attractive
+solution to this predicament might be offered by neural operators that can be trained with detailed
+particle data to predict any underlying field quantities in a highly efficient way.
+
+
+                                                          6
+2.2    Neural operators learning for scientific and engineering applications
+
+In recent years, deep learning tools have been extensively integrated into scientific modeling, and
+have resulted in breakthroughs in, e.g., protein folding [1, 43], material discovery [9, 10, 69, 102],
+or weather modeling [12, 15, 52, 74, 76]. Driven by applications in CFD [35, 36, 48, 56, 91], deep
+neural network based surrogates, most importantly neural operators [50, 56, 66], have emerged as a
+computationally efficient alternative [105]. In addition to computational efficiency, neural operators
+offer the potential to introduce generalization capabilities across phenomena, as well as generaliza-
+tion across characteristics such as boundary conditions or coefficients [39, 68].
+Neural operators [50, 54, 56, 66] are formulated with the aim of learning a mapping between func-
+tion spaces, enabling outputs that remain consistent across varying input sampling resolutions. Fol-
+lowing the framework of Kovachki et al. [50], we assume U, V to be Banach spaces of functions
+defined on compact domains X ⊂ Rdx or Y ⊂ Rdy , respectively, which map into Rdu or Rdv . A
+neural operator Ĝ : U → V approximates the ground truth operator G : U → V.
+When training a neural operator Ĝ, a widely adopted approach is to construct a dataset of N discrete
+data pairs (ui,j , vi,j ′ ), i = 1, . . . , N , which correspond to ui and vi evaluated at spatial locations
+j = 1, . . . , K and j ′ = 1, . . . , K ′ , respectively. Note that K and K ′ can, but need not be equal,
+and can vary for different i, which we omit for notational simplicity. Figure 3 (first row) shows the
+operator learning problem, i.e., the mapping of an input function ui to an output function vi via an
+operator G. The functions are given via K and K ′ discretized input and output points, respectively.
+On this dataset, Ĝ is trained to map ui,j to vi,j ′ via supervised learning, as sketched in Figure 3
+(bottom row), where Ĝ is composed of three maps [3, 84]: Ĝ := D ◦ A ◦ E, comprising the encoder
+E, the approximator A, and the decoder D. First, the encoder E transforms the discrete function
+samples ui,j to a latent representation of the input function. Then, the approximator A maps the
+latent representation to a representation of the output function. Lastly, the decoder evaluates the
+output function at spatial locations j ′ . The neural network Ĝ is then trained via gradient  P descent,
+using the gradient of, e.g., a mean squared error loss in the discretized space Li = K1′ j ′ ∥v̂i,j ′ −
+vi,j ′ ∥22 , where ∥2 is the Euclidean norm.
+
+       Samples of
+                 Underlying
+                Underlying
+                Samples of
+
+      input function             input function             output function           output function
+
+                                                 Operator
+
+
+
+
+       Samples of 
+                 Encoded
+                    Encoded
+          Samples of predicted
+
+      input function             input function              output function          output function
+
+                       Encoder             Approximator                     Decoder
+
+
+
+
+Figure 3: Neural operator learning. Neural operators aim to learn a mapping between function
+spaces, enabling outputs that remain consistent across varying input sampling resolutions. The
+neural operator Ĝ approximates the ground truth operator G with three maps, composing encoder E,
+approximator A, and decoder D. The approximation of Ĝ is ideally independent from the number
+of sampled input points, and approximates the output function for an arbitrary number of points.
+
+
+For temporally evolving systems, we assume the Banach spaces of functions to be equal, i.e., U = V,
+                                                            t′
+where models are trained on next-step prediction uti,j → vi,j  ′ . To fully evolve a system after
+
+
+
+
+                                                      7
+training, the model is then applied repeatedly in autoregressive fashion, i.e., every prediction serves
+as new input.
+
+2.2.1    Discretization convergence
+Neural operators are well suited to describe the evolution and interaction of physical quantities over
+space and time, i.e., continuously changing fields. Most notably, since the solutions are continuous
+fields, the mapping should neither depend on K, the number of input locations, nor on K ′ , the
+number of decoded output locations. The property that neural network outputs remain consistent
+across different input sampling resolutions is referred to as discretization convergence [50, 56, 66].
+Neural operators are proven to be discretization convergent in the limit of mesh refinement [50],
+meaning they converge to a continuum operator in the limit as the discretization is refined. In theory
+and if properly designed, neural operators can be evaluated at any data discretization. Nevertheless,
+there is a minimum threshold for the number of points needed for accurate representation. However,
+strong evidence indicates that neural networks can capture physical phenomena effectively without
+requiring the same level of fine-grained discretization as traditional numerical methods [48].
+Neural operator architectures need to ensure discretization convergence of their components. When
+encoding the discretized input function, popular choices to preserve discretization convergence are
+graph neural operators [55, 57], transformers [37, 90, 96] or combinations thereof [3]. For decoding,
+recent works [93] have shown that D can be considered as neural field [70, 86, 97], which allows for
+point-wise evaluation at the output grid or output mesh [3, 47, 49, 93].
+
+2.2.2    Deep learning for particulate systems
+While most state-of-the-art neural operator approaches are predominantly designed for geometri-
+cally simple domains with regular grids, neural operator formulations for particle- or mesh-based
+dynamics remain limited. In such cases, graph neural networks (GNNs) [16, 45, 83] with graph-
+based latent space representations are a prevalent approach to build neural surrogates. Often, pre-
+dicted node accelerations are numerically integrated to simulate the time evolution of multi-particle
+systems [67, 79, 82, 88, 89]. For the modeling of granular dynamics, Li et al. [58] predict contact
+forces when inputting microstructures of grain packings. Similarly, Cheng & Wang [21] estimate
+contact forces in compressed granular assemblies. Mayr et al. [67] introduce Boundary-GNNs to
+model granular flows through hoppers, rotating drums, and mixers. All these models are limited by
+the number of particles, and operate on 10k – 20k particles at most, although often much less.
+GNNs inherently possess a strong inductive bias for Lagrangian dynamics, which, however, presents
+a significant downside since the number of nodes, and thus the computational complexity grows with
+the number of Lagrangian particles. Thus, computational complexity gets quickly infeasible for an
+increasing number of particles [3, 72]. However, motivated by recent successes in latent space
+generative modeling [27, 80], latent space modeling has emerged as a new modeling paradigm in
+neural operator learning [3, 38, 94, 107]. In this work, we follow the argumentation of Alkin et al.
+[3], i.e., neural operators with large model complexity are powerful enough to capture inherent field
+characteristics when applied to Lagrangian or multiphysics simulations. For DEM simulations, we
+argue that those field characteristics need not be explicitly present in the training data, rather, they
+might emerge from the bulk behavior of the particulate systems.
+
+3   NeuralDEM
+NeuralDEM presents the first end-to-end solution for replacing computationally intensive numerical
+DEM routines and coupled CFD-DEM simulations with fast and flexible deep learning surrogates.
+NeuralDEM introduces two conceptually novel modeling paradigms:
+
+        1. Physics representation: We model the Lagrangian discretization of DEM as an underlying
+           continuous field, while simultaneously modeling macroscopic behavior directly as addi-
+           tional auxiliary fields. NeuralDEM encodes different physics inputs which are represen-
+           tative for DEM dynamics and/or multi-physics scenarios. Examples are particle displace-
+           ment, particle mixing, solid fraction, or particle transport.
+        2. Multi-branch neural operators: We introduce multi-branch neural operators scalable to
+           real-time modeling of industrial-size scenarios. Multi-branch neural operators build on
+
+
+                                                   8
+         the flexible and scalable “Universal Physics Transformer” [3] framework by enhancing
+         encoder, decoder, and approximator components using multi-branch transformers to allow
+         for modeling of multi-physics systems. The system quantities fundamental to predicting
+         the evolution of the state in time are modeled in the main-branches, where they are tightly
+         coupled. Additionally, auxiliary off-branches can be added to directly model macroscopic
+         quantities by retrieving information from the main-branch state and further refining the
+         prediction using relevant inputs.
+
+
+
+
+Figure 4: In our physics representation we model the Lagrangian discretization of DEM as an as-
+sumed underlying continuous field. The approximator maps the encoded representation to one that
+can be decoded at any specified spatial location j ′ . The multi-branch neural operator is a family
+of deep learning architectures that processes multi-physics quantities and can distinguish between
+primary quantities, used to model the core physics in the main-branches, and secondary quantities
+which are used to predict additional desired quantities in the off-branches, both modeled as fields.
+The quantities come, e.g., from DEM simulations with coupled particles and fluid, which the ar-
+chitecture handles using specialized encoders and decoders. All modules processing the primary
+quantities influence each other. In contrast, those that process secondary quantities are independent,
+and use the tokens from the primary branch as additional information but cannot affect them.
+
+
+
+3.1   Physics representation
+
+As common when training deep learning surrogates, we train on orders of magnitude coarser
+timescales than what a classical solver requires to be stable and accurate. For the numerical ex-
+periments in this paper, the timescale relation is at least 1000∆tDEM = ∆tML . Additionally, for
+learning the dynamics of particle movement, we use the particle displacement, which is defined as
+the difference between the position ri ∈ R3 of particle i at timestep tML and the position of the same
+particle at timestep tML + ∆tML . Finally, we use the term transport to denote the particle movement
+integrated over multiple timesteps ∆tML .
+
+
+                                                  9
+NeuralDEM models the Lagrangian discretization of DEM as a continuous field in a compressed
+latent space, leveraging the insight that the effective degrees of freedom of physical systems is often
+much smaller than its input dimensionality [59]. Therefore, we assume that there exists some under-
+lying field that describes the particle displacements in a DEM simulation and learn this underlying
+field over the whole domain instead of a displacement per particle. However, particle displacements
+can fluctuate depending on their exact position within the bulk of the material. Such fine-grained
+details are lost when going to a field-based representation which smoothes out these variations. This
+makes field-based models unable to move particles accurately around in space, which would be
+required to get macroscopic insights into the simulation dynamics.
+To circumvent this issue, we introduce additional auxiliary fields that model the macroscopic insights
+directly instead of calculating them in post-processing from the particle locations. For example, by
+modeling the accumulated particle movement over a long period of time via a “transport” field, we
+can learn macroscopic properties directly instead of integrating short-term movements which would
+require precise prediction of the fluctuations thereof. This is visualized in Figure 4.
+Even over such a large timestep, the evolution of a flow and its properties at each point is mainly
+determined by the field values in a nearby, bounded subdomain which grows with the the step size,
+and hardly influenced by very distant points [60]. This behavior can be resembled by the attention
+mechanism of transformer networks [90].
+
+3.2   Multi-branch neural operators
+
+Emerging bulk behavior of classical solvers as motivation. Classical solvers can create full
+simulations via precisely updating microscopic properties such as the particle positions at extremely
+high time resolution, with optional coupling to, e.g., a fluid phase, which is updated with similar pre-
+cision and timescale. Similarly, NeuralDEM aims to extract the physical dynamics and simulation
+state updates from the microscopic properties also used in classical solvers, which we call “main-
+phase(s)” where each main-phase is processed by one main-branch transformer in our model. Using
+an example of a particle-fluid coupled simulation, one main-branch predicts particle displacements,
+while a second main-branch predicts fluid velocities and pressures. All main-branches are tightly
+coupled via frequent information exchange during the model forward pass.
+
+Microscopic inaccuracies of neural operators. While the model is trained using microscopic
+properties, neural operators are not able to predict microscopic properties, such as the particle dis-
+placements, accurately enough because neural operators are not as precise as classical solvers and
+operate on much coarser time resolution. It is therefore not feasible to exclusively rely on an accurate
+prediction of these microscopic properties in the main-branches. Creating simulations by moving
+initial particle positions according to the predicted displacements would quickly result in unphysical
+states (e.g., overlapping particles) and becomes inaccurate.
+
+Macroscopic modeling via auxiliary fields. An important observation regarding the systems we
+model is that the insights that a classical solver can provide into the physical dynamics are rarely
+on a microscopic level and more often on a macroscopic level, where the macroscopic properties
+are extracted from the microscopic results of the classical solver. Motivated by this intuition, we
+introduce additional off-branches, which are trained to model macroscopic processes such as par-
+ticle mixing or particle transport directly during training. Similar to classical solvers, where the
+macroscopic process does not influence the microscopic updates, off-branches do not influence any
+of the main-branches. Instead, each off-branch creates its predictions by repeatedly processing its
+own data, as well as retrieving information from the microscopic state of the main-branches (without
+influencing them).
+
+Multi-branch transformers. The central neural network component of NeuralDEM are multi-
+branch transformers. Multi-branch transformers, as the name suggests, consist of multiple branches:
+main-branch(es) and off-branch(es). Each branch is a stack of transformer [90] blocks where weights
+are not shared between branches. Each branch operates on a set of so-called tokens, which are ob-
+tained by embedding the input into a compressed latent representation. Main-branch(es) concatenate
+all tokens before each attention operation along the set dimension, allowing interactions between
+them, followed by splitting tokens again into the different branches, akin to multi-modal diffusion
+transformer (MMDiT) blocks [27]. Additionally, multi-branch transformers can include arbitrarily
+
+
+                                                  10
+many off-branches, where the self-attention is replaced by a cross-attention which uses only its own
+off-branch tokens as queries and concatenates its own off-branch tokens with the main-branch to-
+kens to use as keys and values. This roughly corresponds to simultaneous self-attention between
+the off-branch tokens and cross-attention between off-branch and main-branch tokens. No gradient
+flows through the cross-attention back to the main-branch tokens. Off-branches are implemented via
+a modified diffusion transformer block [77]. A schematic sketch is shown in Figure 5.
+In our numerical experiments, we consider temporally evolving systems of multiple fields. Each
+input at time t uti consists of h = 1, . . . , M fields, where the hth field at timestep t is denoted as
+uh,t
+  i . Each field is modeled by one branch of the multi-branch transformer. We create datasets of
+function pairs that are evaluated at K and K ′ input and output positions (uh,t        h,t+∆t
+                                                                                  i,j vi,j ′  ) and train
+                                       h,t                  h,t+∆t
+all M branches in parallel to map ui,j to the target vi,j ′        . Each branch of the multi-branch
+transformer consists of M encoders E h , M approximators Ah , and M decoders Dh .
+
+                                      embed                     multi-branch transformer
+        E h : uh,t
+               i,j=1,...,K ∈ R
+                               K×d
+                                   −−−→ RK×dhidden −−−−−−−−−−−−−→ zih,t ∈ Rnlatent ×dhidden
+                                     multi-branch transformer
+        Ah : zih,t ∈ Rnlatent ×dhidden −−−−−−−−−−−−−→ zih,t+∆t ∈ Rnlatent ×dhidden
+                                          perceiver decoder                                ′
+        Dh : (zih,t+∆t , yi,j
+                          h
+                              ′ =1,...,K ′ ) −
+                                                         h,t+∆t
+                                             −−−−−−−−→ v̂i,j ′ =1,...,K ′ ∈ R
+                                                                              K ×d
+                                                                                   .
+
+
+
+
+Figure 5: Schematic architecture of a multi-branch transformer block. DiT [77] modulation is
+applied to each attention and MLP block but is omitted for visual clarity.
+
+3.3   Scalar parameter conditioning
+
+Physical simulations often require various scalar parameters such as material properties (e.g., friction
+or particle size) or geometry variations (e.g., slope angles or outlet width) to define the simulation
+properties. It is vital to provide these scalars also to the machine learning model to produce accurate
+results. A common way to do this is by feature modulation [78] which scales and shifts intermediate
+feature activations based on a vector representation of the scaler parameters. As NeuralDEM is
+a transformer architecture, we use DiT-style modulation [77] which scales, shifts and gates the
+activations of each attention and MLP block based on a learned vector representation of the scalar
+parameters. This form of conditioning allows NeuralDEM to generalize across geometries and
+across non-trivial particle-particle interactions by condition on respective variables.
+A particular intriguing property of this conditioning mechanism is that it allows us to condition on
+parameters that describe only the macroscopic material behavior. For example, our model can be
+conditioned on the measured parameters, like the internal friction angle or the flow function coef-
+ficient from a shear cell device, instead of requiring the microscopic friction parameters necessary
+
+
+                                                        11
+for simulating with a classical DEM solver (e.g., particle sliding friction coefficient). In practice,
+this allows us to simulate any material by simply using a shear cell to determine its friction angle.
+In contrast, for classical solvers, one would need to estimate the microscopic friction parameters of
+the material using a calibration procedure [22] in order to simulate it, which is tedious, error prone
+and often inaccurate. We showcase this in Section 4.2.6.
+
+3.4   Flexible model architecture for variable simulation use-cases.
+
+As physical simulations exhibit a broad range of dynamics, and relevant macroscopic insights can
+vary drastically depending on the use-case, our multi-branch transformer architecture should be
+seen as a flexible framework that enables various use-cases instead of a “set in stone” architecture.
+Components can become redundant in certain settings, or special use-cases could require additional
+components. For example, in simulations with laminar or pseudo-steady dynamics, the whole sim-
+ulation is fully specified by the initial state, making encoding subsequent states and interaction be-
+tween branches redundant. However, in very unsteady systems all components of the multi-branch
+transformer architecture are very much necessary to produce accurate time evolution as slightly dif-
+ferent initial states can lead to vastly different instantiations of dynamics, which requires a physically
+accurate state at each timestep and interactions between the states of different branches.
+Additionally, the initial encoding of physics phases benefits from specialized designs, depending on
+the input data. For irregular grid data (e.g., particles), we use the supernode pooling from UPT [3]
+which aggregates information around particles via message passing to so-called supernodes, which
+are randomly selected particles. Fluid phases are typically represented via regular grid data, which
+is computationally more efficient and allows efficient coupling to, e.g., particle simulations. For
+regular grid data, we use the vision transformer patch embedding [26] which splits the input into
+non-overlapping patches and embeds them using a shared linear projection.
+Finally, decoding is performed using the same architecture for both particle and grid data, using a
+perceiver-based neural field decoder [40], which is queried at locations yi,j ′ =1,...,K ′ in parallel. This
+type of decoding first embeds query locations to be used as queries for the perceiver cross-attention
+and uses the latent tokens as keys and values. This results in a point-wise evaluation of the latent
+space based on the query position, which is what enables effective parallelization.
+We use a standard pre-norm vision transformers architecture [8, 26] where each branch of the multi-
+branch transformer corresponds to a single vision transformer. The total number of blocks is evenly
+distributed across encoder, approximator and decoder.
+
+
+
+
+                                                    12
+4      Numerical experiments
+We test the NeuralDEM framework on two industrially relevant use cases: hoppers and fluidized
+bed reactors, both visualized in Figure 6 and described in Table 1. We evaluate NeuralDEM on
+different metrics: (i) Effectiveness of field-based modeling w.r.t. macroscopic quantities. We extract
+and compare emerging macroscopic physics phenomena. (ii) Scalability towards industry relevant
+simulation sizes. We train on simulations with up to half a million particles and anticipate good
+scaling behavior to much higher numbers. (iii) Physically accurate time extrapolation. We show
+that our models can faithfully model dynamics for long-time horizons – in a fraction of the time that
+a classical solver would take. (iv) Generalization to unseen regions in the design parameter space.
+
+                DHO
+
+
+                                                                      Parameter                             Value
+
+                                          HFB
+                                                                      Hopper diameter DHO                0.24 m
+                                                                      Hopper height HHO                  0.40 m
+                              HHO
+
+
+
+
+                                                                      Hopper outlet diameter OHO         0.05 m
+                                                                      Hopper angle αHO                     0-60°
+                                                                      Hopper particle diameter d        0.004 m
+                        αHO
+                                                                      FB width wFB                     0.096 m
+                                                WF
+
+
+
+
+                                                       WFB
+                                                B
+
+
+
+
+                  OHO                                                 FB height hFB                     0.24 m
+                                                                      FB particle diameter dFB        0.0012 m
+                                                  Air inflow
+                                                 velocity vFB
+
+            (a) Hopper                    (b) Fluidized bed                   (c) Dimensions of the cases
+      Figure 6: Schematic of the two numerical experimental cases and the associated dimensions.
+
+
+    Name                Simulation method             #Particles      #CFD cells     Variability
+    Hopper                            DEM                 250k             -         Hopper angle, material friction
+    Fluidized bed                   CFD-DEM               500k           160k        Fluid inlet velocity
+
+                      Table 1: Overview of dataset properties used in the experiments.
+
+
+4.1     Simulation setup and problem scale
+
+Hoppers are industrially used for short as well as long term storage of particulate material, show-
+casing slow and pseudo-steady macroscopic behavior. DEM is the preferred method since the air
+around the particles can usually be neglected due to the slow velocities in the system. In our experi-
+ments, the hopper geometry, as shown in Figure 6a, is filled with 250k particles, which gradually exit
+the domain over the simulation duration when the hopper empties. Timestepping of DEM solvers
+strongly depends on particle size as well as particle properties. A timestep of ∆tDEM = 10 µs is
+required for the tested numerical experiments with LIGGGHTS [46].
+Fluidized bed reactors are characterized by fast and transient phenomena and are widely used in
+industry for a variety of processes. Fluidized bed reactors showcase strong interactions of the par-
+ticles with the surrounding fluid, necessitating an accurate modeling of particles, the gas phase, as
+well as particle-gas interactions. Thus, modeling approaches need to combine DEM parts with sim-
+ulations of the surrounding fluid. For data generation, we use a coupled CFD-DEM approach [31]
+which is built upon LIGGGHTS [46] and OpenFOAM [95]. The geometry of the setup is sketched
+in Figure 6b and the dimensions for both cases can be found in Table 6c. The reactor is filled with
+500k particles and the fluid, i.e., air, that is uniformly pushed into the reactor from the bottom is
+modeled on a grid of 160k hexahedral cells.
+
+
+
+
+                                                                 13
+4.2   Hopper
+
+We consider hopper simulations with the hopper geometry depicted in Figure 6a. With its outlet
+closed, the hopper is initially filled with particles, to roughly 250k grains on average (particle counts
+can vary based on the outlet slope αHO ). Then the outlet at the bottom of the hopper is opened
+and grains start to flow out. By default, we do not refill any new particles into the hopper but
+consider an operation mode where the material is continuously refilled in Section 4.2.7. Different
+simulations in the dataset vary hopper geometry and particle friction as specified in Table 2. We
+create a dataset of 1000 simulations with a train/validation/test split of 800/100/100. This variability
+in simulation parameters results in different flow regimes (“funnel flow” or “mass flow”) where the
+dynamics are slow and pseudo-steady. In funnel flow, particles primarily move down a funnel above
+the outlet, whereas in mass flow, material moves uniformly down towards the outlet, see Figure 7.
+Each simulation is run to cover 40 physical seconds at most (the simulation is stopped if no particles
+remain in the hopper). Snapshots are stored in 0.1 s intervals (resulting in 400 ML timesteps ∆tML )
+which is the data that NeuralDEM models are trained on. The DEM solver requires 10k timesteps
+per 0.1 physical seconds and a single simulation takes roughly 3 hours on 16 CPUs. We additionally
+evaluate the parameters of each simulation in a shear cell to get its internal friction angle θ and flow
+function coefficient ffc to use it as conditioning instead of the microscopic friction parameters (see
+Section 4.2.6).
+
+             Name      Description                                 Range        Sampling
+             αHO       Angle of the slope towards the outlet       [0°, 60°]       LHS
+             µs        Particle sliding friction                 [0.05, 1.00]      LHS
+             µr        Particle rolling friction                 [0.00, 0.50]      LHS
+             θ         Angle of internal friction                 evaluated         -
+             ffc       Flow function coefficient                  evaluated         -
+
+                              Table 2: Parameters of the hopper dataset.
+
+
+The following macroscopic properties of hopper simulations are of interest to practitioners.
+
+       • Peak outflow rate: How many particles exit the hopper within a certain timeframe at most?
+       • Drainage time: How long does it take to empty the hopper?
+       • Residual material: How much material got stuck inside the hopper after full drainage?
+       • Flow regime: Does the material exhibit mass flow or funnel flow?
+       • Visualization: How does the simulation look like?
+       • Residence time: How long are certain particles inside the simulation?
+
+All these macroscopic properties emerge from the microscopic particle-particle interactions mod-
+eled by DEM. To re-generate these emerging phenomena with NeuralDEM, we train our models to
+predict three auxiliary fields at each timestep of the simulation. First, the occupancy field classifies
+whether an arbitrary position within a rectangular volume around the hopper is occupied, teaching
+the model which regions are filled with particles. The occupancy field allows us to calculate an
+outflow rate by evaluating the occupancy field with the particle positions of the initial packing and
+subtracting the number of occupied positions from tML and tML +∆tML . Similarly, we can extract the
+drainage time by repeatedly checking if positions above the outlet are still occupied and the residual
+material by evaluating how many of the initial particle positions are occupied after the hopper is
+drained. Second, the transport field is trained by predicting the initial position of each particle,
+which corresponds to the cumulative displacement of each particle across all previous timesteps,
+enabling macroscopic modeling of particle movement over long time horizons. This allows us to
+model insights into the flow regime and visualize the simulation by evaluating the transport field of
+occupied positions. Finally, the residence time of each particle models the time it takes each particle
+to exit the hopper and can be used to easily identify stale regions.
+
+
+                                                   14
+                             DEM simulation
+                              Ground truth
+                           generated trajectory
+                              NeuralDEM
+
+
+
+
+                                                                             (a) Mass flow regime
+                             Ground truth DEM
+                                simulation
+                           generated trajectory
+                              NeuralDEM
+
+
+
+
+                                                                             (b) Funnel flow regime
+
+
+                             0.20                                     Ground truth DEM                       0.20                       Ground truth DEM
+                                                                      NeuralDEM                                                         NeuralDEM
+         Fraction of particles
+
+
+
+
+                                                                                         Fraction of particles
+
+
+
+
+                             0.15                                                                            0.15
+                             0.10                                                                            0.10
+                             0.05                                                                            0.05
+                             0.00                                                                            0.00
+                                                  0     5     10     15      20    25                               0        10       20         30
+                                                                Time [s]                                                          Time [s]
+                                                      (c) Mass flow regime                                              (d) Funnel flow regime
+Figure 7: Visualization of a NeuralDEM generated trajectory vs the DEM simulation. Different
+colors indicate different initial particle layers. Emerging funnel and mass flow regimes are clearly
+visible. In mass flow (a), mass moves uniformly down towards the outlet. In funnel flow (b),
+particles primarily move down a funnel above the outlet. The fractions of colored material over time
+are shown for (c) mass flow regime and (d) funnel flow. In the funnel flow regime particle layer
+inversion happens, i.e., particles from higher layers overtake particles from the lower layers through
+the funnel. This emerging macroscopic phenomena is perfectly modeled by NeuralDEM.
+
+
+
+
+                                                                                         15
+4.2.1   Multi-branch neural operator architecture for hopper experiments
+The considered hopper simulations exhibit slow and pseudo-steady dynamics, resulting in a state
+that is well-defined from the scalar input parameters (timestep, particle friction, hopper angle)
+alone. Therefore, it is neither necessary to encode the previous state nor to have interactions be-
+tween branches, as the scalar input parameters already provide full information about the state to
+all branches. Therefore, we opt for a decoder-only architecture consisting of a single transformer
+block per branch that starts from 32 static learnable latent tokens and prepares them for decoding
+via a perceiver cross-attention block that takes positional embeddings as queries and uses the latent
+tokens as keys and values. Both the transformer and the cross-attention block use DiT [77] modula-
+tion to incorporate the scalar parameters (timestep, αHO , µs and µr ). The whole model consists of
+50M parameters.
+We train models in the hopper setting for 10k updates using a batchsize of 256, a peak learning rate
+of 10−4 which is warmed up for 1k updates followed by a decaying cosine schedule afterwards. The
+loss is summed for all branches and LION [19] is used as optimizer.
+
+4.2.2   Flow regime and visualization via occupancy and transport field
+To evaluate the macroscopic modeling of the flow regime inside the hopper, we use the transport
+field and evaluate it at the occupied positions as defined via the occupancy field. We bin the z
+coordinate of the transport prediction into 8 bins which results in “stripes” of particles at the initial
+timestep. These stripes then evolve in time as particles flow out. By evaluating the volume of each
+stripe at every timestep, we get detailed information on the different emerging flow regimes in the
+hopper.
+In the mass flow regime, as shown in Figure 7a, material flows to the outlet quite uniformly, resulting
+in a steady flow and first in - first out operation. NeuralDEM can model this behavior accurately,
+as visualized in Figure 7c, where layer after layer leaves the hopper. Contrary, in the funnel flow
+regime, as shown in Figure 7b, the material primarily moves down a funnel above the outlet. This
+results in a layer inversion, as visualized in Figure 7d, meaning particles from higher layers overtake
+particles from the lower layers through the funnel and the layers higher up in the hopper will empty
+first. These emerging macroscopic phenomena are perfectly modeled by NeuralDEM as well.
+Notably, NeuralDEM exclusively models fields, which allows us to evaluate transport and occupancy
+at arbitrary positions with arbitrary resolution. For example, in the evaluations of this section, we
+use a tetrahedral grid with 80k cells. Our model can seamlessly make predictions thereof despite
+seeing only particle positions during training.
+
+4.2.3   Outflow rate, drainage time, and residual material via occupancy field
+The occupancy field defines the occupied volume of the remaining mass in the draining hopper.
+Given an initial packing, we can evaluate the occupancy field at the initial positions of each particle
+and track the number of occupied positions over the whole simulation to then create predictions of
+outflow rate, drainage time, and residual material.
+
+Occupancy field. To define whether or not a position is occupied, we introduce a hyperparameter
+that defines a radius around each particle position. All positions within this radius are considered
+occupied whereas positions that are not within the radius of any particle are considered unoccupied.
+We choose the radius to be larger than the particle radius to avoid classifying empty spaces between
+densely packed spherical particles as unoccupied.
+
+Outflow rate. The outflow rate can simply be calculated by subtracting the number of occupied
+positions at time t from that one timestep later at t + ∆tML . To avoid fluctuations due to the burn-in
+and ending phase of the simulation, we calculate the outflow rate as the average outflow starting
+from timestep 50 (5 s) over a 100 timestep (10 s) duration and normalize it by the initial particle
+count. The ground truth over the whole dataset is visualized in Figure 8a and respective NeuralDEM
+predictions are shown in Figure 9a.
+
+Drainage time. We consider the hopper to be “drained” by specifying a threshold of particles that
+are located above the outlet (“are falling down”) for both classical DEM and NeuralDEM generated
+
+
+                                                   16
+     trajectories. This definition is necessary as the material gets stuck on the outlet slope if it is very
+     cohesive or if the slope is flat. To evaluate the drainage time of the NeuralDEM model, we query
+     the occupancy field at the particle positions of the initial packing above the outlet until the number
+     of occupied positions is less than the specified threshold. The drainage time obtained when running
+     numerical DEM simulations is visualized in Figure 8b. Further, the NeuralDEM predicted drainage
+     time is visualized in Figure 9b. The NeuralDEM predicted drainage time shows high agreement
+     with the drainage time of the DEM simulation. We set the threshold of particles above the outlet to
+     64 whereas other thresholds like 32 or 128 result in almost the exact same behavior.
+
+
+     Residual volume. Once the hopper is drained, the number of particles that remain in the hopper
+     (due to a flat outlet slope or high friction) defines the residual particle count. As the volume of the
+     hopper fluctuates due to different outlet slopes shrinking/expanding the volume, we normalize the
+     residual particle count by the initial particle count to predict the residual material as a percentage
+     of the total particle count. Figure 8c visualizes the ground truth (DEM) values and Figure 9c the
+     NeuralDEM predictions.
+
+                          45                                                 1800                             45                                                  35                             45
+                                                                                                                                                                                                                                                            14
+Internal friction angle [°]
+
+
+
+
+                                                                                    Internal friction angle [°]
+
+
+
+
+                                                                                                                                                                       Internal friction angle [°]
+                          40                                                                                  40                                                                                 40
+                                                                             1600                                                                                                                                                                           12
+                          35                                                                                  35                                                  30                             35
+                          30                                                                                  30                                                                                 30                                                         10
+                                                                             1400
+                          25                                                                                  25                                                  25                             25                                                         8
+                          20                                                 1200                             20                                                                                 20                                                         6
+                          15                                                                                  15                                                  20                             15                                                         4
+                                                                             1000
+                          10                                                                                  10                                                                                 10                                                         2
+                              5                                                                                   5                                               15                                 5
+                                                                             800
+                                  0     10     20     30    40   50    60                                               0    10   20    30   40        50   60                                                   0         10     20   30   40   50   60
+                                        Hopper angle [°]                                                                     Hopper angle [°]                                                                                  Hopper angle [°]
+                                         (a) Outflow rate                                                                   (b) Drainage time [s]                                                                  (c) Residual volume [%]
+     Figure 8: Distribution of macroscopic measurements over the whole DEM generated hopper dataset.
+     Combinations of different geometry and friction parameters lead to different simulation behaviors.
+
+
+
+                                                                                                                                                                                                                     17.5
+                                                                                                                                                                                               DEM residual volume [%]
+                                                                                                DEM drainage time [s]
+
+
+
+
+                              1600                                                                                    30
+                                                                                                                                                                                                                     15.0
+DEM outflow rate
+
+
+
+
+                                                                                                                                                                                                                     12.5
+                              1400                                                                                    25
+                                                                                                                                                                                                                     10.0
+                              1200                                                                                                                                                                                       7.5
+                                                                                                                      20
+                                                                                                                                                                                                                         5.0
+                              1000
+                                                                                                                                                                                                                         2.5
+                                                    Average error: 17.3                                               15               Average error: 0.19s                                                                            Average error: 0.41%
+                               800                                                                                                                                                                                       0.0
+                                  800        1000    1200    1400     1600                                                   15        20         25         30                                                             0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5
+                                      NeuralDEM outflow rate                                                            NeuralDEM drainage time [s]                                                         NeuralDEM residual volume [%]
+                                        (a) Outflow rate                                                                     (b) Drainage time                                                                                 (c) Residual volume
+     Figure 9: Macroscopic simulation insights from the predicted occupancy field. The NeuralDEM
+     model can accurately capture macroscopic measurements from the learned dynamics.
+
+
+
+     4.2.4                              Residence time
+
+     Another interesting quantity that emerges at the macroscopic level is residence time, i.e., how long
+     it takes for each particle to exit the hopper. Therefore, we predict the number of timesteps that each
+     particle resides within the hopper. Visualizing the residence time at the initial timestep can identify
+     stale regions and can also be used to characterizes the flow regime. We show the initial frame of the
+     residence time prediction for different flow regimes and stale regions in Figure 10.
+
+
+                                                                                                                                        17
+                       Ground truth                          NeuralDEM                                                             Ground truth                                                NeuralDEM
+                      DEM simulation                          prediction                                                          DEM simulation                                                prediction
+
+
+
+
+                                                  (a) Mass flow regime                                                                                (b) Funnel flow regime
+     Figure 10: Visualization of a NeuralDEM generated material residence time vs the DEM simulation
+     for (a) mass flow regime and (b) funnel flow regime. The darker a region is the longer the material
+     in that spot stays inside the hopper. While the hopper in the mass flow regime shows a smooth
+     transition from bottom to top, the one with funnel flow shows clear stagnation zone in the bottom
+     with high residence time. Both cases are accurately predicted by Neural DEM.
+
+
+     4.2.5                              Generalization capabilities
+     To investigate the generalization capabilities of NeuralDEM, we split the dataset by excluding a
+     parameter range of 20 degrees from the training set for testing. In this setting, the NeuralDEM
+     model is evaluated on parameter combinations that are far away from the ones seen during training.
+     Nevertheless, the NeuralDEM model makes reasonable predictions as shown in Figure 11.
+
+                            45                                        32                               45                                        32                                45                                          0.6
+Shear cell friction angle [°]
+
+
+
+
+                                                                           Shear cell friction angle [°]
+
+
+
+
+                                                                                                                                                       Shear cell friction angle [°]
+                            40                                        31                               40                                        31                                40                                          0.5
+                            35                                        30                               35                                        30                                35
+                            30                                                                         30                                                                          30                                          0.4
+                                                                      29                                                                         29
+                            25                                        28                               25                                        28                                25                                          0.3
+                            20                                        27                               20                                        27                                20
+                                                                                                                                                                                                                               0.2
+                            15                                        26                               15                                        26                                15
+                            10                                                                         10                                                                          10                                          0.1
+                                                                      25                                                                         25
+                                5                                                                          5                                                                           5
+                                                                      24                                                                         24                                                                            0.0
+                                    0   10   20   30   40   50   60                                            0   10   20   30   40   50   60                                             0     10   20   30   40   50   60
+                                        Hopper angle [°]                                                           Hopper angle [°]                                                              Hopper angle [°]
+                                    (a) DEM drainage time [s]                               (b) NeuralDEM drainage time [s]                                                                    (c) Absolute error [s]
+     Figure 11: Generalization to DEM simulation settings that are outside the range seen during training.
+     We exclude all settings in a range of 20 degrees hopper angles and internal friction angles from the
+     training set and evaluate drainage time on the excluded settings. The NeuralDEM model makes
+     reasonable predictions despite lacking those parameter combinations during training. For reference,
+     the average absolute error is 0.19 s when randomly splitting the data into train/test splits (Figure 9b).
+     Gray dots indicate training data and colored dots denote simulations used for evaluation only.
+
+
+     4.2.6                              Macroscopic parameter conditioning
+     A common use case in the industry is that given some material, one wants to simulate the material
+     in, e.g., a hopper to get insights into its behavior or flow dynamics. However, DEM solvers require
+     a precise specification of the microscopic material parameters, which are often unknown. In order
+     to run a DEM simulation of a material with unknown microscopic parameters, those parameters first
+     have to be inferred via, e.g., a calibration procedure [22] before the DEM simulation of the material
+     can be run. In the case of our hopper simulation, one would need to infer the values of particle
+     sliding and rolling friction.
+     Instead, the flexible conditioning methodology (as described in Section 3.3) allows NeuralDEM to
+     condition on macroscopic parameters instead of microscopic ones. To this end, we evaluate the in-
+
+
+                                                                                                                             18
+ternal friction angle and flow function coefficient in a separate shear cell simulation to characterize
+the material macroscopically. We then use the macroscopic internal friction angle and flow function
+coefficient (θ and ffc) as conditioning instead of the microscopic sliding and rolling friction parame-
+ters (µs and µr ). This allows our model to simulate any given material by simply characterizing it in
+a shear cell and using the resulting macroscopic friction parameters as input to the model, without
+needing particle sliding/rolling friction.
+Table 3 shows a quantitative comparison with different conditionings. Note that a drop in perfor-
+mance is expected as the microscopic material properties 1:1 reflect the underlying DEM simulation.
+Nevertheless, this drop is within an acceptable range such that model predictions are still useful, as
+shown in Figure 12.
+
+
+                   Scalars                     NeuralDEM predictive performance
+                                   Drainage    Residual      Outflow    Transport   Residence
+              µs   µr   θ    ffc
+                                   error [s]   error [%]      error    MSE [1e-2]   MSE [1e-3]
+              ✓    ✓    ✗    ✗       0.19        0.41         17.3        0.72         1.59
+              ✗    ✗    ✓    ✗       0.41        0.64         44.6        2.30         4.46
+              ✗    ✗    ✗    ✓       0.78        0.80         38.6        4.48         7.78
+              ✗    ✗    ✓    ✓       0.40        0.66         28.4        1.96         3.82
+              ✓    ✓    ✓    ✓       0.23        0.62         17.2        0.74         1.46
+
+Table 3: NeuralDEM performance metrics using different scalar conditions in the model. Condi-
+tioning on microscopic sliding and rolling friction parameters (µs and µr ) fully specifies the un-
+derlying DEM simulation and leads to the best performances. Conditioning only on the measured
+macroscopic friction angle (θ) and flow function coefficient (ffc) from a shear cell device can obtain
+reasonable results while not requiring calibration procedures, i.e., µs /µr are unknown. The measured
+scalars from the shear cell device provide no additional information and therefore do not improve
+model performance.
+
+
+
+
+               (a) Ground truth             (b) NeuralDEM using            (c) NeuralDEM using
+               DEM simulation               microscopic parameter          macroscopic parameter
+                                                 conditioning                   conditioning
+Figure 12: NeuralDEM transport field prediction using microscopic simulation parameters vs
+macroscopic material parameters. Conditioning on microscopic sliding and rolling friction parame-
+ters (µs and µr ) reflects the underlying DEM simulation exactly and results in accurate agreement of
+the transport field. However, conditioning only on the measured macroscopic friction angle (θ) and
+flow function coefficient (ffc) still leads to acceptable accuracy with small deviations. This allows
+NeuralDEM to work without a calibration routine to get the microscopic parameters on any given
+material where µs and µr are unknown.
+
+
+
+                                                        19
+4.2.7   Refilling operation mode
+For neural operator modeling, it is difficult to represent particles that do not exist at the initial
+timeframe. This is due to the typically stochastic nature of the refilling process, and one would
+need to accurately model this process during inference in order to avoid unrealistic states, e.g.,
+overlapping particles. However, our field-based modeling paradigm allows NeuralDEM to model
+the macroscopic behavior of refilled particles without requiring their accurate positions.
+To showcase this setting, we train a NeuralDEM model to predict the evolved transport and residence
+time when continuously refilling new particles into the hopper. As the refilling operation mode can
+go on indefinitely, the model needs some kind of reference frame to predict “how did particles
+move w.r.t. the reference frame” and “how long particles have been in the hopper w.r.t. the reference
+frame”. To this end, we sample a random past timestep during training and predict transport and
+residence time w.r.t. this past timestep. Figure 13 shows the evolved transport over 50 ML timesteps
+(5s) in comparison to a ground truth DEM simulation.
+
+
+
+
+          (a) Ground truth               (b) Ground truth                    (c) NeuralDEM
+        DEM simulation tref           DEM simulation tref + 5 s            prediction tref + 5 s
+Figure 13: NeuralDEM transport field prediction for the hopper case in refilling operation mode vs
+ground truth DEM simulation. The transport field is initialized at a reference time (a). The ground
+truth of the 5 s evolved field is shown in (b) and the NeuralDEM prediction in (c). Newly Refilled
+material since is shown in gray. NeuralDEM can accurately model the transport of material in a
+hopper in refilling operation mode.
+
+The residence time in the hopper can go to infinity when the NeuralDEM trajectory is rolled out for
+longer. This happens when material is stuck inside the hopper, which the NeuralDEM model cannot
+predict as it only sees simulations of a fixed maximum duration during training. Conditioning of
+the residence off-branch to a reference timesteps allows us to periodically reset the reference time
+during inference and aggregate the residence time predictions before each reset in post-processing.
+
+4.2.8   Runtime: NeuralDEM enables real-time simulations
+Simulating a granular flow of 250k particles through a hopper, with a trajectory spanning 40s or 4M
+numerical timesteps, requires 3 hours on 16 cores of high-performance CPUs when using traditional
+DEM. In contrast, on a single state-of-the-art GPU, the fastest NeuralDEM inference model faith-
+fully reproduces the physics rollout in just 1.4 s. Notably, NeuralDEM requires significantly fewer
+timesteps compared to the numerical simulation. Further acceleration is achieved through Neural-
+DEM’s field-based output representation, which reduces the number of required output points while
+still capturing the macroscopic bulk behavior accurately. When processing all 250k output points
+on a single GPU, NeuralDEM inference takes 8 s. Running NeuralDEM on the same 16 CPUs used
+for the numerical simulation – notably leveraging the benefits of reduced outputs due to field-based
+representations – results in a trajectory rollout of 41 s. Those inference times are shorter (GPU) than
+or in the same order of magnitude (16 CPUs) as the trajectory duration of 40 s, highlighting the fea-
+sibility of real-time simulations. While traditional DEM could theoretically be further parallelized,
+
+
+                                                  20
+for a certain thread number hardware communication bottlenecks present a limiting factor, and thus
+further underlines the potential of NeuralDEM.
+
+4.3     Fluidized bed reactors
+
+As second industrial particulate flow machinery, we consider the highly dynamic system of fluidized
+bed reactors, where particles and air interact, necessitating a multi-physics modeling, see Figure 6b.
+These processes are described through a coupled CFD-DEM simulation, where DEM is used to
+handle particles, while the surrounding fluid is simulated by CFD. Numerically, the reactor is filled
+with 500k particles, and the air that is uniformly pushed into the reactor from the bottom is modeled
+on a grid of 160k hexahedral cells. The following numerical experiments are carried out on a fixed-
+geometry reactor with varying inlet velocities, and we evaluate short-term behavior and long-term
+statistics. In total, 76 difference inlet velocities sampled uniformly from 0.337 m s−1 to 0.842 m s−1
+were used. Additionally, 6 different initial random particle packings per inlet velocity were sampled,
+resulting in 456 CFD-DEM trajectories. The physical duration of one DEM simulation amounts to
+5 s, comprising 2M DEM timesteps and 20k CFD timesteps.
+To train the NeuralDEM model, each trajectory is sub-sampled to 300 timesteps, starting from 2 s of
+the original simulation and sampling every ∆tML = 0.01 s. The classical solver requires a much finer
+time resolution where ∆tML = 4000∆tDEM = 40∆tCFD . We select 60 inlet velocities at random
+for the training set and the remaining 16 are left for validation, thus obtaining a training set of 360
+trajectories and a validation set of 96. For testing the long rollout performance of NeuralDEM, we
+further generate 4 sequences with a physical duration of 28 s and different inlet velocities, where
+new random initial packings are applied. Those trajectories result in sequences of 2800 timesteps.
+
+4.3.1    Multi-branch neural operator architecture for fluidized bed reactor experiments
+Modeling a fluidized bed reactor requires interaction between fluid and particles. To this end, we
+utilize both grid data and particle data as input to the model. As described in Section 3.4, we
+use specialized designs for different physics phases. Namely, ViT [26] patch embedding for grid
+data and UPT supernode pooling [3] for particle data. The number of supernodes and patches can
+be changed after training, enabling stable training and a flexible choices for generating trajectory
+rollouts. Rollouts are carried out in autoregressive fashion, where each timestep is used as input for
+the next timestep. During training, the model receives data from a random timestep t, is conditioned
+on the inlet velocity, and is supervised with the quantities from timestep t+∆tML . The inlet velocity
+conditioning is performed analogously to the hopper setting, with a DiT [77] modulation. The
+particle mixing is modeled as an off-branch quantity.
+The final model has roughly 850M trainable parameters in total where we use a standard DiT [77]
+conditioning mechanism which adds a lot of parameters that do not contribute a significant amount
+of FLOPS to the model. We use 12 multi-branch transformer blocks in total with hidden dimension
+768, where each of the 3 branches would correspond to a ViT-Base [26] (86M parameters) if no
+DiT modulation was applied. The model processes sequences with length of 2048 tokens for the
+particle displacement, 2500 for the fluid velocity and particle solidfraction, and 2500 for the particle
+mixing, both with 4 × 4 × 4 patches. The model is trained 126k updates using a batch size of 128, a
+peak learning rate of 4 × 10−5 which is warmed up for 13k updates followed by a decaying cosine
+schedule to 10−7 using LION [19] as optimizer with 0.5 as weight decay. The loss is summed over
+all branches.
+
+4.3.2    Modeling the dynamics of the system
+A fluidized bed reactor simulation exhibits fast and transient dynamics with many physically pos-
+sible trajectories, i.e., fluidized bed reactor trajectories are chaotic. This means that – also for nu-
+merical solvers – starting a fluidized bed simulation with different initial particle packings will yield
+different trajectories. Still, in the limit of long simulation trajectories, different initial packings do
+not affect the temporal statistics. Due to this phenomenon, we use time-averaged statistics for quan-
+titative comparisons, see Figure 15 and Figure 16. Precise step-by-step comparison is not feasible
+due to numerical differences that naturally arise during a rollout. In Figure 7, we show a visual com-
+parison of the iso-surface of solid fraction, solid fraction field, and fluid velocity for two different
+inlet velocities. When the two time series are compared to the ground truth snapshots they look very
+similar, especially the bubble structure visualized by the iso surface on the solid fraction field.
+
+
+                                                   21
+                 NeuralDEM prediction            Ground truth CFD-DEM simulation
+
+
+
+
+                                         (a) Low inlet velocity
+
+                 NeuralDEM prediction              Ground truth CFD-DEM simulation
+
+
+
+
+                                         (b) High inlet velocity
+Figure 14: Visualization of three snapshots taken at 0.06 s, 0.09 s and 0.12 s for two different inlet
+velocities (a) 0.45 m s−1 and (b) 0.7 m s−1 . The first row shows iso-surfaces of solid fraction at
+0.35 uncovering the emerging bubble structure of fluidized bed reactors. The second and the third
+show the central slice along the y-axis for the solid fraction and the magnitude of fluid velocity,
+respectively. Here, NeuralDEM uses the same initial conditions as the CFD-DEM simulation and
+faithfully reproduces the evolution of the system in the first few steps of the simulation. Please refer
+to https://emmi-ai.github.io/NeuralDEM/ for videos of the rollouts.
+
+
+
+
+                                                   22
+Notice how, with low inlet velocity, a single bubble of air forms inside the dense particle bed. When
+the bubble reaches the surface, a ripple-like structure is formed by the particles, clearly displaying
+their fluidization. With high inlet velocity, the behavior is much more unorganized and a complicated
+bubble structure inside the particle bed arises. NeuralDEM handles both regimes successfully, mod-
+eling the organized and structured low-velocity bubble dynamics as well as the chaotic, high-velocity
+particle interactions, accurately capturing the transitions in flow patterns and complex fluidization
+behavior across different regimes.
+The fluid velocity within the particle bed shows distinct patterns influenced by particle motion and
+fluid-particle interactions. At low inlet velocity, the fluid flow is relatively stable, with modest spatial
+gradients around the rising air bubble. In contrast, with high inlet velocity, the fluid velocity across
+the bed is higher compared to the previous case, not only due to the high inlet velocity but also
+because of the dynamic movement of particles within the bed. These variations result in complex
+flow fields, with strong fluctuations that are challenging to model. NeuralDEM accurately captures
+these dynamics and replicates the different velocity profiles for all inlet velocity regimes between
+the scenarios shown here.
+ CFD-DEM          NeuralDEM       CFD-DEM        NeuralDEM        CFD-DEM      NeuralDEM      CFD-DEM         NeuralDEM
+
+
+
+
+        Mean fluid velocity        Std dev. fluid velocity           Mean fluid velocity        Std dev. fluid velocity
+
+
+ CFD-DEM          NeuralDEM       CFD-DEM        NeuralDEM        CFD-DEM      NeuralDEM      CFD-DEM         NeuralDEM
+
+
+
+
+        Mean solid fraction        Std dev. solid fraction           Mean solid fraction        Std dev. solid fraction
+
+                   (a) Low inlet velocity                                      (b) High inlet velocity
+
+Figure 15: Comparison of long term temporal averaging statistics for two fluid inlet velocities.
+Slices along the y-axis of the mean and the standard deviation of the magnitude of the velocity field
+and the solid fraction field shown. Each pairs shows the CFD-DEM simulation and the NeuralDEM
+model, respectively. NeuralDEM predictions closely match the long-term statistics of both slow and
+fast inlet velocity regimes, where spatial gradients vary from small to very high.
+
+
+4.3.3      Physics evaluation
+NeuralDEM’s capability to maintain stability and accuracy over extended simulation periods is es-
+sential for realistic modeling of particle-fluid systems. We demonstrate the long-term rollout stabil-
+ity by analyzing the time average solid fraction and fluid velocity field for 2.8k steps, representing
+28 s of physical simulation. The length of the trajectory resulted from a 30 s CFD-DEM simulation,
+
+
+                                                             23
+                      0.250                                                                     0.250
+                                                         CFD-DEM                                                                    CFD-DEM
+
+
+  Average solidfraction
+
+
+
+
+                                                                            Average solidfraction
+                      0.225                              NeuralDEM                              0.225                               NeuralDEM
+                      0.200                                                                     0.200
+                      0.175                                                                     0.175
+                      0.150                                                                     0.150
+                              0.0     6.0    12.0 18.0       24.0   30.0                                0.0     6.0    12.0 18.0        24.0   30.0
+                                              Time [s]                                                                  Time [s]
+                                    (a) Low inlet velocity                                                    (b) High inlet velocity
+Figure 16: The average solid fraction predicted by the NeuralDEM model is stable over extremely
+long rollouts that are almost 10× the length of the 3 s sequences used for training. Notably, although
+the output of NeuralDEM models a field, the mass of the entire system is preserved almost perfectly.
+The y-axis ranges from 0.15 to 0.25 to show more detail but the solid fraction can range from 0 to 1.
+
+
+
+sufficient to determine the long-term statistics. NeuralDEM is not limited to this length and did not
+show any stability problem up to 100 s. To the best of our knowledge, these are the longest reported
+stable rollouts in the deep learning-based 3D physical simulation field [48, 63, 82].
+In Figure 15 we show the mean and variance of the magnitude of the velocity and the solid fraction
+over time for a given mesh cell. In the figure, we display the central slice along the y-axis (aka
+the depth of the reactor). NeuralDEM successfully captures the different long-term behavior of the
+particles and the fluid when different inlet velocities are used.
+Possibly the most crucial property of a physics simulation is mass conservation. In a CFD-DEM
+simulation, as long as the particles stay within the domain, the overall mass will not change. In Fig-
+ure 16 we show how NeuralDEM, although it does not model each particle independently, maintains
+very good mass conservation for all timesteps, showing no drift throughout the predicted trajectory.
+
+
+
+4.3.4                     Mixing behavior
+
+Particle mixing by definition is a particle-associated quantity
+where each particle either belongs to group A or B. In our nu-
+merical experiments, we label particles belonging to group A
+those that start in the left half of the reactor, and particles be-
+longing to group B those that start in the right half. However,
+when using field-based representations, a faithful modeling of
+particle mixing is not feasible. Therefore, we introduce the
+particle mixing concentration field, which defines – for a given
+spatial location and time – the concentration of particles that
+belong to group B. Consequently, we discretize the domain us-
+ing a hexahedron mesh and map the particle information using
+a Gaussian kernel on that mesh, as shown in Figure 17.
+We use the Lacey mixing index [51] to allow for a quantitative
+comparison between the model prediction for the mixing con-            (a)               (b)
+centration field and ground truth simulation data. The Lacey
+mixing index represents the current state of mixing and can be Figure 17: (a) Particle-based mix-
+plotted over time to compare the time evolution of the process. ing where the dark particles started
+As the particles get more mixed, the Lacey mixing index goes from the right half of the reactor.
+towards 1. As visualized in Figure 18, NeuralDEM predic- (b) Field-based concentration ob-
+tions match the characteristics of the ground truth DEM-CFD tained using a Gaussian kernel on
+trajectories over long time horizons. It is of special note how a mesh.
+NeuralDEM can accurately predict the mixing rate for both slow-mixing systems and fast-mixing
+ones by simply conditioning on the appropriate inlet velocity.
+
+
+                                                                           24
+          1.0                                        1.0                                         1.0
+                               CFD-DEM
+          0.8                  NeuralDEM             0.8                                         0.8
+
+Lacey index
+
+
+
+
+                                           Lacey index
+
+
+
+
+                                                                                       Lacey index
+          0.6                                        0.6                                         0.6
+          0.4                                        0.4                                         0.4
+                                                                           CFD-DEM                                     CFD-DEM
+          0.2                                        0.2                   NeuralDEM             0.2                   NeuralDEM
+          0.0                                        0.0                                         0.0
+                0.0 0.6 1.2 1.8 2.4 3.0                    0.0 0.6 1.2 1.8 2.4 3.0                     0.0 0.6 1.2 1.8 2.4 3.0
+                        Time [s]                                   Time [s]                                    Time [s]
+                (a) Low inlet velocity                   (b) Medium inlet velocity                     (c) High inlet velocity
+  Figure 18: Comparison of the temporal evolution of the Lacey mixing index for three different inlet
+  velocities: (a) 0.36 m s−1 , (b) 0.55 m s−1 , (c) 0.84 m s−1 . NeuralDEM predictions (blue) match the
+  characteristics of the ground truth DEM-CFD trajectories (orange) over long time horizons. In the
+  low inlet velocity simulation, mixing is slow and the model can very accurately predict the mixing
+  rate. For higher inlet velocities mixing is faster and the exact behavior looks more random because
+  the behavior is more chaotic. However, the model correctly captures the exact trend in the mixing,
+  starting fast and later slowing down.
+
+
+  4.3.5          Runtime: NeuralDEM enables real-time simulations
+  Similar to Section 4.2.8, we evaluate NeuralDEM’s potential for real-time simulations. In contrast
+  to the hopper simulations of Section 4.2, the fluidized bed reactors are larger and more complex,
+  requiring roughly 20 times larger neural network architectures. Numerically, when using traditional
+  CFD and DEM methods, the simulation of a fluidized bed reactor of 500k particles, with a trajectory
+  spanning 3 s amounts to 12k CFD and 1.2M DEM timesteps. This requires 6 hours on 64 cores
+  of high-performance CPUs. In contrast, on a single state-of-the-art GPU, the fastest NeuralDEM
+  inference model faithfully reproduces the same physical behavior in just 11 s. With further speedups
+  via, e.g., model parallelization [85, 98], or model quantization [64, 87], real-time inference is within
+  reach.
+
+  5           Discussion
+  5.1           Conclusion
+
+  The present work has introduced NeuralDEM, a multi-branch neural operator framework that can
+  learn the complex behavior of particulate systems over a wide range of dynamic regimes: from
+  dense, pseudo-steady motion in hoppers to dilute, highly unsteady flow in fluidized bed reactors.
+  NeuralDEM treats the Lagrangian discretization of DEM as an underlying continuous field while,
+  simultaneously, modeling macroscopic behavior directly as additional auxiliary fields. Long-term
+  rollouts of our data-driven model show a high degree of stability and lead to accurate predictions
+  regarding various target quantities such as residence times or mixing indices even for unseen con-
+  ditions like different wall geometries, material properties, or boundary values. Evaluation times are
+  several orders of magnitude faster than the underlying (CFD-)DEM simulations and demonstrate the
+  real-time capability of NeuralDEM. This remarkable speedup stems from NeuralDEM’s field-based
+  representation and the forward propagation thereof which is computationally much more efficient
+  than the coupled solution of a huge number of real-space EOMs and lends itself to massive par-
+  allelization. As a side effect, NeuralDEM does not require the specification of microscopic DEM
+  parameters. Instead, it can directly operate on macroscopic properties like angle of repose and shear
+  cell characterization, which allows for a simple integration into engineering workflows.
+
+  5.2           Existing modeling limitations
+
+  A fundamental pillar of NeuralDEM is the new concept of modeling physics via field-based rep-
+  resentations. This approach allows us to model macroscopic quantities extremely efficiently, thus
+  scaling to large systems. However, the field-based representation comes with the limitation that
+  properties attached to individual particles which cannot inherently be approximated spatially, are
+  hard to model. To overcome this limitation, these quantities have to be replaced by an approximate
+
+
+                                                                      25
+field-based counterpart. A requirement for the demonstrated success of the autoregressive rollout
+is that the output distribution during rollout should match the input distribution observed during
+training. For example, particle-based quantities will be approximated with their field counterpart,
+which does not necessarily match the distribution of the input data, stifling the ability of the model to
+perform long-horizon predictions. Additionally, the autoregressive rollout is compute-intensive but
+could be improved using time propagation in the latent space, as introduced by Alkin et al. [3]. Fi-
+nally, NeuralDEM works best within the data distribution it was trained on. Therefore, NeuralDEM
+currently needs quite a lot of data to generalize across different geometries, operation parameters,
+and material properties.
+
+5.3    Future work
+
+While NeuralDEM clearly demonstrates the merits and massive potential of deep learning surro-
+gates, we have applied our methodology only to test cases which are smaller and simpler than real
+industrial processes. For this reason, future work will address the issues of larger scales and more
+complex physics. With regard to the spatial scope, we will investigate if it is preferable to use data
+from detailed, fine-grained simulations in small domains and devise strategies for NeuralDEM to
+upscale this information, or if large-scale data from more approximate, coarse-grained simulations
+without subsequent upscaling steps lead to more reliable results. Concerning real multi-physics
+predictions, it is desirable to include heat transport and transfer as well as chemical reactions into
+NeuralDEM. Besides the conceptual challenge that a larger number of branches needs to interact
+with each other in the neural operator – dynamics, heat transfer, and chemistry can be tightly cou-
+pled – and give a detailed description of how grains of different temperatures and compositions mix
+and interact, we will also have to face more practical obstacles. Such systems often come with
+additional time scales because certain chemical reactions might be very slow compared to, e.g., the
+rapid particle and bubble motion in a fluidized bed. In these cases, data generation with conventional
+numerical methods could become unfeasible, and it might be necessary to include an intermediate,
+data-assisted step [62] to first obtain long-term training data from short, high-fidelity time series.
+
+
+6     Acknowledgements
+
+We would like to sincerely thank Dennis Just, Miks Mikelsons, Robert Weber, Bastian Best, the
+whole NXAI team, and the whole Emmi AI team for ongoing help and support. We are grateful
+to Sepp Hochreiter, Phillip Lippe, Maurits Bleeker, Patrick Blies, Andreas Fürst, Andreas Mayr,
+Andreas Radler, Behrad Esgandari, Daniel Queteschiner for valuable inputs. Samuele Papa and
+Johannes Brandstetter thank Efstratios Gavves and Jan-Jakob Sonke for the help to make Samuele’s
+research exchange smooth and mutual beneficial.
+We acknowledge EuroHPC Joint Undertaking for awarding us access to Karolina at IT4Innovations,
+Czech Republic, MeluXina at LuxProvide, Luxembourg, LUMI at CSC, Finland and Leonardo at
+CINECA, Italy. The ELLIS Unit Linz, the LIT AI Lab, the Institute for Machine Learning, are
+supported by the Federal State Upper Austria.
+
+
+References
+    [1] Abramson, J., Adler, J., Dunger, J., Evans, R., Green, T., Pritzel, A., Ronneberger, O., Will-
+        more, L., Ballard, A. J., Bambrick, J., et al. Accurate structure prediction of biomolecular
+        interactions with alphafold 3. Nature, pp. 1–3, 2024.
+
+    [2] Ali, Z., Biglari, R., Denil, J., Mertens, J., Poursoltan, M., and Traoré, M. K. From modeling
+        and simulation to digital twin: evolution or revolution? SIMULATION: Transactions of The
+        Society for Modeling and Simulation International, 100(7):751–769, 2024.
+
+    [3] Alkin, B., Fürst, A., Schmid, S., Gruber, L., Holzleitner, M., and Brandstetter, J. Universal
+        physics transformers. arXiv preprint arXiv:2402.12365, 2024.
+
+    [4] Amani, H., Alamdari, E. K., Moraveji, M. K., and Peters, B. Experimental and numerical
+        investigation of iron ore pellet firing using coupled CFD-DEM method. Particuology, 2024.
+
+
+                                                   26
+ [5] Aminnia, N., Adhav, P., Darlik, F., Mashhood, M., Saraei, S. H., Besseron, X., and Peters, B.
+     Three-dimensional CFD-DEM simulation of raceway transport phenomena in a blast furnace.
+     Fuel, 334:126574, 2023.
+ [6] Anderson, T. B. and Jackson, R. O. Y. A fluid mechanical description of fluidized beds. Ind.
+     Eng. Chem. Fundam., 6(4):527–539, 1967.
+ [7] André, F. P. and Tavares, L. M. Simulating a laboratory-scale cone crusher in DEM using
+     polyhedral particles. Powder Technol., 372:362–371, 2020.
+ [8] Baevski, A. and Auli, M. Adaptive input representations for neural language modeling. In
+     ICLR, 2019.
+ [9] Batatia, I., Kovacs, D. P., Simm, G., Ortner, C., and Csányi, G. Mace: Higher order equivari-
+     ant message passing neural networks for fast and accurate force fields. Advances in Neural
+     Information Processing Systems, 35:11423–11436, 2022.
+[10] Batzner, S., Musaelian, A., Sun, L., Geiger, M., Mailoa, J. P., Kornbluth, M., Molinari, N.,
+     Smidt, T. E., and Kozinsky, B. E (3)-equivariant graph neural networks for data-efficient and
+     accurate interatomic potentials. Nature communications, 13(1):2453, 2022.
+[11] Benque, B., Orefice, L., Forgber, T., Habeler, M., Schmid, B., Remmelgas, J., and Khinast, J.
+     Improvement of a pharmaceutical powder mixing process in a tote blender via DEM simula-
+     tions. Int. J. Pharm., 658:124224, 2024.
+[12] Bi, K., Xie, L., Zhang, H., Chen, X., Gu, X., and Tian, Q. Accurate medium-range global
+     weather forecasting with 3d neural networks. Nature, 619(7970):533–538, 2023.
+[13] Bierwisch, C., Kraft, T., Riedel, H., and Moseler, M. Three-dimensional discrete element
+     models for the granular statics and dynamics of powders in cavity filling. J. Mech. Phys.
+     Solids, 57(1):10–31, 2009.
+[14] Blais, B., Vidal, D., Bertrand, F., Patience, G. S., and Chaouki, J. Experimental methods in
+     chemical engineering: Discrete element method—DEM. Can. J. Chem. Eng., 97(7):1964–
+     1973, 2019.
+[15] Bodnar, C., Bruinsma, W. P., Lucic, A., Stanley, M., Brandstetter, J., Garvan, P., Riechert,
+     M., Weyn, J., Dong, H., Vaughan, A., et al. Aurora: A foundation model of the atmosphere.
+     arXiv preprint arXiv:2405.13063, 2024.
+[16] Brandstetter, J., Worrall, D. E., and Welling, M. Message passing neural PDE solvers. In
+     ICLR, 2022.
+[17] Chen, H., Sun, Y., Yuan, W., Pang, S., Yan, W., and Shi, Y. A review on discrete element
+     method simulation in laser powder bed fusion additive manufacturing. Chin. J. Mech. Eng.
+     Addit. Manuf. Front., 1(1):100017, 2022.
+[18] Chen, X. and Wang, J. A comparison of two-fluid model, dense discrete particle model and
+     CFD-DEM method for modeling impinging gas–solid flows. Powder Technol., 254:94–102,
+     2014.
+[19] Chen, X., Liang, C., Huang, D., Real, E., Wang, K., Pham, H., Dong, X., Luong, T., Hsieh,
+     C., Lu, Y., and Le, Q. V. Symbolic discovery of optimization algorithms. Advances in Neural
+     Information Processing Systems, 36:49205–49233, 2023.
+[20] Chen, Y., Yang, O., Sampat, C., Bhalode, P., Ramachandran, R., and Ierapetritou, M. Digital
+     twins in pharmaceutical and biopharmaceutical manufacturing: A literature review. Pro-
+     cesses, 8(9), 2020. ISSN 2227-9717.
+[21] Cheng, Z. and Wang, J. Estimation of contact forces of granular materials under uniaxial
+     compression based on a machine learning model. Granular Matter, 24:1–14, 2022.
+[22] Coetzee, C. J. Calibration of the discrete element method. Powder Technol., 310:104–142,
+     2017.
+
+
+                                               27
+[23] Cundall, P. A. and Strack, O. D. L. A discrete numerical model for granular assemblies.
+     Géotechnique, 29(1):47–65, 1979.
+[24] de Munck, M., Peters, E., and Kuipers, J. Fluidized bed gas-solid heat transfer using a CFD-
+     DEM coarse-graining technique. Chem. Eng. Sci., 280:119048, 2023. ISSN 0009-2509.
+[25] Diez, E., Kieckhefen, P., Meyer, K., Bück, A., Tsotsas, E., and Heinrich, S. Particle dynamics
+     in a multi-staged fluidized bed: Particle transport behavior on micro-scale by discrete particle
+     modelling. Adv. Powder Technol., 30(10):2014–2031, 2019. ISSN 0921-8831.
+[26] Dosovitskiy, A., Beyer, L., Kolesnikov, A., Weissenborn, D., Zhai, X., Unterthiner, T., De-
+     hghani, M., Minderer, M., Heigold, G., Gelly, S., Uszkoreit, J., and Houlsby, N. An image is
+     worth 16x16 words: Transformers for image recognition at scale. In ICLR, 2021.
+[27] Esser, P., Kulal, S., Blattmann, A., Entezari, R., Müller, J., Saini, H., Levi, Y., Lorenz, D.,
+     Sauer, A., Boesel, F., Podell, D., Dockhorn, T., English, Z., and Rombach, R. Scaling rectified
+     flow transformers for high-resolution image synthesis. In ICML, volume 235 of Proceedings
+     of Machine Learning Research, pp. 12606–12633. PMLR, 2024.
+[28] Gan, J., Evans, T., and Yu, A. Application of GPU-DEM simulation on large-scale granular
+     handling and processing in ironmaking related industries. Powder Technol., 361:258–273,
+     2020. ISSN 0032-5910.
+[29] Giannis, K., Schilde, C., Finke, J. H., and Kwade, A. Modeling of high-density compaction
+     of pharmaceutical tablets using multi-contact discrete element method. Pharmaceutics, 13
+     (12):2194, 2021.
+[30] Gidaspow, D. Multiphase Flow and Fluidization: Continuum and Kinetic Theory Descrip-
+     tions. Elsevier Science, 1994. ISBN 9780122824708.
+[31] Goniva, C., Kloss, C., Deen, N. G., Kuipers, J. A. M., and Pirker, S. Influence of rolling
+     friction on single spout fluidized bed simulation. Particuology, 10:582–591, 2012.
+[32] Govender, N., Rajamani, R. K., Kok, S., and Wilke, D. N. Discrete element simulation of
+     mill charge in 3D using the BLAZE-DEM GPU framework. Miner. Eng., 79:152–168, 2015.
+     ISSN 0892-6875.
+[33] Grohn, P., Lawall, M., Oesau, T., Heinrich, S., and Antonyuk, S. CFD-DEM simulation of a
+     coating process in a fluidized bed rotor granulator. Processes, 8(9):1090, 2020.
+[34] Guillaud, X., Faruque, M. O., Teninge, A., Hariri, A. H., Vanfretti, L., Paolone, M., Dinavahi,
+     V., Mitra, P., Lauss, G., Dufour, C., Forsyth, P., Srivastava, A. K., Strunz, K., Strasser, T., and
+     Davoudi, A. Applications of real-time simulation technologies in power and energy systems.
+     IEEE Power and Energy Technology Systems Journal, 2(3):103–115, 2015.
+[35] Guo, X., Li, W., and Iorio, F. Convolutional neural networks for steady flow approximation.
+     In Proceedings of the 22nd ACM SIGKDD international conference on knowledge discovery
+     and data mining, pp. 481–490, 2016.
+[36] Gupta, J. K. and Brandstetter, J. Towards multi-spatiotemporal-scale generalized PDE mod-
+     eling. Trans. Mach. Learn. Res., 2023, 2023.
+[37] Hao, Z., Wang, Z., Su, H., Ying, C., Dong, Y., Liu, S., Cheng, Z., Song, J., and Zhu, J.
+     Gnot: A general neural operator transformer for operator learning. In ICML, volume 202 of
+     Proceedings of Machine Learning Research, pp. 12556–12569. PMLR, 2023.
+[38] Hemmasian, A. and Farimani, A. B. Pretraining a neural operator in lower dimensions. arXiv
+     preprint arXiv:2407.17616, 2024.
+[39] Herde, M., Raonić, B., Rohner, T., Käppeli, R., Molinaro, R., de Bézenac, E., and Mishra, S.
+     Poseidon: Efficient foundation models for pdes. arXiv preprint arXiv:2405.19101, 2024.
+[40] Jaegle, A., Gimeno, F., Brock, A., Vinyals, O., Zisserman, A., and Carreira, J. Perceiver:
+     General perception with iterative attention. In ICML, volume 139 of Proceedings of Machine
+     Learning Research, pp. 4651–4664. PMLR, 2021.
+
+
+                                                  28
+[41] Javaid, M., Haleem, A., and Suman, R. Digital twin applications toward industry 4.0: A
+     review. Cognitive Robotics, 3:71–92, 2023. ISSN 2667-2413.
+
+[42] Johnson, K. L. Contact Mechanics. Cambridge University Press, Cambridge, UK, 1985.
+
+[43] Jumper, J., Evans, R., Pritzel, A., Green, T., Figurnov, M., Ronneberger, O., Tunyasuvu-
+     nakool, K., Bates, R., Žı́dek, A., Potapenko, A., et al. Highly accurate protein structure
+     prediction with alphafold. nature, 596(7873):583–589, 2021.
+
+[44] Kieckhefen, P., Pietsch, S., Dosta, M., and Heinrich, S. Possibilities and limits of computa-
+     tional fluid dynamics–discrete element method simulations in process engineering: a review
+     of recent advancements and future trends. Annu. Rev. Chem. Biomol. Eng., 11(1):397–422,
+     2020.
+
+[45] Kipf, T. N. and Welling, M. Semi-supervised classification with graph convolutional net-
+     works. In ICLR, 2017.
+
+[46] Kloss, C., Goniva, C., Hager, A., Amberger, S., and Pirker, S. Models, algorithms and vali-
+     dation for opensource DEM and CFD-DEM. Prog. Comput. Fluid Dyn., 12:140–152, 2012.
+
+[47] Knigge, D. M., Wessels, D. R., Valperga, R., Papa, S., Sonke, J.-J., Gavves, E., and Bekkers,
+     E. J. Space-time continuous pde forecasting using equivariant neural fields. arXiv preprint
+     arXiv:2406.06660, 2024.
+
+[48] Kochkov, D., Smith, J. A., Alieva, A., Wang, Q., Brenner, M. P., and Hoyer, S. Machine
+     learning–accelerated computational fluid dynamics. Proceedings of the National Academy of
+     Sciences, 118(21):e2101784118, 2021.
+
+[49] Kofinas, M. M., Bekkers, E., Nagaraja, N., and Gavves, E. Latent field discovery in inter-
+     acting dynamical systems with neural fields. Advances in Neural Information Processing
+     Systems, 36, 2024.
+
+[50] Kovachki, N. B., Li, Z., Liu, B., Azizzadenesheli, K., Bhattacharya, K., Stuart, A. M., and
+     Anandkumar, A. Neural operator: Learning maps between function spaces with applications
+     to pdes. J. Mach. Learn. Res., 24:89:1–89:97, 2023.
+
+[51] Lacey, P. M. C. Developments in the theory of particle mixing. Journal of Applied Chemistry,
+     4(5):257–268, 1954.
+
+[52] Lam, R., Sanchez-Gonzalez, A., Willson, M., Wirnsberger, P., Fortunato, M., Alet, F., Ravuri,
+     S., Ewalds, T., Eaton-Rosen, Z., Hu, W., et al. Learning skillful medium-range global weather
+     forecasting. Science, 382(6677):1416–1421, 2023.
+
+[53] Li, R., Duan, G., Yamada, D., and Sakai, M. Large-scale discrete element modeling for a
+     gas–solid–liquid flow system. Ind. Eng. Chem. Res., 62(42):17008–17018, 2023.
+
+[54] Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhattacharya, K., Stuart, A., and Anand-
+     kumar, A. Neural operator: Graph kernel network for partial differential equations. arXiv
+     preprint arXiv:2003.03485, 2020.
+
+[55] Li, Z., Kovachki, N. B., Azizzadenesheli, K., Liu, B., Bhattacharya, K., Stuart, A. M., and
+     Anandkumar, A. Neural operator: Graph kernel network for partial differential equations.
+     arXiv preprint arXiv:2003.03485, 2020.
+
+[56] Li, Z., Kovachki, N. B., Azizzadenesheli, K., Liu, B., Bhattacharya, K., Stuart, A. M., and
+     Anandkumar, A. Fourier neural operator for parametric partial differential equations. In
+     ICLR, 2021.
+
+[57] Li, Z., Kovachki, N. B., Choy, C. B., Li, B., Kossaifi, J., Otta, S. P., Nabian, M. A., Stadler, M.,
+     Hundt, C., Azizzadenesheli, K., and Anandkumar, A. Geometry-informed neural operator for
+     large-scale 3d pdes. Advances in Neural Information Processing Systems, 36:35836–35854,
+     2023.
+
+
+                                                  29
+[58] Li, Z., Li, X., Zhang, H., Huang, D., and Zhang, L. The prediction of contact force networks
+     in granular materials based on graph neural networks. The Journal of Chemical Physics, 158
+     (5), 2023.
+[59] Lichtenegger, T. Local and global recurrences in dynamic gas-solid flows. Int. J. Multiphase
+     Flow, 106:125 – 137, 2018.
+[60] Lichtenegger, T. Data-assisted, physics-informed propagators for recurrent flows. Phys. Rev.
+     Fluids, 9:024401, Feb 2024.
+[61] Lichtenegger, T. and Pirker, S. Fast long-term simulations of hot, reacting, moving particle
+     beds with a melting zone. Chem. Eng. Sci., 283:119402, 2024.
+[62] Lichtenegger, T., Peters, E. A. J. F., Kuipers, J. A. M., and Pirker, S. A recurrence CFD study
+     of heat transfer in a fluidized bed. Chem. Eng. Sci., 172:310–322, 2017.
+[63] Lippe, P., Veeling, B., Perdikaris, P., Turner, R., and Brandstetter, J. Pde-refiner: Achieving
+     accurate long rollouts with neural pde solvers. Advances in Neural Information Processing
+     Systems, 36:67398–67433, 2023.
+[64] Liu, Z., Wang, Y., Han, K., Zhang, W., Ma, S., and Gao, W. Post-training quantization for
+     vision transformer. Advances in Neural Information Processing Systems, 34:28092–28103,
+     2021.
+[65] Lu, L. GPU accelerated MFiX-DEM simulations of granular and multiphase flows. Partic-
+     uology, 62:14–24, 2022. ISSN 1674-2001.
+[66] Lu, L., Jin, P., Pang, G., Zhang, Z., and Karniadakis, G. E. Learning nonlinear operators
+     via deeponet based on the universal approximation theorem of operators. Nature machine
+     intelligence, 3(3):218–229, 2021.
+[67] Mayr, A., Lehner, S., Mayrhofer, A., Kloss, C., Hochreiter, S., and Brandstetter, J. Boundary
+     graph neural networks for 3d simulations. Proceedings of the AAAI Conference on Artificial
+     Intelligence, 37(8):9099–9107, 2023.
+[68] McCabe, M., Blancard, B. R.-S., Parker, L. H., Ohana, R., Cranmer, M., Bietti, A., Eick-
+     enberg, M., Golkar, S., Krawezik, G., Lanusse, F., et al. Multiple physics pretraining for
+     physical surrogate models. arXiv preprint arXiv:2310.02994, 2023.
+[69] Merchant, A., Batzner, S., Schoenholz, S. S., Aykol, M., Cheon, G., and Cubuk, E. D. Scaling
+     deep learning for materials discovery. Nature, pp. 1–6, 2023.
+[70] Mildenhall, B., Srinivasan, P. P., Tancik, M., Barron, J. T., Ramamoorthi, R., and Ng, R.
+     Nerf: Representing scenes as neural radiance fields for view synthesis. Communications of
+     the ACM, 65(1):99–106, 2021.
+[71] Mittal, A., Mangadoddy, N., and Banerjee, R. Development of three-dimensional GPU DEM
+     code–benchmarking, validation, and application in mineral processing. Comput. Part. Mech.,
+     10(6):1533–1556, 2023.
+[72] Musaelian, A., Batzner, S., Johansson, A., Sun, L., Owen, C. J., Kornbluth, M., and Kozinsky,
+     B. Learning local equivariant representations for large-scale atomistic dynamics. Nature
+     Communications, 14(1):579, 2023.
+[73] Nasato, D. S. and Pöschel, T. Influence of particle shape in additive manufacturing: Discrete
+     element simulations of polyamide 11 and polyamide 12. Addit. Manuf., 36:101421, 2020.
+[74] Nguyen, T., Brandstetter, J., Kapoor, A., Gupta, J. K., and Grover, A. Climax: A foundation
+     model for weather and climate. In ICML, volume 202 of Proceedings of Machine Learning
+     Research, pp. 25904–25938. PMLR, 2023.
+[75] Norouzi, H. R., Zarghami, R., Sotudeh-Gharebagh, R., and Mostoufi, N. Coupled CFD-DEM
+     modeling: formulation, implementation and application to multiphase flows. John Wiley &
+     Sons, 2016.
+
+
+                                                30
+[76] Pathak, J., Subramanian, S., Harrington, P., Raja, S., Chattopadhyay, A., Mardani, M.,
+     Kurth, T., Hall, D., Li, Z., Azizzadenesheli, K., et al. Fourcastnet: A global data-driven
+     high-resolution weather model using adaptive fourier neural operators. arXiv preprint
+     arXiv:2202.11214, 2022.
+[77] Peebles, W. and Xie, S. Scalable diffusion models with transformers. In ICCV, pp. 4172–
+     4182. IEEE, 2023.
+[78] Perez, E., Strub, F., De Vries, H., Dumoulin, V., and Courville, A. Film: Visual reasoning
+     with a general conditioning layer. Proceedings of the AAAI conference on artificial intelli-
+     gence, 32(1):3942–3951, 2018.
+[79] Pfaff, T., Fortunato, M., Sanchez-Gonzalez, A., and Battaglia, P. W. Learning mesh-based
+     simulation with graph networks. In ICLR, 2021.
+[80] Rombach, R., Blattmann, A., Lorenz, D., Esser, P., and Ommer, B. High-resolution image
+     synthesis with latent diffusion models. In Proceedings of the IEEE/CVF conference on com-
+     puter vision and pattern recognition, pp. 10684–10695, 2022.
+[81] Sakai, M. and Koshizuka, S. Large-scale discrete element modeling in pneumatic conveying.
+     Chem. Eng. Sci., 64(3):533–539, 2009.
+[82] Sanchez-Gonzalez, A., Godwin, J., Pfaff, T., Ying, R., Leskovec, J., and Battaglia, P. Learning
+     to simulate complex physics with graph networks. In ICML, volume 119 of Proceedings of
+     Machine Learning Research, pp. 8459–8468. PMLR, 2020.
+[83] Scarselli, F., Gori, M., Tsoi, A. C., Hagenbuchner, M., and Monfardini, G. The graph neural
+     network model. IEEE transactions on neural networks, 20(1):61–80, 2008.
+[84] Seidman, J., Kissas, G., Perdikaris, P., and Pappas, G. J. Nomad: Nonlinear manifold de-
+     coders for operator learning. Advances in Neural Information Processing Systems, 35:5601–
+     5613, 2022.
+[85] Shoeybi, M., Patwary, M., Puri, R., LeGresley, P., Casper, J., and Catanzaro, B. Megatron-lm:
+     Training multi-billion parameter language models using model parallelism. arXiv preprint
+     arXiv:1909.08053, 2019.
+[86] Sitzmann, V., Martel, J. N., Bergman, A. W., Lindell, D. B., and Wetzstein, G. Implicit
+     neural representations with periodic activation functions. Advances in Neural Information
+     Processing Systems, 33:7462–7473, 2020.
+[87] Sung, W., Shin, S., and Hwang, K. Resiliency of deep neural networks under quantization.
+     arXiv preprint arXiv:1511.06488, 2015.
+[88] Toshev, A. P., Galletti, G., Brandstetter, J., Adami, S., and Adams, N. A. Learning la-
+     grangian fluid mechanics with e (3)-equivariant graph neural networks. arXiv preprint
+     arXiv:2305.15603, 2023.
+[89] Toshev, A. P., Erbesdobler, J. A., Adams, N. A., and Brandstetter, J. Neural SPH: improved
+     neural modeling of lagrangian fluid dynamics. In ICML, volume 235 of Proceedings of Ma-
+     chine Learning Research, pp. 48428–48452. PMLR, 2024.
+[90] Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., and
+     Polosukhin, I. Attention is all you need. Advances in neural information processing systems,
+     30, 2017.
+[91] Vinuesa, R. and Brunton, S. L. Enhancing computational fluid dynamics with machine learn-
+     ing. Nature Computational Science, 2(6):358–366, 2022.
+[92] Wang, S., Yu, Z., Zhang, W., et al. Study on the modeling method of sunflower seed particles
+     based on the discrete element method. Comput. Electron. Agr, 198:107012, 2022.
+[93] Wang, S., Seidman, J. H., Sankaran, S., Wang, H., Pappas, G. J., and Perdikaris, P. Bridg-
+     ing operator learning and conditioned neural fields: A unifying perspective. arXiv preprint
+     arXiv:2405.13998, 2024.
+
+
+                                                31
+ [94] Wang, T. and Wang, C. Latent neural operator for solving forward and inverse pde problems.
+      arXiv preprint arXiv:2406.03923, 2024.
+ [95] Weller, H. G., Tabor, G., Jasak, H., and Fureby, C. A tensorial approach to computational
+      continuum mechanics using object-oriented techniques. Computer in Physics, 12(6):620–
+      631, 11 1998. ISSN 0894-1866.
+ [96] Wu, H., Luo, H., Wang, H., Wang, J., and Long, M. Transolver: A fast transformer solver
+      for pdes on general geometries. In ICML, volume 235 of Proceedings of Machine Learning
+      Research, pp. 53681–53705. PMLR, 2024.
+ [97] Xie, Y., Takikawa, T., Saito, S., Litany, O., Yan, S., Khan, N., Tombari, F., Tompkin, J.,
+      Sitzmann, V., and Sridhar, S. Neural fields in visual computing and beyond. Computer
+      Graphics Forum, 41(2):641–676, 2022.
+ [98] Xu, Y., Lee, H., Chen, D., Hechtman, B., Huang, Y., Joshi, R., Krikun, M., Lepikhin, D.,
+      Ly, A., Maggioni, M., et al. Gspmd: general and scalable parallelization for ml computation
+      graphs. arXiv preprint arXiv:2105.04663, 2021.
+ [99] Yan, D., Yu, J., Wang, Y., Zhou, L., Sun, K., and Tian, Y. A review of the application of
+      discrete element method in agricultural engineering: A case study of soybean. Processes, 10
+      (7):1305, 2022.
+[100] Yan, W., Wang, J., Lu, S., Zhou, M., and Peng, X. A review of real-time fault diagnosis
+      methods for industrial smart manufacturing. Processes, 11(2), 2023. ISSN 2227-9717.
+[101] Yu, J., Wang, S., Luo, K., and Fan, J. CFD-DEM modeling of dense gas-solid reacting flow
+      in the framework of GPU. Chem. Eng. J, 484:149480, 2024. ISSN 1385-8947.
+[102] Zeni, C., Pinsler, R., Zügner, D., Fowler, A., Horton, M., Fu, X., Shysheya, S., Crabbé, J.,
+      Sun, L., Smith, J., et al. Mattergen: a generative model for inorganic materials design. arXiv
+      preprint arXiv:2312.03687, 2023.
+[103] Zhang, C., Chen, Y., Wang, Y., and Bai, Q. Discrete element method simulation of granu-
+      lar materials considering particle breakage in geotechnical and mining engineering: A short
+      review. Green and Smart Mining Engineering, 2024.
+[104] Zhang, J., Tan, Y., Xiao, X., and Jiang, S. Comparison of roller-spreading and blade-spreading
+      processes in powder-bed additive manufacturing by DEM simulations. Particuology, 66:48–
+      58, 2022.
+[105] Zhang, X., Wang, L., Helwig, J., Luo, Y., Fu, C., Xie, Y., Liu, M., Lin, Y., Xu, Z., Yan, K.,
+      et al. Artificial intelligence for science in quantum, atomistic, and continuum systems. arXiv
+      preprint arXiv:2307.08423, 2023.
+[106] Zhao, H., Huang, Y., Liu, Z., Liu, W., and Zheng, Z. Applications of discrete element method
+      in the research of agricultural machinery: A review. Agriculture, 11(5):425, 2021.
+[107] Zhou, A., Li, Z., Schneier, M., Buchanan Jr, J. R., and Farimani, A. B. Text2pde: Latent
+      diffusion models for accessible physics simulation. arXiv preprint arXiv:2410.01153, 2024.
+
+
+
+
+                                                32
+

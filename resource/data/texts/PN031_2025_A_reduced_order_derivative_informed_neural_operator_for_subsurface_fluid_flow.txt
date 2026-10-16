@@ -1,0 +1,343 @@
+                                                   A reduced-order derivative-informed neural operator for subsurface fluid-flow
+                                                   Jeongjin Park, Grant Bruer, Huseyin Tuna Erdinc, Abhinav Prakash Gahlot, and Felix J. Herrmann
+                                                   Georgia Institute of Technology
+
+                                                   SUMMARY                                                              When neural operators are used as surrogates for numerical
+                                                                                                                        simulators or governing equations of physical systems, it is
+                                                   Neural operators have emerged as cost-effective surrogates for       essential that they adhere to fundamental physical principles,
+                                                   expensive fluid-flow simulators, particularly in computation-        such as mass conservation, entropy decay, and invariant mea-
+                                                   ally intensive tasks such as permeability inversion from time-       sures (Li et al., 2024; Park et al., 2024; Cai et al., 2021). How-
+arXiv:2509.13620v2 [physics.comp-ph] 15 Jan 2026
+
+
+
+
+                                                   lapse seismic data, and uncertainty quantification. In these ap-     ever, standard neural network training approaches, typically
+                                                   plications, the fidelity of the surrogate’s gradients with respect   based on mean squared error (MSE) objectives, may strug-
+                                                   to system parameters is crucial, as the accuracy of downstream       gle to accurately learn true physics, limiting the reliability and
+                                                   tasks, such as optimization and Bayesian inference, relies di-       generalizability of the resulting surrogate models (Park et al.,
+                                                   rectly on the quality of the derivative information. Recent ad-      2024; Rosofsky et al., 2023; Li et al., 2024). For instance,
+                                                   vances in physics-informed methods have leveraged derivative         FNOs have exhibited instabilities in long-term predictions, par-
+                                                   information to improve surrogate accuracy. However, incor-           ticularly for stiff systems, systems that evolve on vastly differ-
+                                                   porating explicit Jacobians can become computationally pro-          ent time scales, highlighting the need for robust training strate-
+                                                   hibitive, as the complexity typically scales quadratically with      gies capable of faithfully capturing complex physical behav-
+                                                   the number of input parameters. To address this limitation,          iors (Park et al., 2024; Li et al., 2024).
+                                                   we propose DeFINO (Derivative-based Fisher-score Informed
+                                                   Neural Operator), a reduced-order, derivative-informed train-        Such inaccuracies can significantly compromise the robust-
+                                                   ing framework. DeFINO integrates Fourier neural operators            ness and reliability of subsequent downstream tasks, such as
+                                                   (FNOs) with a novel derivative-based training strategy guided        Bayesian inversion, optimization under uncertainty, and Bayesian
+                                                   by the Fisher Information Matrix (FIM). By projecting Jaco-          optimal experimental design, for which a precise gradient is
+                                                   bians onto dominant eigen-directions identified by the FIM,          critical. To address these limitations, particularly for inher-
+                                                   DeFINO captures critical sensitivity information directly in-        ently complex problems such as chaotic systems (e.g., weather
+                                                   formed by observational data, significantly reducing compu-          forecasting) or high-dimensional time-dependent fluid-flow sce-
+                                                   tational expense. We validate DeFINO through synthetic ex-           narios, recent studies have introduced derivative-based train-
+                                                   periments in the context of subsurface multi-phase fluid-flow,       ing approaches. Approaches such as Physics-Informed Neu-
+                                                   demonstrating improvements in gradient accuracy while main-          ral Networks (PINNs), and Derivative-Informed Neural Oper-
+                                                   taining robust forward predictions of underlying fluid dynam-        ators (DINOs) integrate derivative-based penalty terms, PDE
+                                                   ics. These results highlight DeFINO’s potential to offer practi-     residual constraints, and higher-order derivative information
+                                                   cal, scalable solutions for inversion problems in complex real-      directly into the training process (Li et al., 2024; Park et al.,
+                                                   world scenarios, all at substantially reduced computational          2024; O’Leary-Roseberry et al., 2024; Wu et al., 2023). The
+                                                   cost.                                                                primary motivation behind these derivative-informed strategies
+                                                                                                                        is to enhance surrogate models’ ability to accurately repre-
+                                                   INTRODUCTION                                                         sent not only input-output relationships but also underlying
+                                                                                                                        sensitivities and dynamical behaviors governed by PDE sys-
+                                                   Employing neural networks as surrogate models to approxi-            tems (O’Leary-Roseberry et al., 2022). Nevertheless, apply-
+                                                   mate solutions of parametric PDEs has shown promise in ad-           ing these methods to complex, high dimensional real-world
+                                                   dressing many-query scenarios such as Bayesian inference, op-        problems, such as subsurface fluid-flow, remains challenging
+                                                   timization under uncertainty, and Bayesian optimal experimen-        due to stringent computational requirements, including fully
+                                                   tal design (Qiu et al., 2024; O’Leary-Roseberry et al., 2024).       differentiable simulators and substantial memory and runtime
+                                                   Such problems typically rely on complex mathematical mod-            demands (O’Leary-Roseberry et al., 2024).
+                                                   els, often parameterized PDEs, which require numerous for-
+                                                   ward model evaluations, i.e., solving the PDEs for many pa-          Learning derivatives with reduced-order modeling
+                                                   rameter settings, making high-fidelity simulation computation-       One of the major obstacles in physics-based machine learning,
+                                                   ally demanding (Gao et al., 2024; Sheriffdeen et al., 2019; Wu       particularly for high-dimensional systems, is the high com-
+                                                   et al., 2024). To overcome this challenge, neural operator sur-      putational cost required to compute derivatives. This renders
+                                                   rogates, particularly Fourier Neural Operators (FNOs), have          many conventional derivative estimation methods impractical
+                                                   emerged as efficient alternatives for approximating PDE so-          for large-scale, real-world problems (O’Leary-Roseberry et al.,
+                                                   lutions (Yin et al., 2022; Li et al., 2020a; Wen et al., 2022;       2022). Thus, researchers have employed dimension reduction
+                                                   Chandra et al., 2025). By leveraging computationally inex-           techniques, such as Principal Component Analysis (PCA) or
+                                                   pensive approximations of the forward model, these surrogates        Active Subspace, to compress the input or output into an effi-
+                                                   significantly reduce the computational burden, thus enabling         cient lower-dimensional representation, resulting in so-called
+                                                   more scalable and practical downstream tasks, such as inver-         reduced-order modeling (O’Leary-Roseberry et al., 2022; Con-
+                                                   sion problems, and uncertainty quantification (Yin et al., 2023).    stantine et al., 2014; Benner et al., 2015; Quarteroni et al.,
+                                                                                                                        2015). However, despite their advantages, reduced-order mod-
+els, which reduce the dimensions of input-output, may en-            able method to compute the FIM, including deriving a closed-
+counter limitations when applied to highly nonlinear or multi-       form expression for the practical scenario of a multivariate
+scale systems (Constantine, 2015; Benner et al., 2015; Quar-         Gaussian likelihood; and (3) validating the effectiveness of
+teroni et al., 2015). That is, such approaches risk discarding       the DeFINO framework through numerical experiments. We
+critical information if essential features are not captured within   specifically evaluate DeFINO’s performance on a subsurface
+the reduced subspace, which may lead to inaccurate derivative        fluid-flow problem, highlighting its effectiveness even when
+approximations.                                                      the available number of training samples is limited.
+Our approach addresses these limitations by computing matrix-        METHODOLOGY
+free actions of the Jacobian without reducing the dimensional-
+ity of the input or output, thus maintaining the full-order struc-   Problem description: empirical risk minimization
+ture of the problem. That is, our training algorithm encourages      In this work, our goal is to improve the surrogate model’s pre-
+the neural operator to approximate full-order Jacobians in a         diction of subsurface fluid-flow behavior while accurately cap-
+scalable manner by leveraging eigenvectors derived from the          turing gradients with respect to the input permeability field.
+Fisher Information Matrix (FIM), as defined in Definition 1.         The plume dynamics are modeled by two-phase flow equa-
+                                                                     tions, which we express as the mapping A → U = F (A), where
+Definition 1 (Fisher Information Matrix). Let A denote the           F represents the two-phase flow simulation that models the
+input parameters and Y represent the observations. Given a           time-lapse of CO2 concentration snapshots U = [u1 , u2 , · · · uk ]
+likelihood function p(Y | A), the Fisher Information Matrix          given the permeability field A. Our proposed training strategy
+(FIM), denoted by I(A), is defined as:                               is formalized the following empirical risk minimization prob-
+                                                                     lem:
+               h                                   i
+    I(A) = EY (∇A log p(Y | A))⊤ (∇A log p(Y | A)) . (1)
+                                                                                N
+                                                                                   "
+                                                                             1X
+Unlike traditional data-driven dimension reduction methods              min         ∥F (A j ) − Fnn (A j ; θ )∥22
+                                                                         θ N
+                                                                               j=1
+such as Principal Component Analysis (PCA) or Proper Or-                                                                           # (2)
+                                                                                          r
+thogonal Decomposition (POD), the FIM offers a gradient-
+                                                                                             ∥v⊤                     ⊤
+                                                                                         X
+                                                                                                                                 2
+based approach directly informed by the likelihood function                          +λ         i JFnn (A j ; θ ) − vi JF (A j )∥2
+                                                                                         i=1
+(Quarteroni et al., 2015). Furthermore, in contrast to other
+gradient-based methods like Active Subspace, which typically
+                                                                                       ∂ F (A)                  ∂ F (A)
+rely on gradient evaluations obtained by sampling the param-         where JF (A) = ∂ A and JFnn (A) = ∂nnA represent the
+eter space according to a predefined prior, the FIM inherently       Jacobians of the reservoir simulator and its neural network sur-
+incorporates observational uncertainty through the likelihood        rogate, respectively. The vectors {vi }ri=1 serve as the prob-
+function itself (Constantine et al., 2014), (Zahm et al., 2022),     ing directions derived from the FIM, with r specifying the
+(Cui and Zahm, 2021). Consequently, in our context for the           number of rank. Finally, λ is our regularization parameter.
+subsurface fluid-flow problem, where the underlying distribu-        This objective function combines the ℓ2 -norm misfit of the for-
+tion of permeability models is unknown (Gahlot et al., 2024),        ward solutions between the reservoir simulator and the surro-
+the FIM provides a more suitable and robust basis for dimen-         gate FNO, along with the ℓ2 -norm misfit of the corresponding
+sion reduction.                                                      vector-Jacobian product. By jointly minimizing these terms
+                                                                     over N training samples, we drive the neural operator toward
+Our contribution                                                     improved accuracy in both forward predictions and gradient
+To address these challenges, we propose a Derivative-based           estimation.
+Fisher-score Informed Neural Operator (DeFINO), a novel frame-
+                                                                     Fourier Neural Operator (Li et al., 2020a)
+work designed to enhance neural operators by explicitly in-
+corporating reduced-order Jacobian information into the train-       Among the various neural operators, such as the Graph Neu-
+ing process. DeFINO differs from recent derivative-informed          ral Operator (GNO) and Low-Rank Neural Operator (LNO),
+modeling approaches (O’Leary-Roseberry et al., 2022; O’Leary-        the Fourier Neural Operator (FNO) stands out for its compu-
+Roseberry et al., 2024; Zahm et al., 2022; Qiu et al., 2024)         tational efficiency (Li et al., 2020b,c). By learning weights in
+by maintaining the surrogate model in its full-order represen-       the Fourier space, FNO transforms convolutional operations
+tation, rather than reducing the input or output dimensional-        into simple multiplications, thereby significantly accelerating
+ity directly. Instead, DeFINO achieves dimension reduction           the solution of PDEs. This efficiency makes FNO a popular
+by projecting the Jacobian onto dominant eigenvectors of the         surrogate model for data-driven approaches to solving numer-
+FIM. This strategy focuses the surrogate model’s training on         ical PDEs (Lu et al., 2021; Kovachki et al., 2023; Karniadakis
+the parameter directions most sensitive to observational data,       et al., 2021). Especially, despite the initial training cost, FNO
+enabling accurate yet computationally efficient derivative ap-       has been shown to generate approximate PDE solutions orders
+proximations, particularly beneficial for high dimensional prob-     of magnitude faster than traditional numerical solvers (Li et al.,
+lems.                                                                2020a). That is, given an unseen spatial distribution of perme-
+                                                                     ability A, the trained FNO can near instantly produce time-
+Our primary contributions include: (1) introducing a novel
+                                                                     dependent plume concentration snapshots via forward evalu-
+derivative-informed training strategy for neural operators ap-
+                                                                     ation, i.e.,Fnn (A) (Li et al., 2020b; Wen et al., 2022; Zhang
+plicable to high-dimensional systems; (2) developing a scal-
+                                                                                coincide with the left singular vectors of v⊤ J. This relies
+                                                                                on the assumption that, in high-dimensional systems, the gra-
+                                                                                dient information lies intrinsically in a low-dimensional sub-
+                                                                                space—making the Gauss–Newton Hessian J⊤ J amenable to
+                                                                                low-rank approximation (O’Leary-Roseberry et al., 2024).
+
+                                                                                Examples of v and the corresponding vector–Jacobian product
+                                                                                v⊤ J, computed using the proposed approach, are illustrated in
+                                                                                Figure 2. The plot shows the first eigenvector v of the FIM
+Figure 1: (Left) Example of a heterogeneous permeability                        and the corresponding Jacobian action v⊤ J, based on the per-
+model, A, with injection location shown as red dot. Adapted                     meability model and CO2 plume shown in Figure 1. While v
+from (Gahlot et al., 2024) (Right) CO2 plume concentration                      reveals the sensitivity structure with respect to the permeability
+after 1,825 days of injection.                                                  field, v⊤ J highlights regions where the saturation has evolved,
+                                                                                concentrating around the plume front. This approach avoids
+                                                                                explicitly forming the full Gauss–Newton Hessian J⊤ J, which
+                                                                                would require O(d 4 ) operations, and instead computes only
+                                                                                r vector–Jacobian products, reducing both time and memory
+                                                                                complexity to O(r × d 2 ).
+
+                                                                                NUMERICAL EXPERIMENTS
+                                                                                In our numerical experiments, we validate the performance of
+                                                                                our proposed framework within a multiphase flow scenario by
+                                                                                predicting the evolution of plume concentration from a given
+                                                                                permeability field, represented through time-lapse snapshots.
+Figure 2: (Left) First eigenvector v of the Fisher Information                  We assess both the output prediction accuracy and the fidelity
+Matrix (FIM) for a sample permeability model after 1,095 days                   of the directional derivative, v⊤ J, as computed by the neural
+of CO2 plume evolution. (Right) Corresponding ground-truth                      operator.
+vector–Jacobian product, v⊤ J, computed using the reservoir
+simulator F .                                                                   Training setup
+
+                                                                                In this work, we focus on evaluating the efficacy of our frame-
+et al., 2022). Moreover, automatic differentiation provides ac-                 work with a limited training dataset, consisting of 64 pairs
+cess to gradients with respect to the FNO’s input, further sup-                 of heterogenous permeability fields (shown in Figure 1) and
+porting downstream optimization tasks.                                          the corresponding time evolution of CO2 concentration (ex-
+                                                                                ample snapshot shown in Figure 1). The permeability models
+Creating joint samples                                                          are defined on a 256 × 256 grid with a grid spacing of 15
+                                                                                m in both the vertical and horizontal directions, and the as-
+In the offline phase, we generate joint samples {A j , U j , v j , v⊤j J}Nj=1
+                                                                                sociated porosity models are both derived from the work of
+to train our surrogate model. Here, U = F (A) with A, U ∈                       (Gahlot et al., 2024). For the fluid-flow simulations, an in-
+Rd×d , where d denotes the number of grid points along each                     jection well is placed on the middle part of the model, inject-
+spatial dimension. The mapping F denotes the fluid-flow model                   ing supercritical CO2 into the reservoir with the injection rate
+implemented in JutulDarcy.jl (Møyner, 2024) and JutulDar-                       of 7 × 10−3 m3 /s. The time evolution of CO2 concentration
+cyRules.jl (Yin et al., 2024). For each sample, vi is the ith                   is modeled using JutulDarcy.jl (Møyner, 2024) and JutulDar-
+eigenvector of the FIM, and v⊤   i J is the corresponding vec-                  cyRules.jl (Yin et al., 2024) over a period of 5 years, with a
+tor–Jacobian product.                                                           time step of 1 year. This simulation produces five distinct CO2
+A major challenge in this process is the high computational                     plume snapshots at different time steps for each permeabil-
+cost of forming the FIM, which can sometimes be intractable.                    ity model. The Fourier Neural Operator (FNO) implementa-
+To address this, we consider an observation model                               tion employed in this study is based on the NVIDIA Modulus
+                                                                                framework.
+                 Y = F (A) + ε,       ε ∼ N (0, Σ),
+                                                                                Results and evaluation metrics
+which yields the following closed-form expression for the Fisher
+Information Matrix (FIM):                                                       After training both models under the same hyperparameter set-
+                                                                                ting, we evaluate the effectiveness of the proposed DeFINO
+                      ∂ F (A) T −1 ∂ F (A)
+                                            
+           I(A) =                Σ               ,          (3)                 framework by assessing both forward prediction accuracy and
+                        ∂A               ∂A                                     gradient accuracy on a set of unseen test samples. Each test
+                                                                                sample consists of a permeability model and five correspond-
+where F : Rd×d → Rd×d is a deterministic mapping from the
+                                                                                ing snapshots of CO2 concentration obtained at intervals of
+input permeability field to the CO2 concentration.
+                                                                                365 days using reservoir simulator. Following the procedure
+To compute the first r eigenvectors of I(A), we extract the left                outlined in the Methodology section, form a test set compris-
+singular vectors of J, noting that the eigenvectors of (v⊤ J)(v⊤ J)⊤            ing {Ak , Uk , vk , v⊤   100
+                                                                                                     k J}k=1 .
+                                  FNO              DeFINO
+                              2.1440 × 10−3     2.0725 × 10−3
+                                                                              v "
+ ℓ2 -norm Misfit of                                                               ∥V⊤  ⊤        ⊤
+                                                                                                           2
+                                                                                                              #
+                                                                                    r JF JF − JFnn JFnn Vr ∥F
+                                                                              u
+                                                                              u
+ Forward                                                                      tE
+                                                                                A                                                (5)
+                                                                                       ∥V⊤   ⊤        2
+ Relative ℓ2 -norm Misfit     1.6426 × 10−5     1.1739 × 10−6                             r JF JF Vr ∥F
+ of Gradient
+ Reduced                          0.8554            0.7697          Our results, summarized in Table 1, demonstrate that DeFINO
+ Gauss-Newton Error                                                 significantly improves gradient estimation accuracy, achieving
+                                                                    a relative ℓ2 -norm misfit (Equation 4) of 1.1739 × 10−6 com-
+Table 1: Comparison of FNO and DeFINO in gradient accu-             pared to the baseline FNO’s misfit of 1.6426 × 10−5 , an im-
+racy. Relative ℓ2 -norm Misfit of Gradient is defined in Equa-      provement of an order of magnitude. Furthermore, DeFINO
+tion 4. Reduced Gauss–Newton Error (Equation 5) measures            yields a lower reduced Gauss–Newton error (Equation 5) of
+the relative discrepancy (in a reduced subspace spanned by          0.7697, compared to 0.8554 for the FNO, highlighting its en-
+Vr ) between the true and predicted Gauss–Newton Hessians           hanced ability to approximate critical second-order informa-
+(Adapted from (O’Leary-Roseberry et al., 2024)). Bold values        tion. As illustrated in Figure 3, the gradient predicted by DeFINO
+indicate lower (i.e. better) errors.                                more closely resembles the structural features of the ground-
+                                                                    truth gradient, capturing both upper and lower spherical re-
+                                                                    gions, whereas the FNO prediction reflects only the lower part.
+                                                                    Collectively, these results indicate that incorporating derivative-
+                                                                    informed training guided by the Fisher Information Matrix sub-
+                                                                    stantially improves gradient fidelity without compromising for-
+                                                                    ward prediction accuracy, making DeFINO particularly well-
+                                                                    suited for inversion and other gradient-sensitive downstream
+Figure 3: Close-up view of the gradient v⊤ J after 365 days
+                                                                    applications.
+of CO2 injection. The first column shows the ground-truth
+gradient, the second column shows the gradient predicted by         DISCUSSION AND CONCLUSION
+DeFINO, and the third column shows the gradient predicted
+by the baseline FNO. The relative ℓ2 -norm misfit of DeFINO’s       In this work, we introduced DeFINO, a reduced-order derivative-
+v⊤ J shown in the middle column is 0.0446, compared to              informed Neural Operator framework designed to enhance sur-
+0.1470 for FNO shown in the right column.                           rogate modeling for time-dependent multiphase flow problems.
+                                                                    By incorporating derivative-based training via projections onto
+                                                                    dominant eigen-directions of the FIM, DeFINO achieves im-
+We first compare the forward inference performance of a base-       proved accuracy in capturing gradients and Gauss–Newton Hes-
+line FNO, trained solely with mean squared error (MSE) loss,        sians, as demonstrated by our results in Table 1. These im-
+against our proposed DeFINO model. For CO2 plume pre-               provements are particularly notable in scenarios with limited
+diction, DeFINO achieves a slightly improved ℓ2 -norm misfit        training data, reflecting realistic constraints often encountered
+of 2.0725 × 10−3 compared to the baseline FNO’s misfit of           in practice. Additionally, our approach reduces the computa-
+2.1440 × 10−3 . This improvement in forward prediction sug-         tional cost of derivative information from O(d 4 ) to O(r × d 2 )
+gests that incorporating gradient information during training       by avoiding the explicit formation of full Jacobians. The en-
+enhances not only the model’s ability to learn gradients but        hanced derivative estimation and more accurate Hessian ap-
+also its accuracy in capturing fluid plume evolution.               proximations provided by DeFINO make it a promising ap-
+                                                                    proach for Bayesian inversion, optimization under uncertainty,
+Beyond forward predictions, we also evaluate gradient accu-         and robust forecasting of subsurface fluid-flow dynamics.
+racy, which is critical in inversion problems and uncertainty
+quantification tasks (Yin et al., 2023; O’Leary-Roseberry et al.,   While these initial results are encouraging, further develop-
+2022). Specifically, we assess the accuracy of the surrogate-       ments remain necessary for broader applicability and robust-
+derived gradient, v⊤ JFnn , compared to the true gradient com-      ness. Future work will explore using the trained DeFINO model
+                                                                    within a Bayesian inversion framework, enabling efficient es-
+puted via the reservoir simulator, v⊤ JF , across the test sam-
+                                                                    timation of reservoir permeability fields directly from obser-
+ples. We quantify this accuracy using two metrics: the relative
+                                                                    vational data. Such inverse modeling can enhance uncertainty
+ℓ2 -norm misfit of the gradients (Equation 4) and the reduced
+                                                                    quantification, helping stakeholders better manage risks asso-
+Gauss–Newton error (Equation 5), which measures how well
+                                                                    ciated with CO2 plume migration. Finally, assessing the gener-
+the surrogate approximates the true Gauss–Newton Hessian
+                                                                    alization capability of DeFINO across diverse subsurface sce-
+(J⊤ J) along dominant parameter directions identified by the
+                                                                    narios and extending the framework toward large-scale, con-
+FIM (O’Leary-Roseberry et al., 2024). Gauss–Newton Hes-
+                                                                    tinuous 3D monitoring workflows represent promising avenues
+sians are particularly valuable in inversion and optimization
+                                                                    for future research.
+settings, as they provide curvature information essential for ro-
+bust parameter estimation (O’Leary-Roseberry et al., 2022).         ACKNOWLEDGEMENT
+                                                                    During the preparation of the work, the authors used ChatGPT
+                     ∥V⊤ JF − V⊤ JFnn ∥2F                           to refine sentence structures of the manuscript. After using this
+                                                             (4)    service, the authors reviewed and edited the content as needed
+                          ∥V⊤ JF ∥2F
+                                                                    and take full responsibiltiy for the content of the publication.
+REFERENCES                                                          Møyner, O., 2024, Jutuldarcy.jl - a fully differentiable high-
+                                                                       performance reservoir simulator based on automatic differ-
+Benner, P., S. Gugercin, and K. Willcox, 2015, A survey of             entiation: 2024, 1–9.
+   projection-based model reduction methods for parametric          O’Leary-Roseberry, T., P. Chen, U. Villa, and O. Ghat-
+   dynamical systems: SIAM review, 57, 483–531.                        tas, 2024, Derivative-informed neural operator: an effi-
+Cai, S., Z. Mao, Z. Wang, M. Yin, and G. E. Karniadakis,               cient framework for high-dimensional parametric derivative
+   2021, Physics-informed neural networks (pinns) for fluid            learning: Journal of Computational Physics, 496, 112555.
+   mechanics: A review: Acta Mechanica Sinica, 37, 1727–            O’Leary-Roseberry, T., U. Villa, P. Chen, and O. Ghat-
+   1738.                                                               tas, 2022, Derivative-informed projected neural networks
+Chandra, A., M. Koch, S. Pawar, A. Panda, K. Azizzade-                 for high-dimensional parametric maps governed by pdes:
+   nesheli, J. Snippe, F. O. Alpak, F. Hariri, C. Etienam, P. De-      Computer Methods in Applied Mechanics and Engineering,
+   varakota, et al., 2025, Fourier neural operator based surro-        388, 114199.
+   gates for co 2 storage in realistic geologies: arXiv preprint    Park, J., N. Yang, and N. Chandramoorthy, 2024, When are dy-
+   arXiv:2503.11031.                                                   namical systems learned from time series data statistically
+Constantine, P. G., 2015, Active subspaces: Emerging ideas             accurate?: arXiv preprint arXiv:2411.06311.
+   for dimension reduction in parameter studies: SIAM.              Qiu, Y., N. Bridges, and P. Chen, 2024, Derivative-enhanced
+Constantine, P. G., E. Dow, and Q. Wang, 2014, Active sub-             deep operator network: arXiv preprint arXiv:2402.19242.
+   space methods in theory and practice: applications to krig-      Quarteroni, A., A. Manzoni, and F. Negri, 2015, Reduced basis
+   ing surfaces: SIAM Journal on Scientific Computing, 36,             methods for partial differential equations: an introduction:
+   A1500–A1524.                                                        Springer, 92.
+Cui, T., and O. Zahm, 2021, Data-free likelihood-informed di-       Rosofsky, S. G., H. Al Majed, and E. Huerta, 2023, Applica-
+   mension reduction of bayesian inverse problems: Inverse             tions of physics informed neural operators: Machine Learn-
+   Problems, 37, 045009.                                               ing: Science and Technology, 4, 025022.
+Gahlot, A. P., R. Orozco, Z. Yin, and F. J. Herrmann,               Sheriffdeen, S., J. C. Ragusa, J. E. Morel, M. L. Adams, and T.
+   2024, An uncertainty-aware digital shadow for under-                Bui-Thanh, 2019, Accelerating pde-constrained inverse so-
+   ground multimodal co2 storage monitoring: arXiv preprint            lutions with deep learning and reduced order models: arXiv
+   arXiv:2410.01218.                                                   preprint arXiv:1912.08864.
+Gao, Z., L. Yan, and T. Zhou, 2024, Adaptive operator               Wen, G., Z. Li, K. Azizzadenesheli, A. Anandkumar, and
+   learning for infinite-dimensional bayesian inverse prob-            S. M. Benson, 2022, U-fno—an enhanced fourier neural
+   lems: SIAM/ASA Journal on Uncertainty Quantification,               operator-based deep-learning model for multiphase flow:
+   12, 1389–1423.                                                      Advances in Water Resources, 163, 104180.
+Karniadakis, G. E., I. G. Kevrekidis, L. Lu, P. Perdikaris, S.      Wu, K., T. O’Leary-Roseberry, P. Chen, and O. Ghattas,
+   Wang, and L. Yang, 2021, Physics-informed machine learn-            2023, Large-scale bayesian optimal experimental design
+   ing: Nature Reviews Physics, 3, 422–440.                            with derivative-informed projected neural network: Journal
+Kovachki, N., Z. Li, B. Liu, K. Azizzadenesheli, K. Bhat-              of Scientific Computing, 95, 30.
+   tacharya, A. Stuart, and A. Anandkumar, 2023, Neural op-         Wu, T., W. Neiswanger, H. Zheng, S. Ermon, and J. Leskovec,
+   erator: Learning maps between function spaces with appli-           2024, Uncertainty quantification for forward and inverse
+   cations to pdes: Journal of Machine Learning Research, 24,          problems of pdes via latent global evolution: Proceedings
+   1–97.                                                               of the AAAI Conference on Artificial Intelligence, 320–
+Li, Z., N. Kovachki, K. Azizzadenesheli, B. Liu, K. Bhat-              328.
+   tacharya, A. Stuart, and A. Anandkumar, 2020a, Fourier           Yin, Z., G. Bruer, and M. Louboutin, 2024, slim-
+   neural operator for parametric partial differential equations:      group/jutuldarcyrules.jl: v0.2.8.
+   arXiv preprint arXiv:2010.08895.                                 Yin, Z., R. Orozco, M. Louboutin, and F. J. Herrmann, 2023,
+——–, 2020b, Neural operator: Graph kernel network                      Solving multiphysics-based inverse problems with learned
+   for partial differential equations:           arXiv preprint        surrogates and constraints: Advanced Modeling and Simu-
+   arXiv:2003.03485.                                                   lation in Engineering Sciences, 10, 14.
+Li, Z., N. Kovachki, K. Azizzadenesheli, B. Liu, A. Stuart, K.      Yin, Z., A. Siahkoohi, M. Louboutin, and F. J. Herrmann,
+   Bhattacharya, and A. Anandkumar, 2020c, Multipole graph             2022, Learned coupled inversion for carbon sequestration
+   neural operator for parametric partial differential equations:      monitoring and forecasting with fourier neural operators:
+   Advances in Neural Information Processing Systems, 33,              Second International Meeting for Applied Geoscience &
+   6755–6766.                                                          Energy, Society of Exploration Geophysicists and Ameri-
+Li, Z., H. Zheng, N. Kovachki, D. Jin, H. Chen, B. Liu,                can Association of Petroleum . . . , 467–472.
+   K. Azizzadenesheli, and A. Anandkumar, 2024, Physics-            Zahm, O., T. Cui, K. Law, A. Spantini, and Y. Marzouk, 2022,
+   informed neural operator for learning partial differential          Certified dimension reduction in nonlinear bayesian inverse
+   equations: ACM/JMS Journal of Data Science, 1, 1–27.                problems: Mathematics of Computation, 91, 1789–1835.
+Lu, L., P. Jin, G. Pang, Z. Zhang, and G. E. Karniadakis,           Zhang, K., Y. Zuo, H. Zhao, X. Ma, J. Gu, J. Wang, Y. Yang,
+   2021, Learning nonlinear operators via deeponet based on            C. Yao, and J. Yao, 2022, Fourier neural operator for solv-
+   the universal approximation theorem of operators: Nature            ing subsurface oil/water two-phase flow partial differential
+   machine intelligence, 3, 218–229.                                   equation: Spe Journal, 27, 1815–1830.
+

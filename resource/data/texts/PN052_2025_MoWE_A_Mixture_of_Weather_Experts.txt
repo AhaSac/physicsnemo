@@ -1,0 +1,442 @@
+                                                          M OWE : A M IXTURE OF W EATHER E XPERTS
+
+
+                                                                                Dibyajyoti Chakraborty, Romit Maulik
+                                                                                   The Pennsylvania State University
+                                                                                 State College, PA 16801, United States
+                                                                                       d.chakraborty@psu.edu
+arXiv:2509.09052v1 [cs.LG] 10 Sep 2025
+
+
+
+
+                                                          Peter Harrington, Dallas Foster, Mohammad Amin Nabian, Sanjay Choudhry
+                                                                                      NVIDIA Corporation
+                                                                              Santa Clara, CA 95051, United States
+
+
+
+
+                                                                                              A BSTRACT
+                                                  Data-driven weather models have recently achieved state-of-the-art performance, yet progress has
+                                                  plateaued in recent years. This paper introduces a Mixture of Experts (MoWE) approach as a novel
+                                                  paradigm to overcome these limitations, not by creating a new forecaster, but by optimally combining
+                                                  the outputs of existing models. The MoWE model is trained with significantly lower computational
+                                                  resources than the individual experts. Our model employs a Vision Transformer-based gating network
+                                                  that dynamically learns to weight the contributions of multiple "expert" models at each grid point,
+                                                  conditioned on forecast lead time. This approach creates a synthesized deterministic forecast that is
+                                                  more accurate than any individual component in terms of Root Mean Squared Error (RMSE). Our
+                                                  results demonstrate the effectiveness of this method, achieving up to a 10% lower RMSE than the
+                                                  best-performing AI weather model on a 2-day forecast horizon, significantly outperforming individual
+                                                  experts as well as a simple average across experts. This work presents a computationally efficient and
+                                                  scalable strategy to push the state of the art in data-driven weather prediction by making the most out
+                                                  of leading high-quality forecast models.
+
+
+                                         1   Introduction
+
+                                         The discipline of global medium-range weather forecasting has been recently redefined by a wave of data-driven models,
+                                         which have achieved unprecedented performance in terms of forecast skill and speed. Foundational architectures like
+                                         FourCastNet [1], Pangu-Weather [2], and GraphCast [3] established milestones by demonstrating superior accuracy
+                                         in deterministic metrics compared to leading physics-based Numerical Weather Prediction (NWP) systems. This
+                                         initial success, driven by deep learning on massive reanalysis datasets, represented a remarkable leap forward, creating
+                                         forecasts at a fraction of the computational cost of traditional methods. In the years since, a large number of data-
+                                         driven (and hybrid physics-ML) models have been developed, building on early successes and further advancing the
+                                         state-of-the-art [4, 5, 6, 7, 8, 9, 10, 11, 12].
+                                         With the proliferation of data-driven weather forecast models, the variations in model architecture, training objective
+                                         and recipe, number of variables, resolution of the training data, and finetuning curriculum has similarly seen a rapid
+                                         increase, and thus a diverse set of behaviors is observed in forecasts produced by these models. To address this, the
+                                         research community has taken on the challenge of analysis and intercomparison between models, investigating their
+                                         forecast skill as a function of variable and lead time [13], their physical properties [14], their capacity to represent
+                                         extremes [14, 15], their long-term stability [16, 17, 18], and their behavior in ensemble settings [19, 20, 9, 21], among
+                                         other more event-specific evaluations like tropical cyclones [22] or heat waves [23].
+                                         While distinct behaviors, advantages, and disadvantages of specific models have now been well-identified, the overall
+                                         trajectory of progress in terms of forecast skill has begun to slow and many models attain similar performance on bulk
+                                         metrics, especially in a deterministic forecast setting [13]. This convergence in performance suggests an emerging
+                                         possibility: rather than any single architecture consistently outperforming others across all variables, regions, and lead
+                                                                                          MoWE : A Mixture of Weather Experts
+
+
+times, different models may excel in different circumstances, and combining the strengths of multiple models could
+yield forecasts superior to any single contributor.
+In the numerical weather prediction (NWP) community, multi-model and ensemble approaches have long leveraged
+diversity among forecasts to improve skill and reliability [24, 25]. Multi-model approaches have also been explored
+in the realm of data-driven weather models but in a more limited sense – most works have focused on multi-model
+ensembling within a given architecture class [26, 8, 21, 20], often training the same model from different random
+seed initializations as a means of producing more model variability in ensemble forecasts. While promising, such
+an approach may fail to fully exploit the heterogeneous capabilities of modern AI weather models. Only recently
+have works explored more diverse ensembles incorporating multiple source models [27, 28], but these have only been
+explored at very coarse resolution or with simpler ensembles that just average across several source models.
+In this work, we present a Mixture of Experts (MoWE) framework that directly addresses this gap and explores the
+possibilities of combining existing state-of-the-art models. Rather than building a standalone forecaster, our approach
+learns to optimally fuse the predictions of multiple pre-trained expert models at each grid point, conditioned on lead
+time. A lightweight transformer-based gating network assigns spatially and temporally varying weights to each expert’s
+output, enabling the synthesis of a deterministic forecast that selectively draws on strengths of the source models. This
+dynamic, fine-grained blending strategy produces a coherent global forecast that consistently surpasses the skill of
+the best single expert and significantly outperforms naive averaging, offering a novel path forward in the increasingly
+saturated landscape of data-driven weather prediction.
+The key contributions of this paper are as follows:
+
+      1. A novel MoWE framework for AI weather forecasting that dynamically combines the outputs of multiple
+         state-of-the-art models at each grid point and lead time, rather than relying on a single model or static ensemble
+         weights.
+      2. A lightweight transformer-based gating network that learns spatiotemporal adaptive expert weights from
+         forecast fields which can be rolled out in an autoregressive manner alongside the expert models to make
+         superior forecasts.
+      3. Empirical evaluation and ablation studies on global medium-range forecasts, demonstrating consistent
+         RMSE improvements of up to 10% over the best-performing individual expert at a 2-day lead, and substantial
+         gains over simple averaging.
+
+
+2   Methodology
+The Mixture of Experts (MoWE) model is designed to produce a superior forecast by combining the outputs of multiple,
+pre-existing "expert" models. Instead of choosing a single best model, it learns to dynamically weight the contributions
+of each expert based on the specific conditions of the forecast. The core of this system is a gating network, which is a
+deep neural network architecture that determines these optimal weights.
+The fundamental premise is that for a given set of N expert models, each producing a forecast Ei , we can construct
+a more accurate, synthesized forecast Ŷ through a spatitemporally varying weighted combination. The governing
+equation for this synthesis is:
+                                                   XN
+                                              Ŷ =    (Wi ⊙ Ei ) + b                                            (1)
+                                                          i=1
+
+The final prediction, Ŷ , is created by blending the forecasts from several individual “expert” models, Ei . For each
+expert, the model learns a “weight map,” Wi , that assigns a specific level of importance to that expert at every single
+point on the grid. After multiplying each expert’s forecast by its corresponding weight map (the ⊙ symbol), a final
+“bias map,” b, is added to correct any systematic errors shared by all the models.
+We employ a gating type network, fgate , that learns to produce these weights and the bias term by considering all expert
+forecasts as well as additional conditioning information:
+
+                                  (W1 , W2 , . . . , WN , b) = fgate (E1 , E2 , . . . , EN , t, z)
+
+Here, t represents the forecast lead time, and z is an optional noise vector used in the probabilistic variant of the model
+to capture forecast uncertainty by generating an ensemble of predictions. The model’s architecture heavily utilizes
+Vision Transformer (ViT) [30] blocks in the "gating network." It works by first stacking the forecast maps from all
+
+
+                                                                 2
+                                                                                 MoWE : A Mixture of Weather Experts
+
+
+
+
+Figure 1: A diagram illustrating the architecture of the Mixture-of-Weather Experts (MoWE). The left panel shows
+the overall data flow, where inputs from multiple experts are concatenated and patched, with lead time embeddings,
+and processed through a series of N processing blocks. The right panel provides a detailed view of a single block.
+These blocks are same as a Diffusion Transformer(DiT) block [29] with core component: a multi-head self-attention
+modulated by conditioning information through adaptive scaling and shifting parameters.
+
+
+the different expert models into a single, multi-channel image. This composite image is then broken into patches and
+fed through the Transformer layers. Crucially, the network’s processing at each step is dynamically adjusted based on
+the forecast’s lead time and an optional noise vector using adaptive layer norm. After processing, the model doesn’t
+output a weather map directly. Instead, it outputs a set of pixel-by-pixel "weight maps"—one for each expert—and a
+final bias map. A softmax layer is employed at the end to have a unit sum of the weights at each point on the grid, per
+channel. These weights specify how to blend the expert forecasts at every point in the grid to create the final, improved
+prediction.
+In this preliminary study, we use three expert models to provide source forecasts for our MoWE: Pangu [2], Aurora [4],
+and FCN3 [11]. The Pangu model uses an innovative approach treating the Earth’s atmosphere as a three-dimensional
+data cube, allowing the model to capture complex vertical and horizontal weather patterns simultaneously. Its training
+recipe involves a hierarchical temporal aggregation strategy, where different models are trained for various forecast
+lead times. In our case we use the mix of 6 and 24 hour Pangu models. Aurora is built on a Swin Transformer with
+Perceiver-based encoders and decoders, allowing it to process and learn from a diverse range of atmospheric data. Its
+training involves a pretraining phase on ERA5 and simulation data to learn general atmospheric dynamics, followed by
+a fine-tuning phase for specific tasks such as high-resolution weather forecasting. This makes it highly competitive
+with the state-of-the-art in short and medium range weather forecasting. In contrast to Pangu and Aurora, FCN3 uses a
+spherical neural operator and a hidden Markov model to generate probabilistic forecasts. By sampling different noise
+realizations, FCN3 produces ensemble forecasts and is trained to minimize the Continuous Ranked Probability Score
+
+
+                                                           3
+                                                                                 MoWE : A Mixture of Weather Experts
+
+
+(CRPS) [10] metric. Since it is a probabilistic model, the single-member scores of FCN3 appear to lag behind Pangu and
+Aurora in deterministic metrics, but the FCN3 ensemble surpasses the skill of leading conventional ensemble forecasts
+and rivals the best diffusion-based methods (see [11] for detailed evaluation). For our purposes of developing an MoE,
+these models were chosen for their high degree of accuracy, ease of use, alignment on input and output variables and
+time steps, and to have a variation across architecture, training objective, and deterministic vs. probabilistic forecast
+skill in the experts. We use the NVIDIA earth2studio1 implementations for each of the models.
+The MoWE training data consists of independently generated 2-day forecast trajectories by each expert model initialized
+at each timestep of ERA5 data, spanning 1980 to 2014. From this dataset, we sample random initial conditions and
+random lead times in batches for training. The MoWE is trained to produce the single best forecast by minimizing the
+Mean Squared Error (MSE) loss between its prediction Ŷ and the ground truth Y at the requested lead time. We use the
+year 2015 for testing. For autoregressive rollouts, we rollout individual models for 2 days independently and then use
+the MoWE at each timestep to obtain the forecast. For instance, for a forecast at 12 hour, we take the autoregressive
+forecasts for each expert at 12 hour and input them in the MoWE model along with the lead time. The MoWE model
+gives the respective weights for each expert and a bias which is used to generate the MoWE forecast using Equation 1.
+We open-source our code and release it through NVIDIA PhysicsNeMo2 .
+
+3       Results
+We train the Mixture of Weather Experts (MoWE) to combine forecasts from the three expert weather models across
+various lead times, from 6 hours up to 2 days. We also compare it with a basic mean "mixture" model that simply
+takes the mean of all experts as the prediction. The mean model is actually a relatively challenging baseline, because
+it outperforms individual experts at longer lead times. Close to the initial condition of a forecast, individual experts
+perform better due to higher predictability, but by around 1-2 day lead-time, the mean model becomes superior as
+averaging reduces error, effectively producing an ensemble-mean-like solution. This transition highlights an interesting
+dynamic and tradeoff in forecast skill as measure by RMSE [19]. Any successful mixture of experts approach should be
+able to improve on both the best individual expert as well as the simple mean across experts, and this is indeed what
+is observed in Figure 2. For the most challenging 2-day forecast horizon, the MoWE model achieves a Root Mean
+Squared Error (RMSE) that is 10% better than the score of the best individual expert model, and we observe the MoWE
+outperforming the mean mixture at all variables and lead times evaluated.
+To investigate the impact of MoWE model capacity, we perform a minimal ablation study across model sizes. We train
+a Base model (25 million parameters) and a Small model (9 million parameters) with the same architecture, using the
+hyperparameters in Table 1, the results of which are listed in Table 2.
+                          Table 1: Hyperparameters for Base (25M) and Small (9M) models.
+                                          Hyperparameter        Base    Small
+                                          Patch size              8       8
+                                          Hidden size           384      256
+                                          Depth (layers)          6       3
+                                          Attention heads         6       4
+                                          MLP ratio              4.0     4.0
+
+We observe from Table 2 that the Base model performs better than the Small model, though the difference is marginal.
+Attaining such good performance even with a lightweight model showcases the effectiveness of our MoWE framework
+in utilizing the pretrained expert models efficiently. We use the Base model hereon for the results.
+The MoWE model generates forecasts that are qualitatively consistent with baseline models, as shown in the Figures
+3,4, and 5. In addition, the weights show the ability to be dynamically adjusted based on lead time, channels, and
+spatial locations. Initially, at the 6-hour forecast, the MoWE heavily favors the Aurora model as it is the most accurate.
+Although FCN3 appears to perform poorly in our comparison, it is important to note that we are evaluating a single
+ensemble member of FCN3. Individual members of a stochastic model generally exhibits higher RMSE, which is
+consistent with its intended nature. As the forecast progresses to 24 and 48 hours, the weights are distributed more
+evenly among the constituent models (FCN3, Aurora, and Pangu). In particular, the spatial patterns of these weights are
+not arbitrary; they appear to be influenced by geographical features such as coastlines and continents. This suggests that
+the MoWE is learning a physically relevant, spatiotemporally dependent strategy for combining the different models’
+outputs.
+    1
+        https://github.com/NVIDIA/earth2studio
+    2
+        https://github.com/NVIDIA/physicsnemo/examples/weather/mixture_of_experts
+
+
+                                                            4
+                                                                              MoWE : A Mixture of Weather Experts
+
+
+
+
+Figure 2: RMSE Comparison for Weather Forecasting Models. The Root Mean Squared Error (RMSE) is plotted against
+the forecast lead time (in hours) for nine different atmospheric variables. Our trained Mixture of Experts (MoWE)
+model is compared against three individual expert models (FCN3, Aurora, Pangu) and a simple mean of the experts.
+Across all variables and lead times, the MoWE model (red line) consistently achieves the lowest error, outperforming
+not only each expert but also the simple mean model.
+
+
+4   Conclusion
+
+In this work, we addressed the emerging performance saturation in deterministic data-driven weather forecasting by
+proposing a Mixture of Experts (MoWE) framework as a strategic alternative to training yet another standalone model.
+Our approach leverages the strengths of multiple existing expert models, using a learned gating network to produce an
+optimal, dynamic blend of their forecasts.
+Our results show that this synergistic approach is highly effective in improving forecast skill. By combining outputs
+from three distinct deep learning models, our MoWE system produced forecasts that were quantitatively superior to
+
+
+                                                         5
+                                                                             MoWE : A Mixture of Weather Experts
+
+
+
+
+Figure 3: This image displays 2 m temperature (K) for ERA5, forecasts at 6-hour, 24-hour, and 48-hour from various
+models ( FCN3, Aurora, Pangu, and MoWE) along with the learned weights for FCN3, Aurora, and Pangu in the
+MoWE. The MoWE model’s forecasts appear reasonable and visually consistent with the others. The weight maps
+indicate that at the 6-hour forecast, the MoWE places a higher weight on the Aurora model. However, as the forecast
+horizon extends to 24 and 48 hours, the MoWE uses a balanced contribution from multiple models in the longer-term
+forecasts.
+
+
+
+
+                                                        6
+                                                                           MoWE : A Mixture of Weather Experts
+
+
+
+
+Figure 4: This image displays wind(m/s) at pressure level 500 for ERA5, forecasts at 6-hour, 24-hour, and 48-hour
+from various models ( FCN3, Aurora, Pangu, and MoWE) along with the learned weights for FCN3, Aurora, and Pangu
+in the MoWE. The MoWE model’s forecasts appear reasonable and visually consistent with the others. The weight
+maps indicate that at the 6-hour forecast, the MoWE places a higher weight on the Aurora model. However, as the
+forecast horizon extends to 24 and 48 hours, the MoWE uses a balanced contribution from multiple models in the
+longer-term forecasts.
+
+
+
+
+                                                       7
+                                                                              MoWE : A Mixture of Weather Experts
+
+
+
+
+Figure 5: This image displays geopotential (m2 /s2 ) at pressure level 500 for ERA5, forecasts at 6-hour, 24-hour, and
+48-hour from various models ( FCN3, Aurora, Pangu, and MoWE) along with the learned weights for FCN3, Aurora,
+and Pangu in the MoWE. The MoWE model’s forecasts appear reasonable and visually consistent with the others. The
+weight maps indicate that at the 6-hour forecast, the MoWE places a higher weight on the Aurora model. However, as
+the forecast horizon extends to 24 and 48 hours, the MoWE uses a balanced contribution from multiple models in the
+longer-term forecasts.
+
+
+any single expert, achieving a significant RMSE reduction of over 10% at a 48-hour lead time. This demonstrates that
+
+
+                                                          8
+                                                                                  MoWE : A Mixture of Weather Experts
+
+
+Table 2: RMSE comparison for Base (25M) and Small (9M) models across different channels, along with percentage
+difference. The Base model is very slightly improving over the Small model.
+                                 Variable          Base          Small    % Difference
+                                 t2m (K)          0.6803        0.6810       +0.10
+                                 t500 (K)         0.4399        0.4410       +0.27
+                                 t850 (K)         0.6038        0.6046       +0.12
+                                 u10m (m/s)       0.7663        0.7664       +0.01
+                                 u500 (m/s)       1.4872        1.4875       +0.02
+                                 u850 (m/s)       1.1404        1.1405       +0.01
+                                 v10m (m/s)       0.7844        0.7844       +0.01
+                                 v500 (m/s)       1.5019        1.5023       +0.03
+                                 v850 (m/s)       1.1420        1.1417       -0.03
+                                 z500 (m2 /s2 )   45.6734       45.9691      +0.65
+                                 z850 (m2 /s2 )   36.5431       36.8664      +0.88
+
+
+there is complementary and valuable information distributed across different models that can be effectively harnessed.
+Moreover, the superiority of the MoWE against simpler ensembling strategies (e.g., averaging) shows that the advantages
+of different experts between models can be isolated to specific locations and lead times. Thus our approach could also
+be considered a novel way to approach the problem of bias correction in weather forecasting.
+We acknowledge some of the weaknesses of our MoWE architecture and training procedure. First, our current approach
+fixes the rollout to 2 days, as we precompute and store all expert forecasts on disk to cut down on training time. A
+potential solution to this (and the relatively large size of the training datasets in general) is an online training setup,
+where the expert predictions are computed on-the-fly during training. This would demand substantially more GPU
+memory and/or longer training times, so we leave it to future work. Another limitation is that simple concatenation
+of all channels across experts becomes increasingly infeasible as the number of variables and experts grows. This
+highlights the need for compression or dimensionality reduction strategies, for example, using a perceiver IO [31] to
+compress the data across experts, channels, or pressure levels [4].
+Overall, the implications of this research offer a promising path forward for the discipline. As the number and diversity
+of leading weather models continues to grow, the MoWE framework provides a scalable and efficient method to
+maximize forecast accuracy by integrating the collective intelligence of the best available models, without adding
+substantial extra compute cost on the training or inference sides. Future work could extend this framework to include a
+more diverse set of experts, including traditional physics-based NWP systems, and investigate the learned weights to
+gain insight into model-specific strengths and weaknesses, among other potential directions. Ultimately, we see the
+MoWE approach as a shift from competing models to collaborative models, paving the way to the next generation of
+weather forecasting systems with community effort and involvement.
+
+
+Acknowledgements
+
+D. Chakraborty acknowledges PhysicsNeMo and Earth2Studio teams at NVIDIA. This research was done during his
+internship at NVIDIA. R. Maulik and D. Chakraborty acknowledge funding support from the DOE Office of Science
+ASCR program (DOE-FOA-2493, PM-Dr. Steve Lee).
+
+
+References
+
+ [1] Jaideep Pathak, Shashank Subramanian, Peter Harrington, Sanjeev Raja, Ashesh Chattopadhyay, Morteza Mardani,
+     Thorsten Kurth, David Hall, Zongyi Li, Kamyar Azizzadenesheli, et al. Fourcastnet: A global data-driven high-
+     resolution weather model using adaptive fourier neural operators. arXiv preprint arXiv:2202.11214, 2022.
+ [2] Kaifeng Bi, Lingxi Xie, Hengheng Zhang, Xin Chen, Xiaotao Gu, and Qi Tian. Pangu-weather: A 3d high-
+     resolution model for fast and accurate global weather forecast. arXiv preprint arXiv:2211.02556, 2022.
+ [3] Remi Lam, Alvaro Sanchez-Gonzalez, Matthew Willson, Peter Wirnsberger, Meire Fortunato, Ferran Alet, Suman
+     Ravuri, Timo Ewalds, Zach Eaton-Rosen, Weihua Hu, et al. Learning skillful medium-range global weather
+     forecasting. Science, 382(6677):1416–1421, 2023.
+
+
+                                                            9
+                                                                               MoWE : A Mixture of Weather Experts
+
+
+ [4] Cristian Bodnar, Wessel P Bruinsma, Ana Lucic, Megan Stanley, Anna Allen, Johannes Brandstetter, Patrick
+     Garvan, Maik Riechert, Jonathan A Weyn, Haiyu Dong, et al. A foundation model for the earth system. Nature,
+     pages 1–8, 2025.
+ [5] Tung Nguyen, Rohan Shah, Hritik Bansal, Troy Arcomano, Sandeep Madireddy, Romit Maulik, Veerabhadra
+     Kotamarthi, Ian Foster, and Aditya Grover. Scaling transformers for skillful and reliable medium-range weather
+     forecasting. In ICLR 2024 Workshop on AI4DifferentialEquations In Science, 2024.
+ [6] Kang Chen, Tao Han, Junchao Gong, Lei Bai, Fenghua Ling, Jing-Jia Luo, Xi Chen, Leiming Ma, Tianning
+     Zhang, Rui Su, et al. Fengwu: Pushing the skillful global medium-range weather forecast beyond 10 days lead.
+     arXiv preprint arXiv:2304.02948, 2023.
+ [7] Lei Chen, Xiaohui Zhong, Feng Zhang, Yuan Cheng, Yinghui Xu, Yuan Qi, and Hao Li. Fuxi: a cascade machine
+     learning forecasting system for 15-day global weather forecast. npj climate and atmospheric science, 6(1):190,
+     2023.
+ [8] Dmitrii Kochkov, Janni Yuval, Ian Langmore, Peter Norgaard, Jamie Smith, Griffin Mooers, Milan Klöwer, James
+     Lottes, Stephan Rasp, Peter Düben, et al. Neural general circulation models for weather and climate. Nature,
+     632(8027):1060–1066, 2024.
+ [9] Ilan Price, Alvaro Sanchez-Gonzalez, Ferran Alet, Tom R Andersson, Andrew El-Kadi, Dominic Masters, Timo
+     Ewalds, Jacklynn Stott, Shakir Mohamed, Peter Battaglia, et al. Gencast: Diffusion-based ensemble forecasting
+     for medium-range weather. arXiv preprint arXiv:2312.15796, 2023.
+[10] Simon Lang, Mihai Alexe, Mariana CA Clare, Christopher Roberts, Rilwan Adewoyin, Zied Ben Bouallègue,
+     Matthew Chantry, Jesper Dramsch, Peter D Dueben, Sara Hahner, et al. Aifs-crps: ensemble forecasting
+     using a model trained with a loss function based on the continuous ranked probability score. arXiv preprint
+     arXiv:2412.15832, 2024.
+[11] Boris Bonev, Thorsten Kurth, Ankur Mahesh, Mauro Bisson, Jean Kossaifi, Karthik Kashinath, Anima Anand-
+     kumar, William D Collins, Michael S Pritchard, and Alexander Keller. Fourcastnet 3: A geometric approach to
+     probabilistic machine-learning weather forecasting at scale. arXiv preprint arXiv:2507.12144, 2025.
+[12] Jared D Willard, Peter Harrington, Shashank Subramanian, Ankur Mahesh, Travis A O’Brien, and William D
+     Collins. Analyzing and exploring training recipes for large-scale transformer-based weather prediction. Artificial
+     Intelligence for the Earth Systems, 4(2):240061, 2025.
+[13] Stephan Rasp, Stephan Hoyer, Alexander Merose, Ian Langmore, Peter Battaglia, Tyler Russell, Alvaro Sanchez-
+     Gonzalez, Vivian Yang, Rob Carver, Shreya Agrawal, et al. Weatherbench 2: A benchmark for the next generation
+     of data-driven global weather models. Journal of Advances in Modeling Earth Systems, 16(6):e2023MS004019,
+     2024.
+[14] Massimo Bonavita. On some limitations of current machine learning weather prediction models. Geophysical
+     Research Letters, 51(12):e2023GL107377, 2024.
+[15] Zied Ben Bouallegue, Mariana CA Clare, Linus Magnusson, Estibaliz Gascon, Michael Maier-Gerber, Martin
+     Janoušek, Mark Rodwell, Florian Pinault, Jesper S Dramsch, Simon TK Lang, et al. The rise of data-driven weather
+     forecasting: A first statistical assessment of machine learning–based weather forecasts in an operational-like
+     context. Bulletin of the American Meteorological Society, 105(6):E864–E883, 2024.
+[16] Matthias Karlbauer, Nathaniel Cresswell-Clay, Dale R Durran, Raul A Moreno, Thorsten Kurth, Boris Bonev,
+     Noah Brenowitz, and Martin V Butz. Advancing parsimonious deep learning weather prediction using the healpix
+     mesh. Journal of Advances in Modeling Earth Systems, 16(8):e2023MS004021, 2024.
+[17] Oliver Watt-Meyer, Gideon Dresdner, Jeremy McGibbon, Spencer K Clark, Brian Henn, James Duncan, Noah D
+     Brenowitz, Karthik Kashinath, Michael S Pritchard, Boris Bonev, et al. Ace: A fast, skillful learned global
+     atmospheric model for climate prediction. arXiv preprint arXiv:2310.02074, 2023.
+[18] Michael McCabe, Peter Harrington, Shashank Subramanian, and Jed Brown. Towards stability of autoregressive
+     neural operators. arXiv preprint arXiv:2306.10619, 2023.
+[19] Noah D Brenowitz, Yair Cohen, Jaideep Pathak, Ankur Mahesh, Boris Bonev, Thorsten Kurth, Dale R Durran,
+     Peter Harrington, and Michael S Pritchard. A practical probabilistic benchmark for ai weather models. Geophysical
+     Research Letters, 52(7):e2024GL113656, 2025.
+[20] Ankur Mahesh, William Collins, Boris Bonev, Noah Brenowitz, Yair Cohen, Peter Harrington, Karthik Kashinath,
+     Thorsten Kurth, Joshua North, Travis OBrien, et al. Huge ensembles part ii: properties of a huge ensemble of
+     hindcasts generated with spherical fourier neural operators. arXiv preprint arXiv:2408.01581, 2024.
+
+
+                                                          10
+                                                                                MoWE : A Mixture of Weather Experts
+
+
+[21] Ferran Alet, Ilan Price, Andrew El-Kadi, Dominic Masters, Stratis Markou, Tom R Andersson, Jacklynn Stott,
+     Remi Lam, Matthew Willson, Alvaro Sanchez-Gonzalez, et al. Skillful joint probabilistic weather forecasting
+     from marginals. arXiv preprint arXiv:2506.10772, 2025.
+[22] Mark DeMaria, James L Franklin, Galina Chirokova, Jacob Radford, Robert DeMaria, Kate D Musgrave, and
+     Imme Ebert-Uphoff. An operations-based evaluation of tropical cyclone track and intensity forecasts from artificial
+     intelligence weather prediction models. Artificial Intelligence for the Earth Systems, 1(aop), 2025.
+[23] P Trent Vonich and Gregory J Hakim. Predictability limit of the 2021 pacific northwest heatwave from deep-
+     learning sensitivity analysis. Geophysical Research Letters, 51(19):e2024GL110651, 2024.
+[24] Roberto Buizza, M Alonso Balmaseda, Andrew Brown, S English, Richard Forbes, Alan Geer, T Haiden, Martin
+     Leutbecher, L Magnusson, Mark Rodwell, et al. The development and evaluation process followed at ECMWF to
+     upgrade the Integrated Forecasting System (IFS). European Centre for Medium Range Weather Forecasts, 2018.
+[25] Young-Youn Park, Roberto Buizza, and Martin Leutbecher. Tigge: Preliminary results on comparing and
+     combining ensembles. Quarterly Journal of the Royal Meteorological Society: A journal of the atmospheric
+     sciences, applied meteorology and physical oceanography, 134(637):2029–2050, 2008.
+[26] Jonathan A Weyn, Dale R Durran, and Rich Caruana. Can machines learn to predict weather? using deep learning
+     to predict gridded 500-hpa geopotential height from historical weather data. Journal of Advances in Modeling
+     Earth Systems, 11(8):2680–2693, 2019.
+[27] Cheng-Chin Liu, Kathryn Hsu, Melinda S Peng, Der-Song Chen, Pao-Liang Chang, Ling-Feng Hsiao, Chin-Tzu
+     Fong, Jing-Shan Hong, Chia-Ping Cheng, Kuo-Chen Lu, et al. Evaluation of five global ai models for predicting
+     weather in eastern asia and western pacific. npj Climate and Atmospheric Science, 7(1):221, 2024.
+[28] Jane Doe. Piggycast: Improving weather prediction. https://thedataandaiteacher.substack.com/p/
+     piggycast-improving-weather-prediction?triedRedirect=true, August 2025.
+[29] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF
+     international conference on computer vision, pages 4195–4205, 2023.
+[30] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+     Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, et al. An image is worth 16x16 words:
+     Transformers for image recognition at scale. arXiv preprint arXiv:2010.11929, 2020.
+[31] Andrew Jaegle, Sebastian Borgeaud, Jean-Baptiste Alayrac, Carl Doersch, Catalin Ionescu, David Ding, Skanda
+     Koppula, Daniel Zoran, Andrew Brock, Evan Shelhamer, et al. Perceiver io: A general architecture for structured
+     inputs & outputs. arXiv preprint arXiv:2107.14795, 2021.
+
+
+
+
+                                                          11
+

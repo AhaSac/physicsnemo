@@ -1,0 +1,1270 @@
+                                        AeroJEPA: Learning Semantic Latent Representations
+                                            for Scalable 3D Aerodynamic Field Modeling
+
+
+                                                                Francisco Giral∗                                   Abhijeet Vishwasrao
+                                                        Universidad Politécnica de Madrid                          University of Michigan
+
+                                                 Andrea Arroyo Ramo                       Mahmoud Golestanian                  Federica Tonti
+arXiv:2605.05586v1 [cs.LG] 7 May 2026
+
+
+
+
+                                            Universitat Politècnica de València             Purdue University               University of Michigan
+
+                                            Adrian Lozano-Durán                Steven L. Brunton                         Sergio Hoyas
+                                                   Caltech                   University of Washington          Universitat Politècnica de València
+
+                                               Hector Gomez                      Soledad Le Clainche                        Ricardo Vinuesa∗
+                                              Purdue University            Universidad Politécnica de Madrid              University of Michigan
+
+
+
+                                                                                           Abstract
+                                                    Aerodynamic surrogate models are increasingly used to replace repeated high-
+                                                    fidelity CFD evaluations in many-query design settings, but current approaches still
+                                                    face two important limitations: they often scale poorly to the very large fields arising
+                                                    in realistic 3D aerodynamics, and they rarely produce latent representations that are
+                                                    directly useful for analysis and design. We introduce AeroJEPA, a Joint-Embedding
+                                                    Predictive Architecture for aerodynamic field modeling that addresses both issues.
+                                                    Rather than predicting the full flow field directly from geometry, AeroJEPA predicts
+                                                    a target latent representation of the flow from a context latent representation of the
+                                                    geometry and operating conditions, and optionally reconstructs the field through
+                                                    a continuous implicit decoder. This formulation decouples latent prediction from
+                                                    field resolution while encouraging the latent space to organize semantically. We
+                                                    evaluate AeroJEPA on two complementary datasets: HiLiftAeroML, which stresses
+                                                    the method in a high-fidelity regime with extremely large boundary-layer fields, and
+                                                    SuperWing, which tests large-scale generalization and latent-space optimization
+                                                    over a broad family of transonic wings. Across these benchmarks, AeroJEPA
+                                                    is competitive as a continuous surrogate for aerodynamic fields, scales naturally
+                                                    to high-resolution outputs, and learns context and predicted latents that encode
+                                                    geometry and aerodynamic quantities not used directly as supervision. We further
+                                                    show that the resulting latent space supports controlled interpolation, linear probing,
+                                                    concept-vector arithmetic, and a constrained design latent-optimization experiment.
+                                                    These results suggest that predictive latent learning is a promising direction for
+                                                    scalable and design-meaningful aerodynamic surrogate modeling.
+
+
+                                        1     Introduction
+                                        Aerodynamic design increasingly operates in a many-query regime: engineers must repeatedly
+                                        evaluate high-dimensional flow fields over large spaces of geometries and operating conditions in
+                                        order to screen concepts, compare design variants, and refine promising candidates. High-fidelity
+                                        CFD remains the gold standard for these tasks, but its cost makes direct optimization, large-scale
+                                            ∗ Corresponding authors: fa.giral@alumnos.upm.es; rvinuesa@umich.edu
+
+
+
+                                        Preprint.
+Figure 1: Overview of the AeroJEPA framework. The context encoder maps the geometry point cloud
+to context tokens Zc , while the target encoder maps the ground-truth flow point cloud to target tokens
+Zt . The predictor conditions Zc on the operating variables c (e.g., α, Re, Mach) and outputs predicted
+target tokens Ẑt . Training always includes a latent matching loss Llat and a collapse-avoidance
+regularizer Lsig . When a decoder is included, the predicted tokens are also decoded to the physical
+field and masked-supervised with a reconstruction loss Lrec . At inference, the target encoder is
+discarded; the decoder is used only if full-field reconstruction is required.
+
+
+exploration, and rapid iteration prohibitively expensive. This tension has long motivated surrogate
+modeling for aerodynamic analysis [Forrester et al., 2006, 2008, Yondo et al., 2018], and more
+recently has driven the development of neural surrogates, neural operators, and continuous field
+representations for aerodynamic prediction [Azizzadenesheli et al., 2024, Catalani et al., 2024, Duvall
+and Duraisamy, 2025].
+Despite this progress, two limitations remain central in realistic 3D aerodynamics. First, many
+existing surrogates are optimized for direct field prediction on a fixed discretization, which makes
+them difficult to scale to the very large outputs that arise in high-fidelity settings. Second, even when
+they are accurate, they often provide little structure in the representation space itself: they predict
+fields, but do not yield latent variables that are clearly aligned with geometry, operating conditions,
+underlying physics, or downstream aerodynamic performance. Yet this structure is precisely what
+would make a learned surrogate more useful for scientific understanding and design [Vishwasrao
+et al., 2026, Vinuesa et al., 2026]. A semantically organized latent space could support probing,
+interpolation, and even gradient-based optimization without repeatedly manipulating meshes or
+decoding full fields at every inner-loop step.
+This challenge sits at the intersection of two active lines of work. On the aerodynamic side, recent
+methods have shown the promise of compact latent representations, transformer-based surrogates,
+and implicit decoders for high-dimensional CFD data [Solera-Rico et al., 2024, Francés-Belda et al.,
+2024, Eivazi et al., 2022, Choy et al., 2025, Wu et al., 2024a, Adams et al., 2025, Zou et al., 2026].
+These approaches demonstrate the value of compressed and continuous representations, but they
+are still typically trained through direct geometry-to-field prediction or reconstruction. On the
+representation-learning side, Joint-Embedding Predictive Architectures (JEPAs) learn by predicting
+target embeddings from context embeddings rather than reconstructing raw inputs [Assran et al., 2023,
+Sobal et al., 2022]. Recent developments such as LeJEPA and LeWorldModel show that JEPA-style
+training can be stabilized through explicit latent regularization, and related work has extended the
+paradigm to 3D, multimodal, and scientific settings [Balestriero and LeCun, 2025, Maes et al., 2026,
+Hu et al., 2024, Perera et al., 2025, Chen et al., 2025, Qu et al., 2026, Yee and Koh, 2026]. However,
+this line of work has not yet been fully developed for aerodynamic surrogate modeling, where the
+context is geometry plus operating condition and the target is the latent representation of a full flow
+field.
+In this paper, we introduce AeroJEPA, a JEPA-style predictive latent architecture tailored to 3D
+aerodynamic problems. Rather than learning to reconstruct the flow field directly from geometry,
+AeroJEPA predicts a target latent representation of the flow from a context latent representation of
+
+
+                                                   2
+the geometry and the operating conditions. A continuous implicit decoder can then reconstruct the
+field at arbitrary query locations from the predicted latent state. This design decouples the expensive
+prediction problem from the spatial resolution of the output field, while simultaneously encouraging
+the model to organize information in a latent space that can be analyzed and exploited beyond pure
+reconstruction accuracy.
+We evaluate AeroJEPA on two complementary datasets. HiLiftAeroML stresses the method in a high-
+fidelity regime with extremely large boundary-layer fields on realistic high-lift aircraft geometries,
+where scalability and continuous decoding are essential. SuperWing instead emphasizes broad
+generalization over a large parametric family of transonic wings and allows us to test whether the
+learned latent space can support a proof-of-concept optimization workflow. Across these datasets,
+we show that AeroJEPA is competitive as a continuous surrogate for aerodynamic fields, that its
+context and predicted latents capture geometry and aerodynamic information not used directly as
+supervision, and that the resulting latent space is smooth enough to support controlled interpolation
+and constrained design-space search.
+Our contributions are threefold. First, we formulate a JEPA-style predictive latent architecture
+for aerodynamic surrogate modeling, combining geometry-conditioned latent prediction with a
+continuous Implicit Neural Representation (INR) decoder. Second, we show that this formulation
+yields semantically meaningful latent spaces in which design variables and aerodynamic quantities can
+be recovered or manipulated despite not being used as direct training targets. Third, we demonstrate
+on large-scale aerodynamic benchmarks that the approach is practically useful: it remains competitive
+for field prediction, scales naturally to high-resolution outputs, and enables a lightweight proof-of-
+concept optimization procedure in latent space.
+
+
+2     Method
+
+In this section, we present the formulation of AeroJEPA, a novel framework adapted from the
+Joint-Embedding Predictive Architecture (JEPA) paradigm tailored specifically for 3D aerodynamic
+problems. Unlike traditional surrogate models that attempt to map physical geometries directly to high-
+dimensional flow fields (or standard autoencoders that focus on pixel- or voxel-level reconstruction),
+AeroJEPA operates entirely within a learned, physically meaninful latent space. This approach enables
+rapid prediction of flow fields and explicitly structures the latent dimensions to be highly correlated
+with geometry design variables and physical properties, permitting extremely fast optimization and
+design cycles.
+
+2.1   Problem formulation
+
+We consider the problem of predicting steady-state 3D fluid fields around complex aerodynamic
+geometries. Let a given geometric design be defined by its boundary surface ∂Ω, which interacts with
+a fluid over a spatial domain Ω ⊂ R3 . The geometry is discretized and represented as an unstructured
+point cloud of boundary condition (BC) points, P = {xi }N  i=1 , where each xi ∈ ∂Ω.
+                                                             c
+
+
+The flow physics are governed by a set of operating or freestream conditions, denoted as c. In the
+context of aerodynamics, this conditioning vector includes variables such as the Reynolds number
+(Re) and the angle of attack (α).
+The objective is to map the geometric representation P and the physical conditions c to the corre-
+sponding continuous fluid field (e.g., pressure and velocity vector fields), denoted as F. Instead of
+predicting a heavily discretized grid, we aim to learn an INR that can output the fluid state at any
+arbitrary spatial query point q = (x, y, z) ∈ Ω.
+
+2.2   The AeroJEPA framework
+
+The core philosophy of AeroJEPA is to separate geometry encoding, latent prediction, and field
+decoding through a compact tokenized interface. Figure 1 highlights which modules are active in
+each regime. The context encoder and predictor are always used at inference. The target encoder is
+used only during training. The decoder is optional: it can be optimized jointly with the latent JEPA
+objective, or trained later on frozen predicted latents in a decoupled second stage.
+
+
+                                                  3
+This architecture supports two training workflows. In the coupled workflow, the context encoder,
+target encoder, predictor, and decoder are trained end-to-end with both latent and reconstruction
+masked-supervision. In the decoupled workflow, the latent JEPA is trained first using only the
+encoders, predictor, and latent-space losses; afterwards, the encoders and predictor are frozen and a
+decoder is trained separately on the predicted latents. Both variants are compatible with the same
+framework. In this work we use the coupled variant because, empirically, it better preserves the
+physical validity of predicted latents without sacrificing semantic alignment.
+At inference time, target encoder is discarded. For latent analysis, or latent-optimization, the model
+uses the context encoder and predictor alone. For field prediction, the predicted tokens are additionally
+passed through the INR decoder to reconstruct the fluid field at arbitrary query points.
+
+2.3   Encoders: transforming physical space to latent space
+
+To handle the highly irregular and often massive point sets arising in 3D aerodynamics, AeroJEPA
+first converts both geometry and flow data into manageable point-cloud inputs and then compresses
+them into fixed-size token sets.
+
+Context Encoder The context encoder, Ec , starts from the original CFD mesh but discards mesh
+connectivity, retaining only a point-cloud representation of the geometry. For training efficiency,
+each case (which may originally contain tens of millions of points) is randomly subsampled to a
+manageable number of points using farthest point sampling (FPS), typically on the order of 8 × 103 –
+131×103 points depending on the dataset resolution. For surface-only settings, the encoder uses point
+coordinates as input features. For volumetric settings, we additionally provide the signed-distance
+function (SDF) value at each point. Other geometry-derived attributes such as surface normals could
+also be incorporated, but were not used during the development of this work.
+Given the subsampled geometry cloud P, the encoder produces a fixed number of context tokens,
+                                    Zc = Ec (P) ∈ RM ×d                                     (1)
+where M is the number of spatial tokens and d is the token width. In the main experiments,
+HiLiftAeroML uses 3072 tokens of width 64, while SuperWing uses 512 tokens of width 128.
+
+Target Encoder Used only during training, the target encoder, Et , operates on an independently
+subsampled point cloud of the ground-truth fluid field. This target cloud may cover only surface
+quantities (e.g., Cp , Cf , boundary-layer velocity) or a volumetric field (e.g., velocity and pressure
+throughout the domain), depending on the dataset. Importantly, the target points are sampled
+independently from the geometry points, so the model does not rely on one-to-one correspondence
+between context and target samples.
+The target encoder maps the subsampled flow field F to target tokens,
+                                          Zt = Et (F) ∈ RM ×d                                       (2)
+Zt serves as the target in latent space. In both encoders, token embeddings are obtained by clustering
+the subsampled point cloud into learned centroids, aggregating local neighborhoods around each
+centroid with a lightweight message-passing network [Gilmer et al., 2017], and refining the resulting
+token set with a point-transformer backbone. This turns irregular point clouds of varying size into
+fixed-size token sets that can be matched directly.
+
+2.4   Latent predictor network
+
+The predictive core of AeroJEPA is the predictor network, fθpred , parameterized by θ. Instead of
+predicting the high-dimensional field directly, the predictor operates entirely in tokenized latent space.
+Given the context tokens extracted from the geometry, Zc , and the physical operating conditions, c,
+the network predicts the target flow tokens:
+                                           Ẑt = fθpred (Zc , c)                                    (3)
+where c contains the relevant flow variables for the problem at hand, such as angle of attack, Reynolds
+number, or Mach number. The conditions are injected inside the predictor so that a single geometry
+encoding can support multiple operating points. The predictor therefore learns the map from geometry-
+conditioned tokens to flow-conditioned tokens, which is far cheaper than direct dense field prediction
+while preserving a structured latent interface for downstream probing and optimization.
+
+
+                                                    4
+2.5   Implicit neural representation (INR) decoder
+
+To map the fluid latent states back into the physical domain, we employ an INR Decoder, fϕdec ,
+parameterized by ϕ. Unlike voxel grids or fixed meshes, INRs provide a continuous, resolution-
+independent mapping by querying exact spatial coordinates.
+The decoder takes as input a spatial query point q = (x, y, z) ∈ Ω alongside the predicted latents
+Ẑt . When volumetric information is used, the decoder also receives the local SDF value at the query
+point. During training, the reconstruction query points are also subsampled from the original field
+and are chosen independently from both the context and target-encoder point sets. This preserves the
+decoupled setting and effectively trains the model in a masked fashion, encouraging the latent tokens
+to encode the underlying continuous field rather than a fixed subset of sampled locations. It outputs
+the local fluid state variables, such as velocity vector u and pressure p:
+                                       [u(q), p(q)] = fϕdec (Ẑt , q)                                 (4)
+By conditioning a multi-layer perceptron (MLP) on the latent vector Ẑt , the INR Decoder acts as a
+continuous basis function for the aerodynamic field. This architecture is particularly advantageous for
+complex aircraft geometries, as it completely bypasses the need for volumetric meshing and allows
+for arbitrary physical resolution purely bounded by the query points provided.
+
+2.6   Training objectives
+
+A central challenge in JEPA training is avoiding representation collapse while still learning a predictive
+latent space that is useful for downstream tasks. AeroJEPA follows recent JEPA formulations
+that replace EMA teachers and stop-gradient heuristics with an explicit regularizer on the latent
+distribution, namely SIGReg [Balestriero and LeCun, 2025, Maes et al., 2026]. This yields two
+closely related training objectives depending on whether the decoder is optimized jointly or separately.
+For coupled end-to-end training, we optimize
+                                Ltotal = λℓ Llat + λr Lrec + λs Lsig ,                                (5)
+whereas the decoupled latent-only stage uses
+                                   Llatent-only = λℓ Llat + λs Lsig .                                 (6)
+The latent matching term is
+                                                               2
+                                         Llat = Ẑt − Zt           ,                                  (7)
+                                                               2
+which aligns the predictor output with the target encoder output token by token. When the decoder is
+trained jointly, the reconstruction term is
+                                                                     
+                                                                    2
+                               Lrec = Eq∈Ω fϕdec (Ẑt , q) − F(q)       ,                       (8)
+                                                                        2
+
+with the supervised channels depending on whether the task is surface-only or volumetric. The regu-
+larization term Lsig applies SIGReg to the latent tokens in order to keep the embedding distribution
+well spread and predictive without relying on EMA or stop-gradient training heuristics. SIGReg
+regularizes the latent distribution through random low-dimensional projections toward an isotropic
+Gaussian prior.
+In all experiments of this paper we use the coupled training objective. Empirically, we found that
+including the reconstruction pathway during AeroJEPA training helps maintain physical validity
+in the predicted latents while preserving their semantic alignment with design and aerodynamic
+variables. The loss weights are set to λℓ = 1.0, λr = 1.0, and λs = 0.01. These values were chosen
+empirically: assigning comparable weight to the latent-matching and reconstruction terms, while
+using a lighter regularization weight, gave the best trade-off between field accuracy and a latent space
+that remained interpretable and useful for probing and optimization.
+
+3     Computational experiments
+Our experiments are designed to answer three questions: (i) whether AeroJEPA yields accurate
+full-field surrogates on challenging 3D aerodynamic benchmarks, (ii) whether the learned latent
+
+
+                                                     5
+Table 1: Performance metrics and inference computational cost on HiLiftAeroML, reported as mean
+± standard deviation across test cases. Baseline models are trained on chunks of 131 × 103 target
+points and evaluated over the full field by chunk-wise inference, whereas AeroJEPA predicts a
+continuous latent field and decodes it at arbitrary query locations.
+Model             Field       Rel L2            Rel L1        RMSE / GT Max     MAE / GT Max          RMSE               MAE          Mean TFLOPs
+FigConvUNet       p       0.0206 ± 0.0047   0.0125 ± 0.0026   0.0197 ± 0.0045   0.0120 ± 0.0024   4.3538 ± 0.9910   2.6424 ± 0.5373   88.34 ± 2.61
+                  u       0.4761 ± 0.0934   0.3906 ± 0.1033   0.0991 ± 0.0176   0.0689 ± 0.0130   0.2046 ± 0.0246   0.1422 ± 0.0189
+                  v       0.8492 ± 0.0555   0.8684 ± 0.0498   0.0532 ± 0.0061   0.0348 ± 0.0045   0.1367 ± 0.0161   0.0893 ± 0.0110
+                  w       0.7137 ± 0.0864   0.8173 ± 0.0829   0.0699 ± 0.0061   0.0404 ± 0.0033   0.1873 ± 0.0258   0.1080 ± 0.0120
+GeoTransolver     p       0.0289 ± 0.0094   0.0193 ± 0.0044   0.0277 ± 0.0089   0.0184 ± 0.0041   6.1168 ± 1.9620   4.0718 ± 0.9121   309.13 ± 8.97
+                  u       0.6510 ± 0.1212   0.5925 ± 0.1530   0.1347 ± 0.0203   0.1036 ± 0.0166   0.2799 ± 0.0336   0.2155 ± 0.0292
+                  v       1.0628 ± 0.0275   1.1372 ± 0.0524   0.0670 ± 0.0075   0.0457 ± 0.0058   0.1732 ± 0.0264   0.1181 ± 0.0182
+                  w       0.9636 ± 0.0501   1.1766 ± 0.1056   0.0954 ± 0.0121   0.0582 ± 0.0056   0.2592 ± 0.0514   0.1573 ± 0.0235
+Transolver        p       0.0288 ± 0.0101   0.0186 ± 0.0044   0.0276 ± 0.0095   0.0179 ± 0.0041   6.0916 ± 2.1000   3.9434 ± 0.9140   189.44 ± 5.50
+                  u       0.6328 ± 0.1034   0.5765 ± 0.1234   0.1313 ± 0.0191   0.1016 ± 0.0150   0.2726 ± 0.0285   0.2108 ± 0.0214
+                  v       1.0693 ± 0.0203   1.1607 ± 0.0328   0.0674 ± 0.0073   0.0466 ± 0.0050   0.1741 ± 0.0253   0.1201 ± 0.0150
+                  w       0.9668 ± 0.0446   1.1734 ± 0.0816   0.0957 ± 0.0119   0.0581 ± 0.0053   0.2598 ± 0.0502   0.1565 ± 0.0194
+AeroJEPA (ours)   p       0.0048 ± 0.0026   0.0024 ± 0.0009   0.0046 ± 0.0025   0.0023 ± 0.0009   1.0218 ± 0.5441   0.5176 ± 0.1974   57.00 ± 1.65
+                  u       0.1445 ± 0.0423   0.1072 ± 0.0327   0.0301 ± 0.0082   0.0189 ± 0.0048   0.0618 ± 0.0133   0.0389 ± 0.0070
+                  v       0.2749 ± 0.0388   0.2453 ± 0.0349   0.0173 ± 0.0031   0.0099 ± 0.0020   0.0443 ± 0.0069   0.0253 ± 0.0046
+                  w       0.1880 ± 0.0455   0.1759 ± 0.0322   0.0182 ± 0.0027   0.0086 ± 0.0013   0.0489 ± 0.0084   0.0232 ± 0.0035
+
+
+
+
+space is semantically aligned with geometry and flow variables, and (iii) whether that latent structure
+could be useful for downstream design optimization. We therefore evaluate the method from three
+complementary perspectives: surrogate accuracy, latent-space structure, and optimization utility
+across two datasets that stress different aerodynamic regimes.
+
+3.1     Datasets
+
+We evaluate AeroJEPA on two complementary aerodynamic datasets. The first is the HiLiftAeroML
+dataset introduced by Ashton et al. [Ashton et al., 2026], which provides high-fidelity CFD data
+generated with solution-adapted WMLES for high-lift configurations. This dataset is particularly
+relevant for assessing whether the proposed latent-space prediction strategy can capture complex
+separated-flow phenomena on realistic aircraft geometries. The second is SuperWing [Yang et al.,
+2025], a large-scale transonic swept-wing dataset designed for data-driven aerodynamic design.
+SuperWing contains diverse parameterized wing geometries simulated over a broad range of operating
+conditions, making it suitable for evaluating generalization across geometry and flow-condition
+variations. Additional information on the geometry families, flow regimes, and the role of each
+dataset in our evaluation protocol is provided in Appendix D.
+
+3.2     HiLiftAeroML: latent structure and full-field surrogate accuracy
+
+Surrogate comparison. HiLiftAeroML is the most demanding benchmark in our study because it
+combines realistic high-lift aircraft geometries with high-resolution boundary-layer fields defined
+on approximately ∼ 15M surface points, and ∼ 50M volume points. This regime is especially
+challenging for baseline architectures that are designed to predict all target points simultaneously.
+In practice, direct full-field prediction at this resolution is not feasible for these models, so we train
+them on chunks of 131 × 103 target points and reconstruct the full field by repeated chunk-wise
+inference at test time. This degrades both accuracy and efficiency. AeroJEPA avoids this bottleneck:
+the subsampled geometry is encoded only once, the predictor produces a latent representation of the
+full continuous field, and the INR decoder is then queried at arbitrary locations. In this work, we
+evaluate the velocity and pressure fields on the boundary-layer surface, where the flow exhibits the
+strongest variation and the prediction task is most demanding. However, the same framework can be
+applied to the full volumetric domain without modification. As shown in Table 1, this design yields
+the best accuracy across all field components while also requiring the lowest inference cost among
+the compared models.
+Beyond aggregate errors, the qualitative reconstructions confirm that the model captures the relevant
+high-lift flow structures on unseen cases. Figure 2 shows the decoded velocity field for test geometry
+LHC013 at 18◦ angle of attack. The prediction remains consistent with the reference CFD solution in
+the most sensitive surface regions, including areas affected by strong gradients and flow separation.
+This qualitative agreement is important because the benchmark evaluates the full resolved boundary-
+
+
+                                                                        6
+Figure 2: HiLiftAeroML reconstruction for test geometry LHC013 at 18◦ angle of attack. AeroJEPA
+captures the main boundary-layer velocity patterns and high-gradient regions on an unseen configura-
+tion while decoding the field continuously over the full aircraft surface. The relative error reported in
+the figure is 1.18% in MAE / max-GT-mean for the velocity-magnitude field. Additional views are
+provided in Appendix F.1.
+
+
+layer field rather than a reduced set of probes or integrated outputs; additional pressure views are
+provided in Appendix F.1.
+
+Latent analysis. We next examine whether the learned latent spaces encode physically meaningful
+structure. Figure 3 compares a PCA projection of the context latents from AeroJEPA against a VAE
+baseline. This baseline preserves a context branch and mixes context and target information through
+cross-attention before decoding to keep the same information paths as our AeroJEPA, but the training
+objective is different. AeroJEPA organizes the geometry manifold more coherently, suggesting that
+the predictive objective induces a more structured representation of the design space. This qualitative
+separation is supported quantitatively in Appendix F.1: ridge probes recover the four dominant
+high-lift control-surface deflections from the context latent with R2 values between 0.965 and 0.988,
+even though these parameters are never used during training.
+The predicted latents after the predictor also encode nontrivial aerodynamic information, despite the
+fact that the model is trained only on the primitive fields (u, v, w, p) and never on integrated coeffi-
+cients such as CL or CD . As shown in Figure 3, the predicted-latent manifold varies smoothly with
+aerodynamic quantities, and the corresponding linear probes recover CL and CD with R2 = 0.930
+and 0.996, respectively. This indicates that the predictive objective induces a latent representation
+aligned not only with geometry, but also with downstream aerodynamic performance.
+We also find that the context latent is interpretable beyond linear recovery. The concept-vector
+arithmetic analysis in Appendix F.4 shows that the main flap and slat directions act as nearly
+disentangled latent controls: flap-slat cross-talk is weak, while the remaining couplings occur
+primarily between inboard and outboard elements of the same surface, which is physically consistent
+with how these controls co-vary in the dataset. Taken together, these experiments show that on
+HiLiftAeroML, AeroJEPA is not only a more accurate and scalable surrogate for very large fields, but
+also a representation learner whose latent variables remain useful for analysis, probing, and controlled
+traversal.
+Additional quantitative probe recoveries, interpolation results, and qualitative reconstructions are
+provided in Appendix F.1.
+
+3.3   SuperWing: large-scale generalization and latent-space optimization
+
+We use SuperWing to evaluate a complementary capability: broad generalization across a large family
+of transonic swept wings and practical usefulness for aerodynamic design. Unlike HiLiftAeroML,
+where the main difficulty is the extreme size of the target field, SuperWing allows us to study both
+surrogate accuracy and downstream optimization on a dataset with fixed-resolution surface fields of
+32 × 103 points. This setting is useful because it lets us compare AeroJEPA against strong baselines
+under two inference regimes: a chunked mode that mimics the realistic deployment setting used in
+HiLiftAeroML, and a one-pass mode in which all target points are predicted at once.
+Table 2 summarizes this comparison. For the baselines, the one-pass setting is favorable because the
+full SuperWing field fits into a single forward pass, whereas the chunked setting better reflects the
+many-query scenario in which predictions must be assembled from local batches of 8 × 103 points,
+
+
+                                                   7
+Figure 3: Main HiLift latent-space results. Top: PCA projection of the context latents comparing
+AeroJEPA (Top) with the VAE baseline (Bottom), showing that AeroJEPA organizes the geometry
+manifold more coherently. Bottom: projection of the predicted latents after conditioning on the
+flow state, showing that the predicted manifold arranges smoothly with aerodynamic quantities even
+though the model is trained only on the primitive fields (u, v, w, p).
+
+
+Table 2: Performance metrics and inference computational cost on SuperWing, reported as mean ±
+standard deviation across test cases (TFLOPs are deterministic per setting since every case shares the
+same point count), comparing chunked and one-pass baseline decoding methods. The chunked setting
+uses batches of 8 × 103 points, matching the training resolution, whereas one-pass inference predicts
+the full 32 × 103 -point field at once. AeroJEPA yields the same result in both regimes because the
+geometry is encoded once and the field is decoded continuously from the latent representation.
+Model             Method     Field       Rel L2            Rel L1        RMSE / GT Max     MAE / GT Max          RMSE               MAE          Mean TFLOPs
+FigConvUNet       Chunked    Cf,τ    0.2240 ± 0.0609   0.1410 ± 0.0400   0.0784 ± 0.0212   0.0431 ± 0.0121   0.2227 ± 0.0571   0.1224 ± 0.0315    0.57 ± 0.00
+                             Cf,z    0.4909 ± 0.1057   0.3984 ± 0.0905   0.0697 ± 0.0199   0.0393 ± 0.0112   0.4835 ± 0.1525   0.2709 ± 0.0805
+                             Cp      0.3265 ± 0.0714   0.2679 ± 0.0647   0.1017 ± 0.0270   0.0661 ± 0.0166   0.3200 ± 0.0861   0.2076 ± 0.0516
+                  One-pass   Cf,τ    0.1429 ± 0.0525   0.0863 ± 0.0329   0.0497 ± 0.0169   0.0263 ± 0.0099   0.1420 ± 0.0501   0.0749 ± 0.0271    0.27 ± 0.00
+                             Cf,z    0.2912 ± 0.1080   0.2267 ± 0.0830   0.0416 ± 0.0180   0.0225 ± 0.0095   0.2899 ± 0.1396   0.1546 ± 0.0664
+                             Cp      0.1946 ± 0.0713   0.1580 ± 0.0642   0.0598 ± 0.0215   0.0383 ± 0.0140   0.1884 ± 0.0693   0.1206 ± 0.0443
+GeoTransolver     Chunked    Cf,τ    0.3587 ± 0.1338   0.2376 ± 0.1039   0.1269 ± 0.0530   0.0735 ± 0.0348   0.3588 ± 0.1369   0.2075 ± 0.0913    0.45 ± 0.00
+                             Cf,z    0.6990 ± 0.2298   0.6132 ± 0.2440   0.0969 ± 0.0304   0.0587 ± 0.0213   0.6660 ± 0.2018   0.4013 ± 0.1339
+                             Cp      0.4533 ± 0.1361   0.3578 ± 0.1186   0.1427 ± 0.0531   0.0895 ± 0.0346   0.4502 ± 0.1707   0.2822 ± 0.1104
+                  One-pass   Cf,τ    0.0280 ± 0.0177   0.0146 ± 0.0077   0.0096 ± 0.0056   0.0044 ± 0.0021   0.0277 ± 0.0170   0.0126 ± 0.0061    0.45 ± 0.00
+                             Cf,z    0.0529 ± 0.0335   0.0374 ± 0.0185   0.0076 ± 0.0055   0.0037 ± 0.0021   0.0539 ± 0.0416   0.0259 ± 0.0154
+                             Cp      0.0309 ± 0.0157   0.0225 ± 0.0104   0.0097 ± 0.0055   0.0055 ± 0.0026   0.0306 ± 0.0175   0.0175 ± 0.0082
+Transolver        Chunked    Cf,τ    0.3858 ± 0.1071   0.2773 ± 0.0940   0.1360 ± 0.0433   0.0859 ± 0.0330   0.3850 ± 0.1077   0.2418 ± 0.0814    0.35 ± 0.00
+                             Cf,z    0.8247 ± 0.2327   0.7352 ± 0.2518   0.1149 ± 0.0319   0.0710 ± 0.0231   0.7943 ± 0.2311   0.4856 ± 0.1446
+                             Cp      0.4858 ± 0.1280   0.4135 ± 0.1271   0.1512 ± 0.0461   0.1026 ± 0.0350   0.4763 ± 0.1472   0.3229 ± 0.1106
+                  One-pass   Cf,τ    0.0324 ± 0.0179   0.0182 ± 0.0086   0.0111 ± 0.0056   0.0055 ± 0.0023   0.0321 ± 0.0172   0.0157 ± 0.0068    0.35 ± 0.00
+                             Cf,z    0.0606 ± 0.0341   0.0459 ± 0.0209   0.0087 ± 0.0056   0.0046 ± 0.0024   0.0612 ± 0.0425   0.0316 ± 0.0172
+                             Cp      0.0358 ± 0.0164   0.0269 ± 0.0113   0.0112 ± 0.0058   0.0066 ± 0.0029   0.0354 ± 0.0187   0.0210 ± 0.0093
+AeroJEPA (ours)   –          Cf,τ    0.0548 ± 0.0258   0.0302 ± 0.0121   0.0186 ± 0.0074   0.0090 ± 0.0029   0.0543 ± 0.0245   0.0261 ± 0.0092    0.32 ± 0.00
+                             Cf,z    0.1084 ± 0.0513   0.0768 ± 0.0284   0.0156 ± 0.0087   0.0077 ± 0.0035   0.1097 ± 0.0664   0.0531 ± 0.0254
+                             Cp      0.0644 ± 0.0258   0.0473 ± 0.0179   0.0200 ± 0.0082   0.0116 ± 0.0041   0.0630 ± 0.0266   0.0365 ± 0.0133
+
+
+
+
+matching the training resolution. AeroJEPA is invariant to this distinction because the geometry is
+encoded once and the field is decoded continuously from the predicted latent representation. As
+a result, its chunked and one-pass results coincide. The benchmark shows two complementary
+effects. First, AeroJEPA clearly outperforms the chunked baseline evaluations across Cf,τ , Cf,z , and
+Cp , while remaining computationally efficient. Second, when the baselines are granted the more
+favorable one-pass regime, Transolver and GeoTransolver become very competitive numerically,
+which is expected in a dataset whose full target size is still manageable in memory. We therefore
+view SuperWing not as a case where AeroJEPA dominates every setting, but as evidence that the
+latent-field formulation remains competitive while retaining capabilities that pointwise surrogates do
+not naturally provide.
+Additional decoded-field comparisons and force parity plots for SuperWing are reported in Ap-
+pendix F.2.
+
+
+                                                                              8
+Figure 4: Proof-of-concept latent-space optimization on SuperWing. Left: in the (CD , CL ) scatter of
+the full dataset, the surrogate optimum sits at the upper-left corner of the achievable envelope, on
+the high-efficiency frontier traced by the iso-L/D contours. The accompanying histogram shows
+the optimum landing at the right tail of the dataset L/D distribution, well separated from the initial
+geometry while remaining inside the calibrated regime. Right: parallel-coordinates view of the nine
+reliably encoded design parameters, showing that the optimized design corresponds to a recognizable
+high-efficiency wing recipe—large reference area and aspect ratio, high sweep, aggressive taper, and
+root-biased washout twist. The retrieved nearest-neighbour wing follows the same polyline up to
+small offsets, indicating that the optimum corresponds to a wing family already present in the dataset.
+
+
+
+Finally, SuperWing lets us test whether the semantically structured latent space is useful for design-
+space search. We optimize aerodynamic efficiency CL /CD at a fixed cruise condition by searching
+directly in the 128-dimensional context latent space, using a differentiable chain formed by the frozen
+AeroJEPA predictor and linear probes for CL and CD . The optimization is constrained by a latent
+trust region, bounds on the subset of design parameters that are reliably recoverable from the context
+latents, aerodynamic floor and ceiling constraints, and a ceiling on achievable L/D derived from the
+dataset envelope. After optimization, the latent optimum is mapped back to design space through the
+design probe, and the closest real wing in the dataset is retrieved. Figure 4 summarizes this procedure
+and the associated aerodynamic envelope.
+The purpose of this experiment is not to claim that AeroJEPA can solve arbitrary wing optimization
+problems without further validation. Rather, it shows that the learned latent space is smooth enough to
+support gradient-based search within a self-consistent trust region, and that this search can be carried
+out without repeatedly decoding fields or modifying CAD representations during the optimization
+loop. In this sense, SuperWing provides a proof of concept that semantically meaningful latent spaces
+can serve as practical surrogates for rapid preliminary design exploration.
+Taken together, the SuperWing results show that AeroJEPA remains competitive as a surrogate in a
+broad transonic wing-design regime while also enabling a lightweight, differentiable optimization
+workflow in latent space. This complements the HiLiftAeroML results: the latter emphasize scalability
+and semantic structure under extreme field sizes, whereas SuperWing highlights design-space usability
+under a realistic aerodynamic optimization setting.
+
+
+4   Conclusions
+
+AeroJEPA introduces a JEPA-style predictive latent formulation for 3D aerodynamic surrogate mod-
+eling, combining geometry-conditioned latent prediction with an optional continuous INR decoder.
+The central idea is to move the expensive part of the learning problem from dense field prediction
+to structured latent prediction, while still retaining the ability to decode the flow continuously at
+arbitrary query locations when needed.
+Across HiLiftAeroML and SuperWing, the experiments show three main outcomes. First, AeroJEPA
+remains competitive as a surrogate model and is especially advantageous in regimes where the target
+field is too large for direct one-shot prediction. Second, the learned context and predicted latents
+are semantically meaningful: they linearly recover design and aerodynamic quantities not used as
+direct supervision, exhibit smooth organization under interpolation, and expose interpretable concept
+directions. Third, this latent structure is not merely descriptive; it is usable for downstream tasks, as
+shown by the proof-of-concept latent-space optimization on SuperWing.
+
+
+                                                   9
+These results suggest that predictive latent learning is a promising direction for aerodynamic surrogate
+modeling: it offers a path toward surrogates that are not only scalable and accurate, but also analyzable
+and useful for design-space exploration. At the same time, the present study is limited to two datasets
+and primarily evaluates steady settings; the optimization and latent analyses are also proof-of-concept
+rather than a full design pipeline. Future work will therefore study broader flow regimes, tighter
+integration with inverse design and shape parameterization pipelines, and extensions to unsteady or
+multi-fidelity aerodynamic settings; additional discussion appears in App. A.
+
+References
+Corey Adams, Rishikesh Ranade, Ram Cherukuri, and Sanjay Choudhry. Geotransolver: Learning
+  physics on irregular domains using multi-scale geometry aware physics attention transformer.
+  arXiv preprint arXiv:2512.20399, 2025.
+Saeed Akbari, Pedram H Dabaghian, and Omer San. Blending machine learning and sequential
+  data assimilation over latent spaces for surrogate modeling of boussinesq systems. Physica D:
+  Nonlinear Phenomena, 448:133711, 2023.
+Neil Ashton, Adam M Clark, Christopher Ivey, Liam Heidt, Sanjeeb Bose, Rishi Ranade, Rahul
+  Agrawal, and Konrad Goc. High-fidelity cfd data generation for hiliftaeroml using solution-adapted
+  wmles. In AIAA SCITECH 2026 Forum, page 0042, 2026.
+Mahmoud Assran, Quentin Duval, Ishan Misra, Piotr Bojanowski, Pascal Vincent, Michael Rabbat,
+ Yann LeCun, and Nicolas Ballas. Self-supervised learning from images with a joint-embedding
+ predictive architecture. In Proceedings of the IEEE/CVF conference on computer vision and
+ pattern recognition, pages 15619–15629, 2023.
+Hema Aubeelack, Stéphane Segonds, Christian Bes, Thierry Druot, Joël Brezillon, Adrien Bérard,
+  Marylène Duffau, and Guillaume Gallant. Surrogate model development for optimized blended-
+  wing-body aerodynamics. Journal of Aircraft, 60(2):437–448, 2023.
+Kamyar Azizzadenesheli, Nikola Kovachki, Zongyi Li, Miguel Liu-Schiaffini, Jean Kossaifi, and
+  Anima Anandkumar. Neural operators for accelerating scientific simulations and design. Nature
+  Reviews Physics, 6(5):320–328, 2024.
+Randall Balestriero and Yann LeCun. Lejepa: Provable and scalable self-supervised learning without
+  the heuristics. arXiv preprint arXiv:2511.08544, 2025.
+Jai Bardhan, Radhikesh Agrawal, Abhiram Tilak, Cyrin Neeraj, and Subhadip Mitra. Hep-jepa: A
+   foundation model for collider physics using joint embedding predictive architecture. arXiv preprint
+   arXiv:2502.03933, 2025.
+Gregory D Bird, Steven E Gorrell, and John L Salmon. Dimensionality-reduction-based surrogate
+  models for real-time design space exploration of a jet engine compressor blade. Aerospace Science
+  and Technology, 118:107077, 2021.
+Giovanni Catalani, Siddhant Agarwal, Xavier Bertrand, Frederic Tost, Michael Bauerheim, and
+  Joseph Morlier. Neural fields for rapid aircraft aerodynamics simulations. Scientific Reports, 14
+  (1):25496, 2024.
+Delong Chen, Mustafa Shukor, Theo Moutakanni, Willy Chung, Jade Yu, Tejaswi Kasarla, Yejin
+  Bang, Allen Bolourchi, Yann LeCun, and Pascale Fung. Vl-jepa: Joint embedding predictive
+  architecture for vision-language. arXiv preprint arXiv:2512.10942, 2025.
+Sibo Cheng, Jianhua Chen, Charitos Anastasiou, Panagiota Angeli, Omar K Matar, Yi-Ke Guo,
+  Christopher C Pain, and Rossella Arcucci. Generalised latent assimilation in heterogeneous
+  reduced spaces with machine learning surrogate models. Journal of Scientific Computing, 94(1):
+  11, 2023.
+Chris Choy, Alexey Kamenev, Jean Kossaifi, Max Rietmann, Jan Kautz, and Kamyar Azizzadenesheli.
+  Factorized implicit global convolution for automotive computational fluid dynamics prediction.
+  arXiv preprint arXiv:2502.04317, 2025.
+
+
+                                                   10
+Viet Chu, Omar Mashaal, and Hatem Abou-Zeid. Wirelessjepa: A multi-antenna foundation model
+  using spatio-temporal wireless latent predictions. arXiv preprint arXiv:2601.20190, 2026.
+Matthieu Destrade, Oumayma Bounou, Quentin Le Lidec, Jean Ponce, and Yann LeCun. Value-
+ guided action planning with jepa world models. arXiv preprint arXiv:2601.00844, 2025.
+Katrina Drozdov, Ravid Shwartz-Ziv, and Yann LeCun. Video representation learning with joint-
+  embedding predictive architectures. arXiv preprint arXiv:2412.10925, 2024.
+Xiaosong Du, Ping He, and Joaquim RRA Martins. Rapid airfoil design optimization via neural
+  networks-based parameterization and surrogate modeling. Aerospace Science and Technology,
+  113:106701, 2021.
+James Duvall and Karthik Duraisamy. Discretization-independent surrogate modeling of physical
+  fields around variable geometries using coordinate-based networks. Data-Centric Engineering, 6:
+  e5, 2025.
+Hamidreza Eivazi, Soledad Le Clainche, Sergio Hoyas, and Ricardo Vinuesa. Towards extraction
+  of orthogonal and parsimonious non-linear modes from turbulent flows. Expert Systems with
+ Applications, 202:117038, 2022.
+Ali ElSheikh, Rui-Xi Wang, Weimin Wu, Yibo Wen, Payam Dibaeinia, Jennifer Yuntong Zhang,
+  Jerry Yao-Chieh Hu, Mei Knudson, Sudarshan Babu, Shao-Hua Sun, et al. Cell-jepa: Latent
+  representation learning for single-cell transcriptomics. arXiv preprint arXiv:2602.02093, 2026.
+Zhengcong Fei, Mingyuan Fan, and Junshi Huang. A-jepa: Joint-embedding predictive architecture
+  can listen. arXiv preprint arXiv:2311.15830, 2023.
+Alexander Forrester, Andras Sobester, and Andy Keane. Engineering design via surrogate modelling:
+  a practical guide. John Wiley & Sons, 2008.
+Alexander IJ Forrester, Neil W Bressloff, and Andy J Keane. Optimization using surrogate models
+  and partially converged computational fluid dynamics simulations. Proceedings of the Royal
+  Society A: Mathematical, Physical and Engineering Sciences, 462(2071):2177–2204, 2006.
+Víctor Francés-Belda, Alberto Solera-Rico, Javier Nieto-Centenero, Esther Andrés, Carlos San-
+  miguel Vila, and Rodrigo Castellanos. Toward aerodynamic surrogate modeling based on β-
+  variational autoencoders. Physics of Fluids, 36(11), 2024.
+Quentin Garrido, Mahmoud Assran, Nicolas Ballas, Adrien Bardes, Laurent Najman, and Yann
+  LeCun. Learning and leveraging world models in visual representation learning. arXiv preprint
+  arXiv:2403.00504, 2024.
+Yousef Ghazi, Nahla Alhazmi, Radek Tezaur, and Charbel Farhat. Training a neural-network-based
+  surrogate model for aerodynamic optimisation using a gaussian process. International Journal of
+  Computational Fluid Dynamics, 36(7):538–554, 2022.
+Justin Gilmer, Samuel S Schoenholz, Patrick F Riley, Oriol Vinyals, and George E Dahl. Neural
+  message passing for quantum chemistry. In International conference on machine learning, pages
+  1263–1272. Pmlr, 2017.
+C Hu, S Martin, and R Dingreville. Accelerating phase-field predictions via recurrent neural networks
+  learning the microstructure evolution in latent space. Computer Methods in Applied Mechanics
+  and Engineering, 397:115128, 2022.
+Naiwen Hu, Haozhe Cheng, Yifan Xie, Shiqi Li, and Jihua Zhu. 3d-jepa: A joint embedding predictive
+  architecture for 3d self-supervised representation learning. arXiv preprint arXiv:2409.15803, 2024.
+Subash Katel, Haoyang Li, Zihan Zhao, Raghav Kansal, Farouk Mokhtar, and Javier Duarte. Learning
+  symmetry-independent jet representations via jet-based joint embedding predictive architecture.
+  arXiv preprint arXiv:2412.05333, 2024.
+Katiana Kontolati, Somdatta Goswami, George Em Karniadakis, and Michael D Shields. Learning
+  nonlinear operators in latent spaces for real-time predictions of complex dynamics in physical
+  systems. Nature Communications, 15(1):5101, 2024.
+
+
+                                                 11
+Lucas Maes, Quentin Le Lidec, Damien Scieur, Yann LeCun, and Randall Balestriero. Leworld-
+  model: Stable end-to-end joint-embedding predictive architecture from pixels. arXiv preprint
+  arXiv:2603.19312, 2026.
+Shentong Mo and Shengbang Tong. Connecting joint-embedding predictive architecture with
+  contrastive self-supervised learning. Advances in neural information processing systems, 37:
+  2348–2377, 2024.
+Shentong Mo and Sukmin Yun. Dmt-jepa: Discriminative masked targets for joint-embedding
+  predictive architecture. arXiv preprint arXiv:2405.17995, 2024.
+William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of
+ the IEEE/CVF international conference on computer vision, pages 4195–4205, 2023.
+Avishka Perera, Kumal Hewagamage, Saeedha Nazar, Kavishka Abeywardana, Hasitha Gallella,
+  Ranga Rodrigo, and Mohamed Afham. Crossjepa: Cross-modal joint-embedding predictive archi-
+  tecture for efficient 3d representation learning from 2d images. arXiv preprint arXiv:2511.18424,
+  2025.
+Helen Qu, Rudy Morel, Michael McCabe, Alberto Bietti, François Lanusse, Shirley Ho, and
+ Yann LeCun. Representation learning for spatiotemporal physical systems. arXiv preprint
+  arXiv:2603.13227, 2026.
+Geri Skenderi, Hang Li, Jiliang Tang, and Marco Cristani. Graph-level representation learning with
+  joint-embedding predictive architectures. arXiv preprint arXiv:2309.16014, 2023.
+Vlad Sobal, Jyothir SV, Siddhartha Jalagam, Nicolas Carion, Kyunghyun Cho, and Yann LeCun.
+  Joint embedding predictive architectures focus on slow features. arXiv preprint arXiv:2211.10831,
+  2022.
+Alberto Solera-Rico, Carlos Sanmiguel Vila, Miguel Gómez-López, Yuning Wang, Abdulrahman
+  Almashjary, Scott TM Dawson, and Ricardo Vinuesa. β-variational autoencoders and transformers
+  for reduced-order modelling of fluid flows. Nature Communications, 15(1):1361, 2024.
+Hugo Thimonier, José Lucas De Melo Costa, Fabrice Popineau, Arpad Rimmel, and Bich-Liên
+  Doan. T-jepa: Augmentation-free self-supervised learning for tabular data. arXiv preprint
+  arXiv:2410.05016, 2024.
+Jonas Ulmen, Ganesh Sundaram, and Daniel Görges. Learning state-space models of dynamic
+  systems from arbitrary data using joint embedding predictive architectures. IFAC-PapersOnLine,
+  59(18):19–24, 2025.
+Stijn Verdenius, Andrea Zerio, and Roy LM Wang. Lat-pfn: A joint embedding predictive architecture
+   for in-context time-series forecasting. arXiv preprint arXiv:2405.10093, 2024.
+Ricardo Vinuesa, Steven L Brunton, and Gianmarco Mengaldo. Explainable ai: Learning from the
+  learners. arXiv preprint arXiv:2601.05525, 2026.
+Abhijeet Vishwasrao, Francisco Giral, Mahmoud Golestanian, Federica Tonti, Andrea Arroyo Ramo,
+  Adrian Lozano-Duran, Steven L Brunton, Sergio Hoyas, Soledad Le Clainche, Hector Gomez, et al.
+  Agentic exploration of pde spaces using latent foundation models for parameterized simulations.
+  arXiv preprint arXiv:2604.09584, 2026.
+Haixu Wu, Huakun Luo, Haowen Wang, Jianmin Wang, and Mingsheng Long. Transolver: A fast
+  transformer solver for pdes on general geometries. arXiv preprint arXiv:2402.02366, 2024a.
+Xiaoyang Wu, Li Jiang, Peng-Shuai Wang, Zhijian Liu, Xihui Liu, Yu Qiao, Wanli Ouyang, Tong
+  He, and Hengshuang Zhao. Point transformer v3: Simpler faster stronger. In Proceedings of the
+  IEEE/CVF conference on computer vision and pattern recognition, pages 4840–4851, 2024b.
+Yunjia Yang, Weishao Tang, Mengxin Liu, Nils Thuerey, Yufei Zhang, and Haixin Chen. Superwing:
+  a comprehensive transonic wing dataset for data-driven aerodynamic design. arXiv preprint
+  arXiv:2512.14397, 2025.
+
+
+                                                12
+Brandon Yee and Pairie Koh. Pi-jepa: Label-free surrogate pretraining for coupled multiphysics
+  simulation via operator-split latent prediction. arXiv preprint arXiv:2604.01349, 2026.
+Raul Yondo, Esther Andrés, and Eusebio Valero. A review on design of experiments and surrogate
+  models in aircraft real-time and many-query aerodynamic analyses. Progress in aerospace sciences,
+  96:23–61, 2018.
+Weiwei Zhang, PENG Xuhao, KOU Jiaqing, and WANG Xu. Heterogeneous data-driven aerodynamic
+ modeling based on physical feature embedding, 2024.
+Junhong Zou, Wei Qiu, Zhenxu Sun, Xiaomei Zhang, Zhaoxiang Zhang, and Xiangyu Zhu. Adafield:
+  Generalizable surface pressure modeling with physics-informed pre-training and flow-conditioned
+  adaptation. arXiv preprint arXiv:2601.07139, 2026.
+
+
+
+
+                                                13
+Appendix
+
+A    Limitations
+
+Although AeroJEPA is evaluated on two complementary and challenging aerodynamic datasets,
+the empirical evidence still covers a limited set of geometries, operating conditions, and mostly
+steady-flow regimes, so broader claims across other aircraft configurations or unsteady settings should
+be made with care. In addition, the latent probing, arithmetic, and optimization results are intended
+as proof-of-concept demonstrations of semantic structure rather than a complete end-to-end design
+workflow, and the practical utility of the approach will depend on further validation under tighter
+engineering constraints, larger design spaces, and more diverse fidelity levels.
+
+
+B    Broader impacts
+
+This work studies aerodynamic surrogate modeling, so a clear potential positive impact is to reduce
+the computational cost of repeated CFD evaluations, which may lower the barrier to aerodynamic
+analysis and enable faster design-space exploration in research and engineering settings. More
+efficient surrogate models may also reduce the energy and time required for iterative screening
+relative to repeatedly running high-fidelity simulations.
+Potential negative impacts are more indirect. Incorrect surrogate predictions could lead to poor
+downstream design decisions if used outside the validated regime. We view AeroJEPA as a decision-
+support tool rather than a replacement for high-fidelity validation, and we emphasize that broader
+deployment should retain domain-expert oversight and final verification with established simulation
+or experimental workflows.
+
+
+C    Other related works
+
+Broader surrogate-modeling literature. Beyond the works emphasized in the main paper, there is
+a broad literature on surrogate modeling for aerodynamic design, variable-fidelity optimization, and
+engineering-response approximation [Du et al., 2021, Ghazi et al., 2022]. There is also extensive work
+on latent-state and reduced-order surrogate modeling for physical systems more broadly, including
+latent simulation, data assimilation, and design-space exploration [Hu et al., 2022, Cheng et al., 2023,
+Akbari et al., 2023, Kontolati et al., 2024, Bird et al., 2021, Aubeelack et al., 2023, Zhang et al.,
+2024]. These papers help situate AeroJEPA within the larger surrogate-modeling landscape, but they
+are less central to our contribution than methods that explicitly combine aerodynamic field prediction
+with learned latent structure.
+
+Broader latent-design and JEPA literature. On the JEPA side, predictive embedding methods
+have already been explored for audio, graphs, time series, tabular data, planning, and several scientific
+domains [Fei et al., 2023, Skenderi et al., 2023, Verdenius et al., 2024, Thimonier et al., 2024,
+Drozdov et al., 2024, Mo and Tong, 2024, Mo and Yun, 2024, Garrido et al., 2024, Destrade et al.,
+2025, Bardhan et al., 2025, Katel et al., 2024, Chu et al., 2026, ElSheikh et al., 2026, Ulmen et al.,
+2025]. We view these works as evidence that predictive latent learning is broadly useful, while
+AeroJEPA specializes that paradigm to aerodynamic surrogate modeling with a geometry-to-flow
+latent bridge.
+
+
+D    Additional dataset details
+
+This section summarizes the two datasets utilized throughout the paper, emphasizing geometry
+parameterization, observable fluid variables, and the structural point-cloud representation mandated
+by the AeroJEPA pipeline. Furthermore, we outline the exact dataset partition strategies formulated
+to rigorously evaluate generalizability.
+
+
+                                                   14
+D.1   HiLiftAeroML
+
+HiLiftAeroML [Ashton et al., 2026] serves as the high-fidelity aerodynamic benchmark in our study.
+The dataset catalogs realistic high-lift aircraft configurations simulated via solution-adapted wall-
+modeled large-eddy simulation (WMLES). This physical complexity makes it particularly relevant for
+evaluating continuous latent representations under highly separated, turbulent flow. Computationally,
+it represents the most demanding environment from a spatial scale perspective. In our formulation,
+the surface-oriented boundary-layer representation resolves approximately 12–15 million points
+per sample, whereas the internal volumetric representation constructs roughly 50 million bounding
+elements per case.
+Geometrically, the configurations are denoted by specific design geometry (e.g., "LHCXX") defined
+internally by 8 continuous design parameters. Four of these scalars dictate the highest observed
+flow variation: the inboard and outboard flap deflections alongside the inboard and outboard slat
+deflections. For every given geometry configuration, the dataset provides 10 discrete operational flow
+snapshots sweeping across an Angle of Attack (AoA) domain bounding from 4◦ to 22◦ . Given the
+extreme computational burden intrinsic to evaluating millions of points across full WMLES traces,
+we strictly partition the benchmark topologies into 205 cases reserved for the training manifold, and
+50 cases held out for testing.
+
+D.2   SuperWing
+
+SuperWing [Yang et al., 2025] acts as the large-scale transonic benchmark designed to evaluate
+continuous generalization across topological and operational variabilities. The corpus contains
+exactly 4,239 parameterized wing geometries mapped across 28,856 unique Reynolds-averaged
+Navier–Stokes (RANS) state solutions spanning a broad aerodynamic domain of Mach numbers
+and freestream angles of attack. Each simulation is originally distributed on a structured surface
+discretization of roughly 32,000 points. To ensure architectural parity, we treat these grids purely as
+unstructured point sets so the AeroJEPA pipeline remains invariant across dataset discretizations.
+Target fluid fields across SuperWing are iteratively mapped as continuous surface vectors, evaluating
+the local pressure coefficient (Cp ) and skin-friction coefficient (Cf ), contrary to volumetric arrays.
+Geometrically, each surface is prescribed by 54 latent morphological degrees of freedom regulating
+localized shape, wing twist, and spanwise dihedral.
+Crucially, to rigorously enforce zero-shot geometric generalizability, the dataset partitioning is
+structured strictly across the geometrical dimension rather than by random simulation sweeps. The
+parameterized wings are isolated into an 80%/10%/10% split corresponding to training, validation,
+and testing regimes, respectively. Because the stratification dictates that all unique operating pa-
+rameters for a specific held-out wing topology remain completely unseen during optimization, the
+evaluation cleanly measures fundamental physical extrapolation over unseen boundary shapes.
+
+E     Additional model details
+This appendix provides a comprehensive, step-by-step description of the AeroJEPA pipeline, ranging
+from raw computational fluid dynamics (CFD) representation to latent prediction and subsequent
+continuous field decoding.
+
+E.1   Point-cloud preprocessing and subsampling
+
+Standard unstructured CFD meshes exhibit highly variable node densities. To standardize the input
+representation, connectivity operations are discarded, allowing both the physical boundary and the
+surrounding flow to be formally treated as continuous point sets. Let the complete dense surface
+geometry be denoted as P, and the comprehensive ground-truth fluid states over the spatial domain
+Ω as F. For surface-only fluid problems, the geometry branch processes purely spatial coordinates
+x ∈ R3 . For volumetric domains, this input is strictly augmented with the local Signed-Distance
+Function (SDF).
+Because raw CFD point counts routinely exceed computational memory limits, explicit subsampling
+is enforced per case to construct bounded observation sets. Utilizing a Farthest Point Sampling (FPS)
+heuristic to ensure globally comprehensive spatial coverage, we extract a reduced context geometry
+
+
+                                                  15
+set Pc ⊂ P of fixed cardinality |Pc | = Nc . Concurrently, the target branch ingests an independently
+subsampled flow domain set Ft ⊂ F of size |Ft | = Nt . Finally, to support the separate decoding
+phase, an arbitrary set of spatial query locations Q ⊂ Ω of size |Q| = Nq is sampled.
+Crucially, the geometry context Pc , the target flow field Ft , and the reconstruction query set Q are
+sampled entirely independently from one another. This triple-decoupling natively prevents arbitrary
+one-to-one centroid alignments, guaranteeing that Pc ∩ Ft = ∅ and Q ∩ (Pc ∪ Ft ) = ∅ in expected
+practice. By ensuring the decoder is queried at spatial coordinates unobserved during the encoding
+phase, this strategy acts as a continuous masked-supervision mechanism. Consequently, it strips
+the framework of trivial spatial shortcuts and forces the latent space to robustly parameterize the
+underlying global continuous field dynamics.
+
+E.2   Tokenization by learned centroids
+
+Following subsampling, the irregular target and context point sets are projected into fixed-length
+sequences of latent spatial tokens. Specifically, the architecture leverages FPS once more over the
+subsampled sets Pc and Ft to designate foundational centroid coordinates. A localized message-
+passing neighborhood aggregation layer compiles point-wise variables around each centroid into
+preliminary latent tokens. This projection efficiently transitions the variable-scale physical point cloud
+into a structured, bounded topology compatible with global transformer operations. Based on the
+respective domain complexities, the token context sequence lengths (M ) and feature dimensions (d)
+are scaled; the high-dimensional spatial topologies resident in HiLiftAeroML necessitate sequences of
+M = 3072 tokens wherein d = 64, whereas the lower-resolution surface fields intrinsic to SuperWing
+are sufficiently parameterized by M = 512 tokens of dimensionality d = 128.
+
+E.3   Encoder backbones
+
+Both the context encoder Ec and the target encoder Et utilize computational graphs built upon localized
+Point Transformer attention mechanisms [Wu et al., 2024b]. Crucially, the massive dimensionality
+reduction separating the raw Nc and Nt inputs from the computational bounds is handled entirely by
+the preceding centroid-clustering and neighborhood aggregation layers. Consequently, the encoder
+backbones do not inherently alter the topological scale; they operate purely as flat processing stacks
+over the highly compressed, M -sized token distributions. By employing localized self-attention
+rather than global quadratic computations, the framework strictly bounds memory consumption.
+Through progressively stacked blocks, the encoder incrementally routes physical information across
+neighboring tokens. Shallow layers capture highly localized boundary layer interactions and surface
+curvature semantics, whereas deeper transformer blocks contextualize macro-aerodynamic coupling
+and wake propagation over multiple token hops. The resulting latent interface inherently preserves
+the geometric topology, formulating an optimizable blueprint for generative design.
+
+E.4   Predictor architecture and conditioning
+
+Sharing structural topology with the encoders, the core latent map is represented by a non-hierarchical
+predictor network operating seamlessly over the fixed output token resolution. The objective of the
+predictor is to synthesize target flow tokens purely from the geometry context tokens, and the driving
+physical constraints, without requiring spatial pooling operations.
+Architecturally, the predictor instantiates learnable latent queries corresponding to the spatial coordi-
+nates of a fixed set of centroids. These spatial query coordinates are first embedded via high-frequency
+Fourier positional encodings. The network processes these queries through a stacked, flat sequence
+that tightly intertwines localized point-transformer self-attention and token-based cross-attention
+mechanisms. The self-attention pathway facilitates continuous spatial refinement and consistency
+among the target queries themselves, whereas the interleaving cross-attention layers allow these
+queries to explicitly fetch aligned geometric features from the upstream context tokens acting as keys
+and values.
+Furthermore, recognizing that minor perturbations in freestream operating variables (e.g., Angle of
+Attack α, Reynolds Number Re, Mach Number M a) fundamentally bifurcate the boundary layer
+dynamics independent of structural modification, we inject these physics conditions natively into
+the network. A lightweight multi-layer perceptron processes the scalar variables, projecting them
+
+
+                                                   16
+deeply into the hidden transformer layers through adaptive feature modulation [Peebles and Xie,
+2023]. Consequently, the predictor framework robustly maps an invariant geometric parameterization
+into a variable continuous flow topology, establishing a smooth, differentiable property leveraged
+subsequently by gradient-based latent optimization probes.
+
+
+
+E.5   Implicit neural representation (INR) decoder
+
+To remap the predicted token distribution to an arbitrarily resolved continuous space, the target
+tokens Ẑt condition the INR decoder. For any arbitrary element qi ∈ Q, the coordinate is first
+transformed via Fourier feature encodings to enhance high-frequency spatial sensitivity before being
+processed by the decoding Multi-layer Perceptron (MLP). In volumetric settings, query elements are
+strictly augmented by the respective SDF evaluations, explicitly enforcing stark domain demarcations
+between the interior solid boundary, the near-wall viscous boundary layer, and the idealized external
+flow.
+
+
+
+E.6   Training configurations and hyperparameters
+
+The framework applies a generalized, fully coupled objective trained end-to-end iteratively. During
+this regime, we enforce equivalent scaling constants on the latent token alignment constraint and
+the spatial reconstruction field penalty (λℓ = 1.0, λr = 1.0), while scaling down the SIGReg
+distributional token regularization (λs = 0.01). This specific balancing heuristic proves highly
+favorable: it prioritizes direct mapping and physical decoding accuracy, while maintaining just
+enough lightweight regularization to prevent representation collapse without overtaking the core
+physics gradients. Network weights are updated using the AdamW optimizer, stabilized by a
+gradient clip. All models, including the baselines, were trained on a single NVIDIA H200 GPU.
+On HiLiftAeroML, AeroJEPA required roughly 48 hours for 300 epochs, while the baseline models
+required roughly 96 hours for the same number of epochs. On SuperWing, both AeroJEPA and the
+baseline models required roughly 24 hours for 200 epochs. Table 3 comprehensively documents
+the fundamental subsampling cardinalities, architectural bounds, optimization profiles, and training
+durations governing both environments.
+
+
+Table 3: Primary architectural parameterization and optimization bounds for the AeroJEPA framework,
+delineated by the underlying aerodynamic environment.
+
+             Configuration Variable                   HiLiftAeroML       SuperWing
+                                      Sampling Capacities
+             Geometry Context Subsmaple (Nc )      131, 072                 8, 192
+             Fluid Target Subsample (Nt )          131, 072                 8, 192
+             Reconstruction Query Set (Nq )        131, 072                 8, 192
+                                     Latent Space Structure
+             Context Tokens (M )                      3, 072                 512
+             Token Dimensionality (d)                   64                   128
+             Transformer Backbone Depth              6 Layers              6 Layers
+                                        Optimization Setup
+             Optimizer Formulation                    AdamW               AdamW
+             Learning Rate                            1 × 10−3           1 × 10−3
+             LR Annealing Schedule                 Cosine Warmup       Cosine Warmup
+             Weight Decay                             1 × 10−3           1 × 10−3
+             Gradient Clip Threshold                    10.0                10.0
+             Total Training Epochs                       300                200
+
+
+
+
+                                                 17
+F     Additional results and experiments
+F.1   Additional HiLiftAeroML results
+
+Qualitative reconstruction. Figure 5 gathers additional qualitative views of the decoded fields for
+test geometry LHC013 at 18◦ angle of attack. Together with the velocity view retained in the main
+text, these complementary pressure and velocity plots confirm the same pattern: AeroJEPA preserves
+the large-scale structure of the boundary-layer solution and remains consistent with the reference
+CFD field in challenging regions.
+
+Latent organization and interpolation. Figure 6 reports the ridge-probe recovery of aerodynamic
+coefficients from the predicted latent, complementing the predicted-manifold visualization shown
+in the main text. Figure 7 then examines interpolation in the latent space. We introduce a scalar
+interpolation parameter α and move between latent states corresponding to different angles of attack
+and geometry configurations. The decoded fields remain physically meaningful along the trajectory,
+and the resulting aerodynamic coefficients stay close to the ground-truth values, indicating that the
+learned manifold supports smooth transitions across both operating conditions and design changes.
+
+Decoded-field consistency. We also assess whether the decoded fields yield accurate aerodynamic
+quantities when forces are estimated directly from the reconstructed surface solution, rather than
+inferred through a linear probe in latent space. Figure 8 shows the pressure-coefficient distribution on
+a wing section for case LHC019 at 12◦ angle of attack, comparing the coefficient extracted from the
+decoded field against the reference CFD profile. Figure 9 further reports parity plots for CL and CD
+computed from the decoded predicted fields. These results are complementary to the latent probing
+analysis in the main paper: they show that AeroJEPA not only stores aerodynamically meaningful
+information in latent space, but also recovers integrated force quantities from the actual decoded flow
+field with good agreement.
+
+Linear recovery and concept arithmetic. Figure 10 reports the ridge-regression recovery of
+design variables from the context latents. These quantities are never used during training, so this
+experiment directly tests whether the context encoder captures geometry information in a form that
+is linearly accessible. The four dominant control-surface parameters are all recovered with high
+fidelity (R2 = 0.965-0.988), which supports the interpretation of the context manifold in the main
+text. Figure 11 complements this result through latent arithmetic. We define concept vectors from the
+rows of the ridge-regression weight matrix, traverse the context latent space along those directions,
+and decode the resulting states back into standardized physical design parameters. The targeted
+variable dominates the response along its corresponding trajectory, while the remaining parameters
+stay comparatively stable. The residual couplings mainly appear between inboard and outboard flaps
+and between inboard and outboard slats, which is consistent with the strong geometric dependencies
+of the high-lift configuration.
+
+F.2   Additional SuperWing surrogate results
+
+Decoded fields. Figure 12 shows representative decoded-field comparisons for Cf,z , Cf,τ , and Cp
+on a SuperWing test case. The predicted surface fields remain consistent with the reference solution
+across the three quantities most relevant to transonic wing analysis.
+
+Integrated aerodynamic response from decoded fields. Figure 13 reports parity plots for aerody-
+namic forces estimated directly from the decoded SuperWing fields. This comparison is performed
+on CL and CD recovered from the reconstructed surface solution itself. The decoded fields therefore
+preserve not only local surface quantities, but also the integrated aerodynamic response needed for
+downstream evaluation.
+
+F.3   Latent-space aerodynamic optimization
+
+A practical test of whether the JEPA latent space is genuinely semantic is whether one can compute
+on it: search for a design point that optimizes a physical objective, with no CAD edits and no solver in
+the inner loop. We demonstrate this on the SuperWing dataset by maximizing aerodynamic efficiency
+
+
+                                                  18
+Figure 5: Additional qualitative pressure views for test geometry LHC013 at 18◦ angle of attack.
+These complementary views support the velocity-based qualitative comparison shown in the main
+text and confirm that AeroJEPA preserves the main surface-pressure structure on the unseen case.
+The relative error reported in the figure is 0.24% in MAE / max-GT-mean for the pressure field.
+
+
+CL /CD at a fixed cruise condition (αcruise , Mcruise ), treating the 128-dimensional (mean) context
+latent zctx as the optimization variable.
+
+Differentiable surrogate. The frozen AeroJEPA predictor maps a context latent and a flow condi-
+tion to a fluid latent, zpred = Φpred (zctx , α, M ), and two linear ridge probes (Sec. F.5) read out CL
+and CD from zpred . Composing these gives a single end-to-end differentiable map zctx 7→ (CL , CD ),
+so the gradient of the objective J(zctx ) = −CL /CD is available by back-propagation through the
+predictor.
+
+Constrained optimization.      We solve
+                                                          CL (zctx )
+                                          min        −                                              (9)
+                                        zctx ∈R128        CD (zctx )
+with SLSQP, subject to four families of physically motivated guardrails, all derived from training-set
+statistics:
+
+      1. A Mahalanobis trust region (zctx − µtrain )⊤ Σ−1
+                                                       train (zctx − µtrain ) ≤ τ that keeps the search
+         on the latent manifold.
+      2. Bounds on the design parameters that are reliably linearly decodable from zctx (5-fold CV
+         R2 ≥ 0.85, retaining 9 of the 54 SuperWing parameters): xmink  ≤ Wk⊤ z̃ctx + bk ≤ xmax
+                                                                                              k  .
+      3. A drag floor CD ≥ 0.9 · mintrain CD and lift / drag ceilings at 1.05 times the corresponding
+         training-set extrema.
+      4. An L/D ceiling pinned to the dataset’s empirical maximum, preventing extrapolation past
+         the surrogate’s calibrated envelope.
+
+
+                                                     19
+Figure 6: Ridge linear probing from predicted latents to aerodynamic coefficients on HiLiftAeroML.
+Even though the model is trained only on the primitive fields (u, v, w, p), the predicted latent supports
+accurate recovery of CL and CD , consistent with the smooth organization of the predicted manifold
+shown in the main text.
+
+
+
+
+Figure 7: Latent interpolation on HiLiftAeroML between different operating conditions and geometry
+states. AeroJEPA yields decoded fields that remain physically meaningful across the interpolation
+path, with integrated coefficients that stay close to the corresponding ground-truth values.
+
+
+We use eight random restarts, drawing initial zctx values from the training distribution and projecting
+them inside the Mahalanobis ball. Constraint Jacobians for the affine design and Mahalanobis terms
+are supplied in closed form; gradients of the aerodynamic terms are obtained by autograd. Once
+                       ⋆
+SLSQP converges to zctx   , we read off the corresponding 54-D design vector x⋆ = Wdesign z̃ctx   ⋆
+                                                                                                      +
+bdesign and retrieve the dataset geometry whose standardized design vector is closest to x⋆ in
+Euclidean distance.
+
+Results. All eight restarts converge to the same neighbourhood and satisfy every constraint simulta-
+neously. Figure 14 visualizes the optimization in a PCA projection of the training context latents:
+SLSQP iterates climb the CL /CD field, remain inside the trust region, and converge next to a real
+                                     ⋆
+training case. The latent optimum zctx   is essentially overlaid with its retrieved nearest-neighbour,
+evidencing that the optimization terminates on the data manifold rather than in latent fantasy regions.
+The left panel of Fig. 4 confirms physical plausibility. In the (CD , CL ) scatter of the full dataset, the
+surrogate optimum sits at the upper-left corner of the achievable envelope, on the high-efficiency
+frontier traced by the iso-L/D contours. The accompanying histogram shows the optimum landing
+at the right tail of the dataset L/D distribution, well separated from the initial geometry’s value: the
+gradient-based search has moved monotonically up the efficiency axis without leaving the calibrated
+regime.
+
+
+                                                    20
+Figure 8: Pressure-coefficient profile extracted from the decoded field on a wing section for case
+LHC019 at 12◦ angle of attack. The comparison shows that AeroJEPA preserves the local pressure
+distribution needed to recover section-level aerodynamic behavior from the decoded solution.
+
+
+
+
+Figure 9: Parity plots for CL and CD computed from the decoded predicted fields. Unlike the
+latent probing experiment, these coefficients are obtained by estimating aerodynamic forces directly
+from the reconstructed surface solution, showing that AeroJEPA yields accurate integrated force
+predictions from the decoded field itself.
+
+
+The right panel of Fig. 4 closes the loop by exposing the design recipe behind the optimum. Plotted
+as a parallel-coordinates trace over the nine reliably encoded design parameters, x⋆ describes a
+recognisable high-efficiency wing — large reference area and aspect ratio, high sweep, aggressive
+taper, and root-biased washout twist. The retrieved nearest-neighbour wing follows the same polyline
+up to small offsets, showing that the recipe corresponds to a wing the dataset already contains.
+The experiment illustrates three properties of the AeroJEPA representation that are difficult to verify
+by inspection alone. First, the latent space is smooth and gradient-friendly: a single SLSQP solver, no
+hyperparameter tuning per restart, finds the same optimum from independent initializations. Second,
+the linear-probe coupling between zctx , the design parameters, and the aerodynamic targets is strong
+enough to support inverse design – the optimization, the bound enforcement, and the geometry
+retrieval all operate on the same linear readouts that the analysis in Sec. F.5 characterized. Third,
+and most consequentially, the optimum is interpretable: it is not a high-dimensional black-box
+vector but a 9-parameter design recipe that aligns with classical low-drag wing design principles and
+with a real wing from the dataset. Together, these observations make the case that self-supervised
+geometric representations can serve not only as predictive features but as a search space for physically-
+
+
+                                                   21
+Figure 10: Recovery of HiLift design variables from the context latents using ridge regression.
+Although the model is trained only from input mesh points and target flow fields, the context
+representation remains strongly aligned with the underlying geometric parameters.
+
+
+meaningful design optimization, with the cost of a few seconds of gradient descent in place of an
+outer loop over CAD and CFD.
+
+F.4   Concept-vector latent arithmetic on the HighLift dataset
+
+A semantic latent space should not only support gradient-based optimization (App. F.3) but also
+expose interpretable directions along which design intent can be expressed by simple vector arithmetic.
+We test this on the HighLift dataset by asking whether the AeroJEPA’s 128-dimensional (mean)
+context latent zctx encodes high-lift control surfaces – inboard / outboard flap and slat deflections –
+along separable linear axes, despite never having been trained on those labels.
+
+Concept directions from linear probes. We fit a single ridge probe per design parameter xk on
+the train split, xk = wk⊤ z̃ctx + bk with z̃ctx = (zctx − µctx )/σctx , where the design parameters
+are the four main HighLift deflections (IB Flap, OB Flap, IB Slat, OB Slat) plus the two flap-gap
+multipliers. The unit-norm probe direction vk = wk /∥wk ∥ is interpreted as the latent “concept vector”
+for parameter xk . To probe the disentanglement of the representation, we walk the train-mean latent
+along one direction at a time,
+                                      zctx (γ) = µctx + γ vk ,                                    (10)
+and at each step γ predict all design parameters from the shifted latent through the same probe matrix.
+The slope of the predicted parameter xj along the walk on direction vk has a closed form,
+                                                               
+                                      dx̃j    Wctx (vk /σctx ) j
+                                           =                      ,                               (11)
+                                       dγ            σxj
+
+                                                  22
+Figure 11: Latent-arithmetic analysis on HiLiftAeroML. Each trajectory traverses the context latent
+space along a concept vector defined by the ridge-regression weights of a target design variable.
+The targeted variable drives most of the variation, while the remaining variables stay comparatively
+stable; the main residual couplings occur between inboard and outboard flaps and between inboard
+and outboard slats.
+
+
+
+expressed in train-set standard deviations of xj per unit step in latent space; we report this number as
+the panel-level “σ/γ” sensitivity.
+
+
+
+The disentanglement matrix. Figure 15 shows the resulting 4 × 4 matrix for the four main
+deflections. Rows index the latent direction walked; columns index the design parameter read out.
+The diagonal panels (highlighted in red) measure the intended response of each concept direction:
+walking the IB-Flap concept vector should change predicted IB-Flap deflection. The off-diagonal
+panels measure cross-talk: how much an unrelated parameter moves as a side-effect.
+The structure that emerges in Fig. 15 is striking. Every diagonal panel exhibits a near-unit slope
+(around +1 σ/γ, the maximum a ℓ2 -regularized linear readout can reach without amplification),
+confirming that each of the four main deflections has its own clearly-aligned latent axis. The off-
+diagonal panels are largely flat – in particular, the entire flap–slat block is close to zero, meaning that
+the latent space has organised flap control and slat control into orthogonal subspaces. The remaining
+non-trivial structure is concentrated in two physically intuitive blocks: the IB-Flap and OB-Flap
+directions partially co-activate each other, and similarly for IB-Slat and OB-Slat. In other words,
+the model has learnt that inboard and outboard segments of the same control surface tend to be
+deflected together, while flap and slat actuation are independent – the correlation pattern dictated by
+real high-lift practice.
+The probes used to define every concept direction are linear and trained only on the train split, with
+no design-parameter supervision ever seen by the AeroJEPA itself. Yet in the resulting representation,
+design intent maps onto linear directions, and the residual entanglement is not arbitrary noise but
+the physically meaningful coupling that engineers already build into multi-element high-lift systems.
+Three points follow:
+
+
+                                                   23
+Figure 12: Representative decoded-field comparisons on SuperWing for Cf,z , Cf,τ , and Cp . The
+predicted surface fields remain consistent with the reference solution across the three quantities most
+relevant to transonic wing analysis.
+
+
+
+
+Figure 13: Parity plots for aerodynamic forces estimated from the decoded SuperWing fields. The
+comparison is performed on CL and CD recovered from the reconstructed surface solution, showing
+that the decoded fields preserve the integrated aerodynamic response with good fidelity.
+
+
+      1. The geometry-only context encoder discovers the underlying parametric basis of the design
+         space without being told what it is. This is the practical signal that the latent space is
+         genuinely semantic rather than merely high-capacity.
+
+      2. Concept-vector arithmetic provides a cheap interface for exploring configurations: a designer
+         can push along the OB-Slat direction and read the predicted flap and slat values, getting an
+         immediate, calibrated preview of what changes co-occur in real wings.
+
+      3. The block-diagonal disentanglement structure between flap and slat axes is a constructive
+         ingredient for the optimization in App. F.3: when a constrained search needs to move design
+         parameters independently, the latent space provides near-orthogonal directions to do so
+         along the parameters that are geometrically separable, while preserving the natural coupling
+         between IB and OB segments where the dataset itself shows it.
+
+
+                                                  24
+Figure 14: Latent-space optimization trajectory. Two-dimensional PCA projection of the training
+context latents zctx , coloured by the corresponding dataset CL /CD . The dashed contour is the
+projection of the 95% Mahalanobis trust region used to constrain the search. Light grey curves are
+the SLSQP iterates of the eight random restarts; the orange curve highlights the restart selected
+as the global optimum. White circles mark the SLSQP starting points. The red star is the latent
+           ⋆
+optimum zctx  ; the blue open circle is the dataset geometry retrieved as its nearest neighbour in design
+                       ⋆
+space, connected to zctx  by the dotted segment. The green triangle marks the initial geometry of the
+converging restart – the real training case closest to its starting point. All restarts ascend the CL /CD
+field and converge inside the trust region, terminating on the data manifold.
+
+
+Together with the gradient-based optimization of App. F.3, this experiment characterizes the JEPA
+latent both as a search space (smooth, gradient-friendly, linearly decodable) and as an interpretation
+space (separable concept directions reflecting physical actuation modes).
+
+F.5   Linear-probe analysis of the AeroJEPA latent space
+
+The aerodynamic optimization in App. F.3 and the concept-vector arithmetic in App. F.4 both rely on
+a single, simple primitive: a linear readout from the self-supervised AeroJEPA latents. This section
+defines that readout, lists the three latent quantities it is applied to, and reports the goodness-of-fit
+numbers that justify treating those readouts as semantic.
+
+Probe definition. For a latent vector z ∈ RD and a scalar target y, we define a linear probe as the
+composition of train-set standardisation and ridge regression with cross-validated regularisation,
+                                                               z − µtrain
+                              ŷ(z) = w⊤ z̃ + b,        z̃ =              ,                         (12)
+                                                                 σtrain
+where (w, b) are obtained by minimising ∥Z̃w + b 1 − y∥22 + λ ∥w∥22 on the train split, with λ selected
+by an inner cross-validation over λ ∈ {10−4 , 10−3 , . . . , 104 }.
+
+Three latent quantities, three probe families. We extract three mean-pooled latent vectors per
+case from the trained AeroJEPA:
+
+
+                                                   25
+Figure 15: Concept-vector arithmetic in the HighLift context latent. 4 × 4 response matrix
+obtained by walking the train-mean latent µctx along the unit-norm linear-probe direction of one
+design parameter at a time. Rows: latent direction walked (IB Flap, OB Flap, IB Slat, OB Slat).
+Columns: design parameter read out by the corresponding linear probe. Each panel reports the
+sensitivity in train standard deviations per unit walk (σ/γ). Diagonal panels (red) show the intended
+concept response and reach near-unit slope. Off-diagonal panels (grey, dashed) quantify cross-talk
+between concept directions: the flap–slat off-diagonal block is essentially flat, indicating that flap
+and slat actuation occupy orthogonal latent subspaces, while inboard / outboard pairs of the same
+control surface partially co-activate – the same correlation engineers impose by deflecting IB and
+OB segments in tandem. The disentanglement is obtained without any design-parameter supervision
+during JEPA pre-training; the linear probes are fit only on the train split.
+
+
+       • Context latent zctx ∈ R128 – the token-mean of the context encoder applied to a geometry
+         alone, with no flow conditions.
+       • Predicted latent zpred ∈ R128 – the token-mean of the predictor output for a geometry
+         conditioned on flow (α, M ).
+       • Target latent ztgt ∈ R128 – the token-mean of the target encoder applied to the flow field;
+         used only as a reference, not in the experiments of this paper.
+
+Three probe families result:
+
+      1. Context → design parameters. For each design parameter xk (e.g. each of the 54 Super-
+         Wing morphological coefficients or the 8 HighLift control-surface deflections), a separate
+         probe with z = zctx and y = xk . The full set of K probes assembles into a single ma-
+         trix readout x ≈ Wctx z̃ctx + bctx because every probe shares the same standardisation
+         (µctx , σctx ).
+      2. Predicted → aerodynamic coefficients. Two probes, z = zpred , y ∈ {CL , CD }.
+
+
+                                                 26
+      3. Predicted → AoA (control). A single probe with z = zpred and y = α, used to verify
+         that the predictor output – but not the geometry-only context – carries flow-condition
+         information.
+
+What the probes report on each dataset. On the SuperWing latent NPZ (Ntrain = 23,054,
+Nval = 2,931 over 3,391 + 424 disjoint geometries), the out-of-fold R2 values are: CL from zpred :
+0.984; CD from zpred : 0.965; α from zctx : 0.018; α from zpred : 0.987. That is, the predictor
+latent linearly carries both aerodynamic coefficients essentially perfectly, and the context latent is
+correctly blind to the flow condition by construction. The 54 context-to-design probes split into nine
+high-quality probes (CV R2 ≥ 0.85, including reference area, dihedral, aspect ratio, taper ratio and
+three of the four wing-twist coefficients) and a long tail of weaker probes that correspond either
+to high-frequency surface modes or to flow-state encodings the geometry-only latent cannot see
+(R2 ≈ 0.01 for the eight angle-of-attack indicators). On the HighLift dataset, the six control-surface
+design probes (IB / OB Flap and Slat deflections plus two flap gap multipliers) all exceed R2 ≈ 0.9,
+which is what makes the concept-vector arithmetic of App. F.4 possible.
+
+From probes to a downstream tool. Equation (12) has two properties that the rest of the paper
+exploits. First, it is closed-form differentiable in z – the gradient ∂ ŷ/∂z = w/σtrain is just a rescaled
+probe vector. This is what allows the SLSQP optimization of App. F.3 to back-propagate through the
+predictor and the probes in a single autograd graph, with the design-bound constraints expressed as
+affine inequalities with closed-form Jacobians. Second, the unit-norm probe direction vk = wk /∥wk ∥
+is interpreted as the latent concept vector for parameter xk ; walking zctx along vk and reading out
+every other parameter gives the disentanglement matrix of App. F.4.
+The probes are the bridge between the self-supervised representation and the design-space quantities
+a domain expert cares about. They turn the AeroJEPA latents into a usable object – one that can be
+searched (App. F.3) and queried by analogy (App. F.4) – without ever fine-tuning the underlying
+network.
+
+
+
+
+                                                    27
+

@@ -1,0 +1,423 @@
+                                             RANS-PINN based Simulation Surrogates for Predicting Turbulent Flows
+
+
+                                                           Shinjan Ghosh 1 Amit Chakraborty 1 Georgia Olympia Brikis 1 Biswadip Dey 1
+
+
+                                                                 Abstract                                tion process, often leading to suboptimal design choices.
+                                              Physics-informed neural networks (PINNs) pro-              In this context, neural networks, with their expressiveness
+                                              vide a framework to build surrogate models for             to capture pertinent functional relationships between ini-
+arXiv:2306.06034v3 [cs.LG] 11 Aug 2023
+
+
+
+
+                                              dynamical systems governed by differential equa-           tial/boundary conditions and the solution field of a PDE and
+                                              tions. During the learning process, PINNs incor-           the ability to predict simulation outcomes by invoking a sin-
+                                              porate a physics-based regularization term within          gle forward pass, offer an excellent tool for building fast and
+                                              the loss function to enhance generalization perfor-        accurate surrogate models for CFD simulations. Such deep
+                                              mance. Since simulating dynamics controlled by             learning based approaches can accelerate design evaluations
+                                              partial differential equations (PDEs) can be com-          significantly, facilitating the generation of enhanced design
+                                              putationally expensive, PINNs have gained popu-            choices through fast predictions of simulation outcomes.
+                                              larity in learning parametric surrogates for fluid         In recent years, there has been considerable attention given
+                                              flow problems governed by Navier-Stokes equa-              to the use of deep learning methods to expedite CFD simu-
+                                              tions. In this work, we introduce RANS-PINN, a             lations and thereby improve engineering design processes
+                                              modified PINN framework, to predict flow fields            (Vinuesa & Brunton, 2022; Warey et al., 2020; Zhang et al.,
+                                              (i.e., velocity and pressure) in high Reynolds num-        2022). While some approaches use deep learning to accel-
+                                              ber turbulent flow regimes. To account for the             erate traditional CFD solvers (Hsieh et al., 2019; Kochkov
+                                              additional complexity introduced by turbulence,            et al., 2021a), a certain body of research treats the flow
+                                              RANS-PINN employs a 2-equation eddy viscos-                problems as problems defined over a cartesian grid or an
+                                              ity model based on a Reynolds-averaged Navier-             irregular mesh and uses techniques involving convolutional
+                                              Stokes (RANS) formulation. Furthermore, we                 or graph neural operators to predict the flow fields (Hen-
+                                              adopt a novel training approach that ensures ef-           nigh, 2017; Jiang et al., 2020; Wang et al., 2020). Alter-
+                                              fective initialization and balance among the vari-         natively, in another line of work, physics-informed neural
+                                              ous components of the loss function. The effec-            networks (PINNs) exploit automatic differentiation and in-
+                                              tiveness of the RANS-PINN framework is then                corporate the underlying PDEs to approximate the solution
+                                              demonstrated using a parametric PINN.                      field (Raissi et al., 2019; White et al., 2019; Nabian & Mei-
+                                                                                                         dani, 2020; Zhang et al., 2020; Jin et al., 2021). In addition,
+                                                                                                         self-supervised learning methods for solving PDEs with
+                                         1. Introduction                                                 PINNs have also been explored (Dwivedi et al., 2019; Lu
+                                         The traditional approach to designing complex devices           et al., 2019; Nabian & Meidani, 2019). This expanding
+                                         and systems, for example, aerodynamic surfaces and ther-        body of research demonstrates the ability of ML-based ap-
+                                         mal management systems, involves a back-and-forth inter-        proaches to accurately predict simulation outcomes, such
+                                         play between exploring the design and operating space and       as flow and temperature profiles over a spatiotemporal do-
+                                         assessing performance through computationally intensive         main, utilizing both mesh-based and mesh-free techniques.
+                                         computational fluid dynamics (CFD) simulations. However,        Notably, the inclusion of physics-based regularization in
+                                         the high computational cost associated with high-fidelity       these formulations have proven instrumental in enhancing
+                                         CFD solvers like Simcenter Star-CCM+ or Ansys Fluent            the quality of the results.
+                                         undeniably curtails the overall scope of the design optimiza-   PINNs combine differential equations, such as compressible
+                                            1                                                            and incompressible Navier-Stokes equations, with experi-
+                                              Siemens Technology, Princeton, NJ 08536, USA. Corre-
+                                         spondence to: Shinjan Ghosh <shinjan.ghosh@siemens.com>,        mental data or high-fidelity numerical simulations. While
+                                         Biswadip Dey <biswadip.dey@siemens.com>.                        their ability to replace existing CFD solvers is a matter of
+                                                                                                         debate, PINNs can accelerate simulations (Kochkov et al.,
+                                         Accepted after peer-review at the 1st workshop on Synergy of    2021b), reconstruct flow domains from a limited sensor or
+                                         Scientific and Machine Learning Modeling, SynS & ML ICML,       experimental data (Wang et al., 2022), and create parametric
+                                         Honolulu, Hawaii, USA. July, 2023. Copyright 2023 by the au-
+                                         thor(s).                                                        surrogates for design exploration and optimization (Olden-
+                           RANS-PINN based Simulation Surrogates for Predicting Turbulent Flows
+
+burg et al., 2022; Sun et al., 2023). However, current PINN       continuity and Navier-Stokes equation can be expressed as:
+methods encounter challenges due to the complex interac-
+tion among the individual components of the loss function                  NS: ∇(u) = 0
+(both supervised and unsupervised), particularly when deal-              Cont: ρ(u · ∇)u + ∇(p) − µef f ∇2 u = 0,
+ing with high-dimensional, non-convex PDE based losses.
+These challenges become more pronounced as the physics            where ρ is density of the fluid, ∇ denotes the vector dif-
+of the problem becomes more intricate, e.g., turbulent flows.     ferential operator, and µef f := µ + µt = µ + 0.09k 2 /ϵ
+RANS, the most commonly used turbulent CFD simulation             represents the effective viscosity, i.e., the sum of molecular
+tool, offers reasonably accurate solutions at a lower com-        viscosity (µ) and turbulent viscosity (µt ). In addition, the
+putational cost compared to high-fidelity direct numerical        k-ϵ turbulence model can be expressed as:
+simulation (DNS) and large eddy simulation (LES), which
+                                                                                                        
+                                                                                                µt
+require even finer mesh refinement to adequately capture            k: ∇(ρuk) = ∇ µ +                 ∇k + Pk − ϵ
+                                                                                                σk
+all turbulence scales, further increasing computation time.                                       
+                                                                                               µt                           ϵ
+Since its introduction by Launder & Spalding (1974), k-ϵ            ϵ: ∇(ρuϵ) = ∇ µ +                ∇ϵ + (C1 Pϵ + C2 ϵ)
+model (k is the turbulent kinetic energy and ϵ is the turbulent                                σϵ                           k
+dissipation rate) has been established as a preferred model       where, C1 = 1.44, C2 = 1.92, σk = 1, and σϵ = 1.3
+for efficient computation and real-world problems (Yang &         are empirical model constants. In addition, Pk and Pϵ are
+Shih, 1993; Scott-Pomerantz, 2004; Ghosh et al., 2022).           production terms. The Reynolds number for this system
+From this perspective, incorporating RANS-based turbu-            is defined as: Re = ρuinlet L/µ, where uinlet is the inlet
+lence modeling can significantly expand the application of        velocity and L is the characteristic length.
+PINNs in real-world simulation and design problems. How-
+ever, using PINNs for RANS-based turbulence modeling              2.2. RANS-PINN architecture and training regime
+is yet to be thoroughly studied (Majchrzak et al., 2023).         The RANS-PINN architecture (Fig. 1) uses Fourier neural
+Previous research by Eivazi et al. (2022) employed RANS           operators (Li et al., 2021) with their default hyperparameters
+within PINNs but utilized a Reynolds-stress formulation           used in Modulus (Mod). For each of the individual output
+instead of a 2-equation model like k-ϵ. In contrast, Xu et al.    variables (i.e., u, p, k, and ϵ), we use separate neural net-
+(2021) employed a PINN with RANS formulation to cal-              works, all sharing the same input variables consisting of po-
+culate missing flow components. In this study, we focus           sitional coordinates (x, y) and the associated Reynolds num-
+on constructing PINN-based surrogate models for turbulent         ber. These networks are connected to the supervised/data
+flow problems using a RANS formulation, specifically the          loss, as well as the nodes of the PDE loss components.
+k-ϵ model, along with relevant data. We refer to the result-
+ing solution as RANS-PINN and implement it using Nvidia           Conventional approaches to training PINNs involve intro-
+Modulus (22.03) (Mod; Hennigh et al., 2021). The proposed         ducing data and PDE losses simultaneously at the start of the
+training regime first pre-trains the network using data losses    training phase, often with equal weight multipliers. How-
+and then introduces the physics losses in a carefully crafted     ever, they often results in noisy training losses, slow con-
+manner. We first assess RANS-PINN on three distinct ge-           vergence, and high validation error. RANS-PINN addresses
+ometries: a cylinder, an airfoil, and flow over backward          these challenges by employing a pre-training step that only
+facing step; and, then employ it to learn a parametric PINN       uses the data-driven supervised loss. During pre-training,
+for flow over a cylinder. This approach improves upon the         each of the individual networks is updated independently
+existing turbulence modeling capabilities of Nvidia Modu-         using their corresponding data loss. Following pre-training,
+lus, while also adding to the very few existing studies on        we introduce the PDE constraints into the loss function.
+RANS based turbulence modeling using PINNs.                       Moreover, to normalize the effect of the individual compo-
+                                                                  nents of the PDE loss function, we scale them by the inverse
+                                                                  of their corresponding residual values. We then use Adam
+2. RANS-PINN                                                      with a decaying step size (with the initial step size of 0.001
+2.1. Governing physics                                            and a decay rate of 0.95) until the training loss converges.
+
+The underlying physics is governed by the continuity equa-        To address the challenges associated with abrupt changes
+tion (to conserve mass), Navier-Stokes equation (to conserve      observed in the turbulence dissipation term ϵ near wall and
+momentum), and standard k-ϵ turbulence model. By letting          free shear regions, we use a logarithmic loss function for
+u and p denote the flow velocity and pressure, respectively,      both data and PDE losses associated with ϵ. Everything else
+                                                                  is computed using an MSE loss function. The overall loss
+                                                                  function can then be expressed as:
+                                                                                 L = Ldata + LBC + LP DE ,                  (1)
+                               RANS-PINN based Simulation Surrogates for Predicting Turbulent Flows
+
+            (a) Pre-training for Warm-start               (b) Physics-informed Training
+
+
+
+
+            (c) Generalization in Flow Prediction (Velocity Magnitude at 𝑅𝑒 = 5700 which is outside training range)
+                                                                                                                                                     530 𝑚/𝑠
+                                                                                                                                                     400 𝑚/𝑠
+
+                                                                                                                                                     200 𝑚/𝑠
+
+                                                                                                                                                          0 𝑚/𝑠
+                                       RANS Simulation (STAR-CCM+)                                     RANS-PINN Prediction
+                           Figure 1: RANS-PINN framework for learning surrogates to predict turbulent flow.
+
+
+where the PDE loss is defined with weights λi ’s as:
+      LP DE = λ1 LN S + λ2 LCont + λ3 Lk + λ4 Lϵ .                       (2)                                  True (STAR-CCM+)                                    Predicted
+                                                                                            Velocity Magnitude (m/s)
+                                                                                                                          0         200       400          600
+                                                                                                                              (a)
+
+3. Results and discussions
+3.1. Dataset generation using CFD simulation                                                                  True (STAR-CCM+)                                    Predicted
+                                                                                                         Pressure (Pa)
+In this study, we employ Simcenter STAR-CCM+ (Release                                                                 -50960
+                                                                                                                           (b)
+                                                                                                                                          0               38416
+
+17.02.008) to simulate turbulent flow scenarios using RANS                     Figure 3: Spatial distribution of (a) velocity magnitude and (b)
+CFD with the k-ϵ turbulence model. Automatic meshers                           pressure for a Re = 5600 flow over the cylinder.
+have been used for each case, with refinement near walls
+for low wall y+, and wall functions for turbulence quanti-                     3.2. Flow over a cylinder
+ties. Moreover, we have used wake refinements to simulate
+flow around the cylinder (Fig. 2) and the airfoil. The data                    While the primary objective of this work is to construct
+generated from the simulation is then normalized using the                     a parametric PINN capable of accommodating varying
+non-dimensional version of the underlying dynamics (i.e.,                      Reynolds numbers (Re), an initial investigation is conducted
+continuity, Navier-Stokes, and RANS equations). We bring                       using single CFD cases (at a fixed Re) to assess the opti-
+the range of various variables to a comparable order of mag-                   mal training regime. Flow over a cylinder is a well-studied
+nitude by normalizing the spatial coordinates, the velocity,                   problem in CFD, for both laminar and turbulent flows. The
+and the pressure with the characteristic length, the inlet ve-                 cylindrical obstacle causes a stagnation zone, and the flow
+locity, and the dynamic pressure, respectively. Later, the                     diverts around the obstacle. As a result, flow separation
+data is denormalized again before visualization.                               occurs and vortex shedding can be seen in the wake. How-
+                                                                               ever, steady RANS models average out the periodic un-
+                                                                               steady behaviour, resulting in the time averaged flow field.
+                                                                               In this work, we employ a constant velocity inlet, along
+
+
+
+                    Mesh (STAR-CCM+)                   Solution (STAR-CCM+)
+
+                     Velocity Magnitude (m/s)
+                                                                                                      (a)                                           (b)
+Figure 2: Partial view of mesh for flow over a cylinder with                                Log Diff Normalized
+
+                                                                                                                  8     -6          -4              0
+refinement at the cylinder surface and wake regions. This mesh is
+also used for point cloud sampling in PINN training, and takes into
+                                                                               Figure 4: Prediction error in (a) velocity and (b) pressure. To
+                                                                               highlight the prediction error, we use normalized values of the
+account the density variations. Velocity profile shows gradients in
+                                                                               logarithm of difference between the true and the predicted values.
+regions of refinement.
+                                             RANS-PINN based Simulation Surrogates for Predicting Turbulent Flows
+
+
+
+            (a)                  Data only Predicted             (b)           Data + PDE Predicted
+
+
+
+
+            (c)     Data +PDE with log loss Predicted            (d)             True (STAR-CCM+)
+
+                  Velocity Magnitude (m/s)
+                                                 0         200          400       600
+
+Figure 5: Impact of various choices for the loss function. This
+figure compares the magnitude of the velocity predicted by a PINN
+trained with (a) only data loss, (b) both data and PDE loss, and (c)
+both data and PDE loss with a log-loss for ϵ against its true value
+from STAR-CCM+ simulation.
+
+with symmetry planes on the top and bottom walls and a
+zero pressure outlet. For training, 3000 spatially distributed
+CFD data points are randomly sampled, with an additional
+3000 points dedicated to PDE losses. Fig. 3a illustrates                                              Figure 6: Spatial distribution of (a) velocity magnitude and (b)
+the comparison between true and predicted velocity fields,                                            pressure for a Re = 3 × 105 flow around a NACA 2412 airfoil.
+showcasing the aforementioned flow phenomena. The pres-
+sure plots (Fig. 3b) show a high pressure stagnation region                                           tween the top and bottom surfaces due to acceleration of
+as well as the low pressure flow separation region in both the                                        flow over the top surface (seen in darker red zones of veloc-
+true and predicted cases. The differences between true and                                            ity in Fig. 6a and higher pressure magnitudes in Fig. 6b),
+predicted velocities and pressure for the log-loss training                                           which causes lift. The second geometry consists of a back-
+case are shown in Fig. 4. Major losses occur around the                                               wards facing step (Fig. 7), where a separation bubble form
+cylinder walls, which is known to be a challenging region                                             due to sudden expansion in the channel. This leads to flow
+for all turbulence models due to steep gradients. Moreover,                                           separation and detachment and then re-attachment. Both
+the challenges with using only the data loss or the data+PDE                                          cases had no-slip walls and constant velocity inlet boundary
+loss but without the logarithmic loss function for ϵ are high-                                        conditions with a zero pressure exit. Low validation error in
+lighted in Fig. 5. These choices for the loss function yield                                          Table 2 and visual inspection of Fig. 6 and Fig. 7 show that
+flow fields with discontinuities and noise stemming from                                              the flow fields have been successfully predicted.
+the combination of data and physics losses. This is further
+reflected in the validation error values reported in Table 1. In                                      3.4. Parametric PINN for flow over a cylinder
+conclusion, the proposed training regime for RANS-PINN
+                                                                                                      After establishing the training regime with these three flow
+exhibits lower validation losses as well as superior predic-
+                                                                                                      geometries, we revisit the flow over a cylinder problem for
+tive performance.
+                                                                                                      creating a parametric PINN. The parametric PINN can pre-
+                                                                                                      dict outcomes of CFD simulations for unseen flow scenarios,
+         Table 1: Validation errors for flow over cylinder
+                                                                                                      in particular for any given Reynolds number (Re), which de-
+ L OSS F UNCTION                                        X VEL          Y VEL       P RESSURE          pends on the inlet velocity inlet velocities. We achieve this
+ DATA O NLY                                             0.205          0.284            0.029         by including the Reynolds number as an additional input to
+ DATA +PDE                                              0.187          0.474            0.066         the individual neural networks.
+ DATA +PDE W / L OG - LOSS                              0.014           0.03            0.105
+                                                                                                      In this study, we ran CFD simulations for six different
+                                                                                                      Reynolds numbers ranging from 2800 to 5600, with uniform
+3.3. Test on other geometries: Flow over a backwards                                                  spacing between the values. We sampled 3000 spatial data
+     facing step and NACA 2412 airfoil at a single Re                                                 points from each simulation and utilized them along with
+                                                                                                      PDE losses to train the parametric PINN with Re as the
+To understand the general efficacy of the proposed training
+method, two additional geometries were chosen for investi-
+gation. The first geometry involves airfoils which represents
+external flows, where a pressure gradient is established be-                                                                True (STAR-CCM+)                                Predicted
+
+                                                                                                                    Velocity Magnitude (m/s)
+                                                                                                                                               0      51       102   155
+Table 2: Validation errors for NACA airfoil (Re = 3 × 105 ) and                                                                                 (a)
+
+backward facing step (Re = 5600).
+ C ASE                                                  X VEL          Y VEL        P RESSURE                               True (STAR-CCM+)                                Predicted
+                                                                                                                              Pressure (Pa)
+ NACA 2412                                              0.091          0.131            0.022                                             -1620            0         2701
+                                                                                                                                             (b)
+ BACKWARDS FACING STEP                                  0.024          0.146            0.137         Figure 7: Spatial distribution of (a) velocity magnitude and (b)
+                                                                                                      pressure for a Re = 5600 flow over a backward facing step.
+                                        RANS-PINN based Simulation Surrogates for Predicting Turbulent Flows
+
+                                                                                             relatively common in the literature. However, despite play-
+                                                                                             ing an instrumental role in many real-world applications,
+                             True (STAR-CCM+)
+
+               Velocity Magnitude (m/s)
+                                                                                 Predicted
+                                                                                             two-equation RANS turbulence models are yet to be in-
+                                           0
+                                                (a)
+                                                       100       200     320                 tegrated into PINN-based approaches. In this work, we
+                                                                                             adopt a novel training regime to ensure the successful in-
+                                                                                             tegration of RANS turbulence model physics into PINNs.
+                             True (STAR-CCM+)                                    Predicted   Once trained with a limited amount of CFD data, RANS-
+                       Pressure (Pa)
+                                        -33075        -11025     0     16987                 PINN can yield accurate predictions of overall flow fields
+                                              (b)
+
+Figure 8: Spatial distribution of (a) velocity magnitude and (b)                             for a single Reynolds number. Building upon the success-
+pressure for a Re = 3140 flow over the cylinder. We have used a                              ful outcomes of these evaluations for three different flow
+parametric PINN to predict the velocity and the pressure.                                    geometries (flow over a cylinder, a backward-facing step,
+                                                                                             and a NACA 2412 airfoil), we develop a parametric ver-
+underlying parameter. Although each CFD simulation has                                       sion of the RANS-PINN to predict flow over a cylinder for
+61000 mesh data points, we trained the parametric PINN                                       any given/unforeseen Reynolds numbers. The parametric
+using only 3000 points, resulting in faster convergence. By                                  RANS-PINN, which highlights how whole simulation cases
+leveraging the parametric PINN, we can now predict flow                                      can be inferred without requiring any CFD data from that
+fields for any given Reynolds number. This is highly bene-                                   specific Reynolds number, offers significant potential in
+ficial for design optimization and exploration studies, as it                                solving design exploration and inverse problems for many
+eliminates the need for additional CFD data to predict pri-                                  real world applications.
+mary flow variables across the entire solution domain. More-
+over, compared to the traditional approaches, where each                                     Broader impact
+CFD simulation run takes approximately 24 core minutes,
+the parametric PINN can yield results in a near real-time                                    The current work focuses on turbulent flow problems with
+fashion, significantly accelerating the overall process.                                     two-equation turbulence models. While this perspective is
+                                                                                             not commonly explored in the PINN literature, these turbu-
+Table 3: Generalization error for parametric PINNs (unseen cases)                            lence models hold significant importance in many industrial
+         C ASE                 X VEL                  Y VEL          P RESSURE               and academic settings where a lack of computing resources
+         Re = 3140             0.139                  0.289            0.164                 prevents the use of Direct Numerical Simulation (DNS) and
+         Re = 5700             0.153                  0.200            0.079                 Large Eddy Simulation (LES). We can effectively tackle
+                                                                                             design and inverse problems in many real-world cases by
+Fig. 8a and Fig. 8b show the velocity and pressure distri-                                   employing a turbulent flow PINN, such as RANS-PINN.
+butions for Re = 3140. On the other hand, Fig. 9a and                                        The ability to reconstruct a flow field from limited data
+Fig. 9b display the velocity and pressure distributions for                                  can help in real-world problems with limited sensor data.
+Re = 5700, which falls outside the training range. In each                                   Moreover, a parametric PINN trained with minimal CFD
+validation case, we examined 61000 mesh points. Table 3                                      data adds significant value to design exploration and opti-
+presents the overall error metrics for validation in the case                                mization by offering a convenient, fast, and computationally
+of the parametric PINN.                                                                      efficient means to predict simulation outcomes.
+
+4. Conclusion                                                                                References
+PINN-based approaches to learning surrogate models for                                       Nvidia Modulus. https://developer.nvidia.
+spatiotemporal systems governed by nonlinear PDEs are                                          com/modulus. Accessed: 2022-12-15.
+
+                                                                                             Dwivedi, V., Parashar, N., and Srinivasan, B. Distributed
+                                                                                              physics informed neural network for data-efficient so-
+                                                                                              lution to partial differential equations. arXiv preprint
+                             True (STAR-CCM+)                                    Predicted
+                                                                                              arXiv:1907.08967, 2019.
+             Velocity Magnitude (m/s)
+                                          0            200       400     530
+                                                (a)
+                                                                                             Eivazi, H., Tahani, M., Schlatter, P., and Vinuesa, R. Physics-
+                                                                                               informed neural networks for solving reynolds-averaged
+                             True (STAR-CCM+)                                    Predicted
+                                                                                               navier–stokes equations. Physics of Fluids, 34(7):075117,
+                      Pressure (Pa)
+                                        -59535          0      44100   97020
+                                                                                               2022.
+                                             (b)
+
+Figure 9: Spatial distribution of (a) velocity magnitude and (b)                             Ghosh, S., Wardell, R., Mondal, S., Fernandez, E., Ray, A.,
+pressure for a Re = 5700 flow over the cylinder. We have used a                                and Kapat, J. Topology Optimization and Experimen-
+parametric PINN to predict the velocity and the pressure.
+                          RANS-PINN based Simulation Surrogates for Predicting Turbulent Flows
+
+  tal Validation of an Additively Manufactured U-Bend           Majchrzak, M., Marciniak-Lukasiak, K., and Lukasiak, P. A
+  Channel. Journal of Fluids Engineering, 144(7), 02 2022.       survey on the application of machine learning in turbulent
+  ISSN 0098-2202. doi: 10.1115/1.4052928. URL https:             flow simulations. Energies, 16(4), 2023.
+  //doi.org/10.1115/1.4052928. 071206.
+                                                                Nabian, M. A. and Meidani, H. A deep learning solution
+Hennigh, O. Lat-net: Compressing lattice Boltzmann flow           approach for high-dimensional random differential equa-
+  simulations using deep neural networks. arXiv preprint          tions. Probabilistic Engineering Mechanics, 57:14–25,
+  arXiv:1705.09036, 2017.                                         2019.
+
+Hennigh, O., Narasimhan, S., Nabian, M. A., Subrama-            Nabian, M. A. and Meidani, H. Physics-driven regulariza-
+  niam, A., Tangsali, K., Fang, Z., Rietmann, M., Byeon,          tion of deep neural networks for enhanced engineering
+ W., and Choudhry, S. NVIDIA SimNet™: An AI-                      design and analysis. Journal of Computing and Informa-
+  accelerated multi-physics simulation framework. In Com-         tion Science in Engineering, 20(1), 2020.
+  putational Science–ICCS 2021: 21st International Con-
+                                                                Oldenburg, J., Borowski, F., Öner, A., Schmitz, K.-P., and
+  ference, Krakow, Poland, June 16–18, 2021, Proceedings,
+                                                                  Stiehm, M. Geometry aware physics informed neural net-
+  Part V, pp. 447–461. Springer, 2021.
+                                                                  work surrogate for solving navier–stokes equation (gap-
+Hsieh, J.-T., Zhao, S., Eismann, S., Mirabella, L., and Er-       inn). Advanced Modeling and Simulation in Engineering
+  mon, S. Learning neural pde solvers with convergence            Sciences, 9(1):8, 2022.
+  guarantees, 2019.                                             Raissi, M., Perdikaris, P., and Karniadakis, G. E. Physics-
+Jiang, C. M., Esmaeilzadeh, S., Azizzadenesheli, K.,              informed neural networks: A deep learning framework for
+   Kashinath, K., Mustafa, M., Tchelepi, H. A., Marcus,           solving forward and inverse problems involving nonlinear
+   P., Anandkumar, A., et al. MeshfreeFlowNet: A Physics-         partial differential equations. Journal of Computational
+   Constrained Deep Continuous Space-Time Super-                  physics, 378:686–707, 2019.
+   Resolution Framework. arXiv preprint arXiv:2005.01463,       Scott-Pomerantz, C. D. The k-epsilon model in the theory
+   2020.                                                          of turbulence. PhD thesis, University of Pittsburgh, 2004.
+Jin, X., Cai, S., Li, H., and Karniadakis, G. E. NSFnets        Sun, Y., Sengupta, U., and Juniper, M. Physics-informed
+   (Navier-Stokes flow nets): Physics-informed neural net-        deep learning for simultaneous surrogate modeling and
+   works for the incompressible Navier-Stokes equations.          pde-constrained optimization of an airfoil geometry. Com-
+   Journal of Computational Physics, 426:109951, 2021.            puter Methods in Applied Mechanics and Engineering,
+Kochkov, D., Smith, J. A., Alieva, A., Wang, Q., Brenner,         411:116042, 2023.
+  M. P., and Hoyer, S. Machine learning–accelerated com-        Vinuesa, R. and Brunton, S. L. Enhancing computational
+  putational fluid dynamics. Proceedings of the National          fluid dynamics with machine learning. Nature Computa-
+ Academy of Sciences, 118(21):e2101784118, 2021a.                 tional Science, 2(6):358–366, 2022.
+Kochkov, D., Smith, J. A., Alieva, A., Wang, Q., Brenner,       Wang, H., Liu, Y., and Wang, S. Dense velocity reconstruc-
+  M. P., and Hoyer, S. Machine learning–accelerated com-         tion from particle image velocimetry/particle tracking
+  putational fluid dynamics. Proceedings of the National         velocimetry using a physics-informed neural network.
+ Academy of Sciences, 118(21):e2101784118, 2021b.                Physics of Fluids, 34(1):017116, 2022.
+Launder, B. and Spalding, D. The numerical computation of       Wang, R., Kashinath, K., Mustafa, M., Albert, A., and Yu,
+  turbulent flows. Computer Methods in Applied Mechanics         R. Towards physics-informed deep learning for turbulent
+  and Engineering, 3(2):269–289, 1974. ISSN 0045-7825.           flow prediction. In Proceedings of the 26th ACM SIGKDD
+  doi:    https://doi.org/10.1016/0045-7825(74)90029-2.          International Conference on Knowledge Discovery &
+  URL          https://www.sciencedirect.com/                    Data Mining, pp. 1457–1466, 2020.
+  science/article/pii/0045782574900292.
+                                                                Warey, A., Kaushik, S., Khalighi, B., Cruse, M., and
+Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhat-        Venkatesan, G. Data-driven prediction of vehicle cabin
+  tacharya, K., Stuart, A., and Anandkumar, A. Fourier           thermal comfort: using machine learning and high-fidelity
+  neural operator for parametric partial differential equa-      simulation results. International Journal of Heat and
+  tions. arXiv Preprint, 2010.08895, 2021.                       Mass Transfer, 148:119083, 2020.
+Lu, L., Meng, X., Mao, Z., and Karniadakis, G. E. Deepxde:      White, C., Ushizima, D., and Farhat, C. Fast neural net-
+  A deep learning library for solving differential equations.    work predictions from constrained aerodynamics datasets.
+  arXiv preprint arXiv:1907.04502, 2019.                         arXiv Preprint, 1902.00091, 2019.
+                        RANS-PINN based Simulation Surrogates for Predicting Turbulent Flows
+
+Xu, H., Zhang, W., and Wang, Y. Explore missing flow
+  dynamics by physics-informed deep learning: The pa-
+  rameterized governing systems. Physics of Fluids, 33(9):
+  095116, 2021.
+Yang, Z. and Shih, T.-H. New time scale based k-epsilon
+  model for near-wall turbulence. AIAA journal, 31(7):
+  1191–1198, 1993.
+
+Zhang, T., Dey, B., Kakkar, P., Dasgupta, A., and
+  Chakraborty, A. Frequency-compensated pinns for fluid-
+  dynamic design problems. arXiv Preprint, 2011.01456,
+  2020.
+
+Zhang, T., Dey, B., Veeraraghavan, K., Kulkarni, H., and
+  Chakraborty, A. Demystifying the data need of ml-
+  surrogates for cfd simulations, 2022.
+                         RANS-PINN based Simulation Surrogates for Predicting Turbulent Flows
+
+A. Appendix: Additional Details
+
+Algorithm 1 Training Regime
+  Sample data points for data loss, pde loss and validation from mesh
+  Pretraining individual NNs using data loss
+  repeat
+    Normalize weights of PDE loss components using residual values
+
+  until Loss is stationary
+
+
+The training metrics of the parametric PINN has been showed below in figure 10. As seen below, the primary physics errors
+are less than 10−4 . A brief algorithm of the process has also been shown.
+
+
+
+
+                                    Figure 10: Training metrics of parametric PINN
+

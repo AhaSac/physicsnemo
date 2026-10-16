@@ -1,0 +1,1362 @@
+                                                   Hybrid Fourier Neural Operator-Lattice Boltzmann Method
+
+                                                        A. Junka,∗, J. M. Wintera , M. Tütkena,1 , S. Schmidta , N. A. Adamsa
+arXiv:2604.27158v1 [physics.flu-dyn] 29 Apr 2026
+
+
+
+
+                                                    a
+                                                     Technical University of Munich, Department Engineering Physics and Computation,
+                                                     Chair of Aerodynamics and Fluid Mechanics, Boltzmannstraße 15, 85748 Garching,
+                                                                                        Germany
+
+
+
+
+                                                   Abstract
+
+                                                   We propose an accelerated computational fluid dynamics framework based on
+                                                   a hybrid Fourier Neural Operator–Lattice Boltzmann Method (FNO–LBM)
+                                                   for steady and unsteady weakly compressible flows. FNO-based initialization
+                                                   significantly accelerates LBM in reaching steady-states of porous media flows
+                                                   across all macroscopic fields, achieving up to 70% speed-up in convergence
+                                                   of density and more than 40% of pressure-drop while preserving the final
+                                                   steady-state accuracy. Simulations of unsteady flows can be accelerated by
+                                                   hybrid coupling strategies that employ FNO rollouts embedded into LBM
+                                                   time advancement in a way of super-time-stepping. Global and time-resolved
+                                                   error metrics across 100 trajectories for generic 2D flows demonstrate that
+                                                   hybridization consistently improves accuracy and stabilizes long-horizon roll-
+                                                   outs. Best efficiency is achieved for a lightweight 2.6M-parameter FNO,
+                                                   which diverges under pure autoregressive rollout but achieves 96–99.8% er-
+                                                   ror reduction under hybrid coupling, matching the predictive capability of
+
+                                                        ∗
+                                                         Corresponding author.
+                                                         Email addresses: alexandra.junk@tum.de (A. Junk), josef.winter@tum.de
+                                                   (J. M. Winter), meike.tuetken@siemens.com (M. Tütken), steffen.schmidt@tum.de
+                                                   (S. Schmidt), nikolaus.adams@tum.de (N. A. Adams)
+                                                       1
+                                                         Present address: Siemens Industry Software NV, Interleuvenlaan 68, 3001 Heverlee,
+                                                   Belgium; KU Leuven, Department of Mechanical Engineering, Celestijnenlaan 300, 3001
+                                                   Heverlee, Belgium
+a much more expensive 11.2M-parameter model. The hybrid framework en-
+hances predictive fidelity, suppresses error accumulation, and enables small
+and cheap surrogate models to operate effectively within the same error
+regime as larger surrogates. These results demonstrate that hybrid neural-operator
+coupling achieves robust and computationally efficient accelerated LBM while
+maintaining physically consistent flow evolution.
+Keywords: Fourier Neural Operator; Lattice Boltzmann Method;
+Surrogate Modeling; Hybrid Modeling
+
+
+1. Introduction
+
+   High-fidelity numerical simulation of fluid flows remains central to fluid
+dynamics analysis, optimization, and design across science and engineer-
+ing. However, the computational cost associated with resolving complex
+geometries, multiscale features, and long-time unsteady dynamics continues
+to pose significant challenges. The Lattice Boltzmann Method (LBM) offers
+a robust, efficient and accurate computational framework for weakly com-
+pressible flows, but as with all classical CFD methods its cost scales with
+grid resolution and simulation time, limiting applications to problems that
+require rapid turnaround, extensive parameter studies, or real-time feedback
+[1]. These constraints have motivated growing interest in machine learning
+surrogate approaches capable of replacing and accelerating CFD workflows
+while preserving physical accuracy [2].
+   With data-driven machine-learning (ML) models for flow evolution, sur-
+rogate modeling has therefore emerged as a promising pathway for acceler-
+ating fluid simulations [3, 4, 5, 6, 7]. However, many conventional neural
+network architectures operate on fixed spatial grids and struggle to gen-
+eralize across discretizations or maintain stability during long autoregres-
+
+                                     2
+sive rollouts, restricting their reliability in high-resolution or long-horizon
+unsteady simulations. Neural operators address these limitations by learn-
+ing mappings between function spaces rather than discrete arrays, enabling
+resolution-invariant inference and single-pass prediction of entire flow fields
+[8, 9, 10, 11]. Among them, the Fourier Neural Operator (FNO) has emerged
+as a prominent architecture due to its spectral convolution formulation and
+quasi-linear scaling with resolution [7]. FNOs and their variants – such
+as U-FNO [12], F-FNO [13], SFNO [14], and multi-scale extensions [15] –
+have demonstrated impressive performance across a wide range of physics-
+informed tasks, including porous media flows [16], elastodynamics [17], hy-
+draulic tomography [18], nonlinear optics [19], and tokamak plasma evolution
+[20], establishing operator learning as a versatile tool for approximation of
+high-dimensional PDE solutions.
+   Despite their expressiveness, computationally cheap FNO models may
+rapidly accumulate error during autoregressive rollout and diverge after only
+a few autoregressive steps [13, 14, 20]. This limitation has prompted increas-
+ing interest in hybrid modeling frameworks that combine machine learn-
+ing surrogates with numerical solvers. By intermittently invoking directly
+a consistent approximation of the governing equations, hybrid approaches
+can correct accumulated errors, enforce physical constraints, and stabilize
+long-term predictions. Several such hybrid CFD frameworks have recently
+emerged. In the context of LBM, Rabbani and Babaei [21] proposed a
+machine-learning-accelerated permeability workflow, Zhang et al. [22] com-
+bined ML and LBM for heat-flux prediction in phase-change processes, and
+Fischer et al. [23] used a reinforcement-learning closure model to stabilize
+under-resolved LBM simulations. More broadly, hybrid ML–numerical solver
+systems include FNO-coupled finite-difference solvers for fluid–structure in-
+
+                                      3
+teraction [24], neural networks used as pressure solvers or closure models in
+Navier–Stokes flows [25] and DeepONet preconditioning [26]. These devel-
+opments suggest that hybridization can combine the speed of ML surrogates
+with the robustness of physics-based solvers, but the degree to which hy-
+brid frameworks can compensate for limited surrogate capacity or enforce
+long-horizon stability remains insufficiently explored [2].
+   In this work, we address this gap by investigating hybrid integration
+of FNOs within an LBM framework for both steady and unsteady weakly
+compressible flows. First, we employ FNO-predicted macroscopic fields for
+acceleration of steady-state LBM predictions of porous media flows. Second,
+we consider a generic unsteady 2D shear flow, which is highly sensitive to
+accumulated errors and thus is a critical test of temporal surrogate stability
+and for assessing hybrid strategies in autoregressive rollout. In this case, the
+FNO is employed as a super-time-stepping algorithm that replaces a large
+number of LBM time steps. We compare a large 11.2M-parameter FNO
+with a lightweight 2.6M-parameter model and find that numerical corrections
+are crucial for stabilization of the lightweight model during autoregressive
+rollout. Our contributions are threefold:
+
+   • Steady-state-convergence acceleration: FNO-initialized LBM achieves
+      substantial reductions in convergence time, reducing iteration counts
+      by up to 70% for density and over 40% for pressure-drop metrics, with
+      no loss of accuracy relative to converged steady-states obtained with
+      LBM only.
+
+   • Improvement of autoregressive FNO rollouts by hybridiza-
+      tion: Hybrid FNO–LBM coupling significantly improves accuracy even
+      for autoregressivly stable FNO rollouts by up to 49.3% and decreases
+
+                                       4
+      total simulation runtimes by up to 11.8%.
+
+   • Stabilization of low-cost FNO surrogates by hybridization:
+      Hybridization enables a 2.6M-parameter FNO, which is unstable as
+      a standalone surrogate, to achieve 96% to 99.8% error reduction and
+      reach the accuracy regime of the full 11.2M-parameter surrogate.
+
+These results demonstrate that hybrid neural-operator frameworks offer a
+powerful and computationally efficient means of accelerating LBM while
+maintaining physical fidelity and transforming compact surrogates into phys-
+ically reliable models for long-horizon unsteady prediction.
+
+
+2. Methodology
+
+2.1. The Lattice Boltzmann Method
+
+   All simulations are run in single-precision using TorchLBM [27], a fully-
+differentiable and modular PyTorch implementation of an LBM solver for
+the weakly compressible Navier-Stokes Equations (NSE). LBM is a meso-
+scopic numerical method [28] that computes the evolution of discrete particle
+distribution functions fi along predefined discrete lattice velocities c̄i over a
+structured lattice grid.
+   The general simulation loop of TorchLBM is depicted in Fig. 1 and con-
+sists of six recurrent modules and one initialization block at the start of the
+simulation. After initialization of the macroscopic density ρ and velocity
+ū, the main simulation loop starts with the calculation of the equilibrium
+distribution fieq following
+
+                                     ū · c̄i (ū · c̄i )2 ū · ū
+                                                                    
+                 fieq = wi ρ       1+ 2 +                 −              ,   (1)
+                                       cs        2c4s       2c2s
+
+
+
+                                            5
+           Initialize ρ, ū, t = 0    Compute Equilibrium:           Collision Step (SRT):
+          and the obstacle mask         ρ, ū → fieq (x̄, t)         fi∗ = fi − τ1 (fi − fieq )
+
+
+
+
+                          Stop if         Update Time:                   Streaming Step:
+                         t = tmax          t = t + ∆t           fi (x̄ + c̄i ∆t, t + ∆t) = fi∗ (x̄, t)
+
+
+
+                                               Moments:
+                                       Compute P
+                                           ρ = P i fi            Apply Boundary Conditions
+                                         ρū = i fi c̄i
+
+
+Figure 1: Visualization of the LBM simulation loop. If no macroscopic fields are available,
+                                kg            m
+they are set to default ρ = 1.0 m3 , ū = 0.0 s and no obstacle mask.
+
+
+
+
+where wi denotes the respective lattice weights and c2s the isothermal model’s
+speed of sound. The number and configuration of lattice velocities and
+weights follow the DdQq convention, with d spatial dimensions and q discrete
+velocities. For 2D configurations best efficiency is reached with the D2Q9
+scheme.
+    The equilibrium calculation is followed by the two split operations of the
+LBM algorithm: collision and streaming. During the collision step, local
+non-linear particle interactions are modeled by the collision operator. For
+simplicity, we adopt here the Single Relaxation Time (SRT) collision model
+                                                
+                                              ∆t                  ∆t
+                 fi∗ (x̄, t) = fi (x̄, t) 1 +      + fieq (x̄, t)      (2)
+                                              τ                   τ
+
+with the relaxation time τ . In the streaming step, post-collision distribu-
+tions fi∗ are propagated through a linear, non-local streaming operation to
+neighboring nodes following
+
+                                 fi (x̄ + c̄i ∆t, t + ∆t) = fi∗ (x̄, t).                                 (3)
+
+
+
+
+                                                     6
+Lastly, the macroscopic quantities are recovered from distribution moments
+                                          X
+                             ρ(x̄, t) =       fi (x̄, t),                    (4)
+                                          i
+                                          X
+                           ρū(x̄, t) =       c̄i fi (x̄, t),                (5)
+                                          i
+
+and the simulation time is updated.
+    A comprehensive discussion of the LBM and its numerical implementa-
+tion is provided e.g. by Krüger et al. [1], Succi [29] and Lallemand et al.
+[30].
+    The macroscopic density and velocity fields are employed as inputs for
+training and validation of the FNO models. Although LBM naturally pro-
+vides both mesoscopic and macroscopic data, employing macroscopic quan-
+tities enables transfer of the hybrid framework to other surrogate models
+trained on macroscopic data.
+
+2.2. Fourier Neural Operator
+
+    Li et al. [31] introduced the FNO as a discretization-invariant architec-
+ture that learns mappings between infinite-dimensional function spaces. The
+architecture builds on the Neural Operator framework proposed by Kovachki
+et al. [32], replacing the kernel integral operator with a global convolution in
+Fourier space, leading to the computationally efficient approximation. The
+architectural structure of the FNO used in this study is illustrated in Fig. 2.
+
+
+    Let ϕt (x̄) ∈ Rd denote the input function, in our case the density and
+velocity fields ϕt (x̄) = (ut , vt , ρt ) at time t. This input function is first
+lifted into latent space by the shallow fully-connected neural network P via
+P (ϕ(x)) = θ0 (x). The FNO then performs iterative updates θn 7→ θn+1 for
+
+
+                                          7
+  ϕt (x̄)            P            Fourier Layer 1       •••   Fourier Layer N       Q       ϕt+∆t (x̄)
+
+
+
+
+                              F                     R             F −1
+            θ0 (x)                                                              +       σ
+                                                    W
+
+
+Figure 2: FNO Architecture with the lifting network P , the Fourier transform F, the
+learnable filter R, the local linear transform W , the activation σ and the projection Q
+back to physical space.
+
+
+n = 0, 1, ..., N − 1 across the N Fourier layers following
+                                                                       
+                         θn+1 (x) = σ W θn (x) + F −1 R(k̄) · F(θn )(k̄) ,                         (6)
+
+where σ is a pointwise nonlinearity (ReLU), W is a local linear transfor-
+mation, F and F −1 denote the Fourier and inverse Fourier transforms, k̄
+represents the cut-off filtered frequency modes, and R is a learnable complex-
+valued filter kernel applied to each Fourier mode.
+     Lastly, the output is projected back to physical space with Q(θN −1 ) =
+ϕt+∆t (x̄), where in our case ∆t = ∆TF N O = 223 · ∆tLBM represents the
+discrete time-step size of the FNO.
+
+2.3. Hybrid FNO-LBM Framework
+
+     We propose a hybrid framework that couples a fully trained FNO with
+the LBM solver, thereby exploiting the complementary strengths of both
+approaches. Within this framework, the FNO is employed either as a gener-
+ator of an initial flow field for steady-state problems or during time march-
+ing, functioning as a super-time-stepping surrogate for macroscopic fields
+alternativly with direct LBM time steps. This procedure leverages the com-
+putational efficiency of the ML model while maintaining physical fidelity
+
+                                                          8
+through the recurrent physical bias of the discretized evolution equations,
+overall achieving 1 to 2 orders of magnitude in computational time savings.
+   For steady-state problems, the FNO serves an initial guess for the macro-
+scopic fields, which is passed to the LBM solver. The solver then proceeds
+to converge to the steady solution by LBM time marching, without further
+interaction with the ML model (see Fig. 3a).
+   For unsteady flows, the framework alternates between FNO-based predic-
+tions and LBM time stepping throughout the entire simulation horizon (see
+Fig. 3b). The switching frequency between FNO and LBM is governed by a
+predefined temporal criterion. All FNOs employed in this work are trained
+to predict a fixed time increment of ∆TF N O = 223 · ∆tLBM = ∆T with
+respect to the LBM simulation time step ∆tLBM , while the LBM advances
+the solution over multiple of its intrinsic time steps following
+
+                 ∆TLBM = k · ∆TF N O = k · ∆T,     k ∈ {1, 2, 3}.        (7)
+
+Based on this relation, we define the following hybrid configurations:
+
+   • 1:1-Hybrid: ∆T predicted by the FNO and ∆T advanced by the LBM
+      (k = 1),
+
+   • 1:2-Hybrid: ∆T predicted by the FNO and 2∆T advanced by the LBM
+      (k = 2),
+
+   • 1:3-Hybrid: ∆T predicted by the FNO and 3∆T advanced by the LBM
+      (k = 3).
+
+These configurations enable systematic control over the degree of ML in-
+tervention and thereby provide a tunable balance between computational
+speed-up and numerical accuracy.
+
+
+                                       9
+Binary Obstacle Mask                                  FNO:                   Update time:
+                                                   Update ρ, ū, t         t → t + ∆TF N O
+                                                           yes
+   FNO Prediction:
+   Predict ρ and ū               Initialize:
+                                                                                                 Stop at
+                                obstacle mask,      Use FNO?                 t < tmax ?
+                                                                     yes                     no t = tmax
+                                  ρ, ū, t = 0
+ Initialize ρ, ū, t = 0
+and the obstacle mask                                 no
+                                                      LBM:                  Update time:
+                                                   Update ρ, ū, t         t → t + ∆tLBM         Repeat until
+LBM Simulation Loop                                                                            t → t + ∆TLBM
+
+(a) Initialization Framework.                    (b) Fully Hybrid FNO-LBM Framework.
+
+
+Figure 3: Hybrid FNO-LBM Framework. For steady-state flows, the FNO provides an
+initial guess followed by the pure LBM Simulation loop depicted in Fig. 1. For non-steady
+flows, the switch criterion between LBM and FNO is defined as a fixed temporal switch
+based on a predefined time step.
+
+
+3. Results
+
+    This section presents results for (i) steady-state LBM initialization using
+FNO surrogates and (ii) unsteady hybrid FNO–LBM simulations. Training,
+simulations and rollouts are performed on an NVIDIA RTX A4000. FNO
+models are trained using the open-source NVIDIA PhysicsNeMo framework
+[33], with default hyperparameters unless otherwise specified. Separate net-
+works are trained to predict the velocity ū and density ρ fields. Metrics are
+computed per field and per time step when applicable, global metrics are
+obtained via temporal averaging. Steady-state results are aggregated over
+20 trajectories, unsteady results over 100. Arithmetic means and standard
+deviations are reported for linear-scale quantities, and geometric statistics
+for logarithmic ones.
+
+
+
+
+                                                    10
+                                                           Density                                   Density
+                                              1.025
+                                                                                        1.025
+                                              1.020
+                                                                                        1.020
+                                              1.015
+                                                                                        1.015
+                              FNO Density     1.010
+ Obstacle Mask (ϕ = 83.89%)                   1.005
+                                                                                        1.010
+ 1.0                            Model         1.000
+                                                                                        1.005
+                                                                                        1.000
+ 0.8                                          0.995
+                                                                                        0.995
+                                              0.990
+ 0.6                                                                         LBM        0.990
+ 0.4                                                  Magnitude Velocity   Simulation   2.5
+                                                                                                Magnitude Velocity
+                                              2.5
+ 0.2
+                                                                                        2.0
+                                              2.0
+ 0.0
+                                                                                        1.5
+                              FNO Velocity    1.5
+                                                                                        1.0
+                                              1.0
+                                Model
+                                                                                        0.5
+                                              0.5
+                                                                                        0.0
+                                              0.0
+
+
+
+
+Figure 4: Exemplary porous media initialization based on the workflow introduced in
+Fig. 3a. From left two right, the obstacle mask is created and given to the FNO models
+to predict density and velocity fields. The results are transfered to the LBM simulation
+loop that finally gives the steady-state fields (far right).
+
+
+3.1. Steady-State Simulation
+
+3.1.1. Porous Media Flow Setup
+       We consider a two-dimensional, laminar flow through a rectangular do-
+main (Lx1 = 2.0 m, Lx2 = 1.0 m) populated with randomly sized and dis-
+tributed circular obstacles with no-slip walls. The sides are periodic, the inlet
+imposes U∞ = 0.5 ms and the outlet a fixed pressure. Simulations use single-
+                                                                                                    2
+precision D2Q9 SRT LBM with kinematic viscosity ν = 0.01 ms . Porosity
+spans ϕ = 0.75–0.90, following
+
+                                            Apores   Atotal − Asolid
+                                  ϕ=               =                 ,                                               (8)
+                                            Atotal       Atotal
+
+and is modeled after porosity ranges investigated in previous work on porous
+media flows in LBM simulations [34, 35]. A summary of the simulation
+parameters used for this configuration is provided in Table A.5. Two FNO
+surrogates map the binary obstacle mask to steady density and velocity fields
+with an illustrative workflow is shown in Fig. 4. The FNO hyperparameters
+for the density and velocity model as well as the dataset parameters are
+listed in Table A.6, Table A.7 and Table A.8.
+
+
+                                                            11
+3.1.2. Porous Media Flow Results
+         Convergence of the velocity components, density field, and pressure-drop
+relative to a steady reference solution is shown in Figs. 5a to 5d. The ref-
+erence is defined as the temporal average over the final 10∆T (10 outputs)
+of each trajectory. Errors are reported as relative L1 norms for u, v, and ρ,
+and as the relative error of the pressure-drop ∆p between inlet and outlet.
+Shaded bands denote the standard deviation across 20 trajectories.
+
+             100         LBM     FNO Init   Steady Init                                          LBM    FNO Init   Steady Init
+                                                                                        −1
+                                                                                   10
+ ∥u−us ∥1
+
+
+
+
+                                                               ∥v−vs ∥1
+  ∥us ∥1
+
+
+
+
+                                                                ∥vs ∥1
+            10−2
+
+                                                                                   10−3
+                                                                 ϵv =
+  ϵu =
+
+
+
+
+            10−4
+
+                                                                                   10−5
+            10−6
+                   0     5        10        15            20                                 0   5       10        15            20
+                                Time [s]                                                               Time [s]
+
+
+            (a) Convergence of the u-velocity field.                               (b) Convergence of the v-velocity field.
+            10−1
+                         LBM     FNO Init   Steady Init                                          LBM    FNO Init   Steady Init
+                                                                                        −1
+                                                                                   10
+                                                                              s|
+
+
+
+
+            10−3
+                                                               ϵ∆p = |∆p−∆p
+                                                                       |∆ps |
+ ∥ρ−ρs ∥1
+  ∥ρs ∥1
+
+
+
+
+                                                                                   10−4
+            10−5
+  ϵρ =
+
+
+
+
+            10−7                                                                   10−7
+
+                   0     5        10        15            20                                 0   5       10        15            20
+                                Time [s]                                                               Time [s]
+
+
+            (c) Convergence of the density field ρ.                       (d) Convergence of the pressure-drop ∆p.
+
+
+Figure 5: Convergence of the velocity components u and v, density field ρ, and pressure-
+drop ∆p, with respect to the steady-state reference solution. The steady state is computed
+as the average of the last 10 simulation outputs (10∆T ). The pressure-drop is defined as
+the difference between inflow and outflow pressures, and its error is computed relative
+to the steady-state pressure-drop. Shaded regions indicate standard deviation across 20
+trajectories.
+
+
+         Initializing the LBM with FNO-predicted fields accelerates convergence
+
+
+                                                           12
+in all quantities compared with naive initialization (ρ = 1, u = v = 0), while
+all simulations ultimately reach the same steady-state error. As summarized
+in Table 1, speed-ups at ϵtol = 10−4 reach 70% for ρ and 42.5% for ∆p, with
+positive but smaller gains of 32.7% for u and 11.7% for v. Relative to initial-
+izing from previously converged fields (“Steady Init”), the FNO initialization
+performs comparably for u and v, differing by only ∼ 6% at ϵtol = 10−4 . For
+ρ, the FNO initialization enables the solver to reach the single-precision limit
+(ϵtol = 2 × 10−7 ) approximately 30% faster than the naive LBM approach.
+
+Table 1: Geometric mean number of outputs required for convergence over 20 trajectories
+for velocity, density and pressure-drop at different tolerances ϵtol . Speed-up is reported
+for FNO initialization relative to pure LBM.
+
+
+      ϵtol       Quantity     LBM       FNO Init      Steady Init     Speed-up (%)
+
+                 u              49          33             30               32.7
+                 v              63          53             49               11.7
+   1 × 10−4
+                 ρ              20           6              0               70.0
+                 ∆p             40          23              9               42.5
+                 u             105          96             103              8.57
+   1 × 10−5      ρ              28          14              4               50.0
+                 ∆p             74          53             51               28.4
+   1 × 10−6      ρ              42          26             14               38.1
+   2 × 10−7      ρ              70          48             38               31.4
+
+
+    Overall, these results demonstrate that FNO-based initialization provides
+a consistent and quantifiable acceleration of steady-state LBM convergence
+without compromising accuracy.
+
+
+
+
+                                            13
+3.2. Unsteady Simulation
+
+3.2.1. Double Shear Layer Setup
+   We study the two-dimensional double shear layer in a periodic square
+domain (Lx1 = Lx2 = 1.0 m). The horizontal velocity u initially follows
+a piecewise hyperbolic-tangent profile centered at randomized vertical posi-
+tions, while the vertical velocity v adds a small sinusoidal perturbation to
+trigger instability as described by
+                                 
+                                 tanh (A1 (x′2 − x2 )) , y ≥ 0.5
+                                 
+               u(x1 , x2 ) = U ·                                                    (9)
+                                 tanh (A (x − x′′ )) , y < 0.5,
+                                 
+                                          2   2     2
+                                                 
+                                                 1
+               v(x1 , x2 ) = 0.1 · sin 2π x1 +         .                           (10)
+                                                 4
+Setting U = 1.0 m s−1 and ν = 0.001 m2 s−1 , Reynolds numbers range from
+≈ 8 to 50 based on the shear-layer thickness δ = 1/A m. We train two
+surrogate groups that each comprise a density and a velocity model: a large
+11.2M-parameter FNO and a small 2.6M-parameter FNO, see Table 2. The
+large FNO remains stable in pure autoregressive rollout, whereas the small
+FNO diverges after several steps. Hybrid FNO–LBM coupling follows the
+workflow and notation introduced in Section 2.3, with the FNO replacing a
+fraction of LBM steps by FNO predictions at fixed temporal cadence (1:1,
+1:2, 1:3). A comparison of pure LBM, pure FNO and 1:3-Hybrid rollout is
+shown in Fig. 6.
+
+    Table 2: Total parameters of the FNO models for the double shear prediction.
+
+
+       Group Name       Density Model        Velocity Model     Combined
+       11.2M FNO           5 621 835           5 621 875        11 243 710
+       2.6M FNO             151 811            2 409 771        2 561 582
+
+
+
+                                        14
+                     t = 0.0s          t = 0.5s          t = 1.0s          t = 1.5s          t = 2.0s          t = 3.0s
+              1.50              1.50              1.50              1.50              1.50              1.50
+              1.25              1.25              1.25              1.25              1.25              1.25
+              1.00              1.00              1.00              1.00              1.00              1.00
+ Pure LBM     0.75              0.75              0.75              0.75              0.75              0.75
+              0.50              0.50              0.50              0.50              0.50              0.50
+              0.25              0.25              0.25              0.25              0.25              0.25
+              0.00              0.00              0.00              0.00              0.00              0.00
+
+              1.50              1.50              1.50              1.50              1.50              1.50
+              1.25              1.25              1.25              1.25              1.25              1.25
+              1.00              1.00              1.00              1.00              1.00              1.00
+ 1:3-Hybrid   0.75              0.75              0.75              0.75              0.75              0.75
+              0.50              0.50              0.50              0.50              0.50              0.50
+              0.25              0.25              0.25              0.25              0.25              0.25
+              0.00              0.00              0.00              0.00              0.00              0.00
+
+              1.50              1.50              1.50              1.50              1.50              1.50
+              1.25              1.25              1.25              1.25              1.25              1.25
+              1.00              1.00              1.00              1.00              1.00              1.00
+ Pure FNO     0.75              0.75              0.75              0.75              0.75              0.75
+              0.50              0.50              0.50              0.50              0.50              0.50
+              0.25              0.25              0.25              0.25              0.25              0.25
+              0.00              0.00              0.00              0.00              0.00              0.00
+
+
+
+
+Figure 6: Exemplary rollout with the 2.6M FNO model based on the workflow introduced
+in Fig. 3b. The first row depict a pure LBM simulation, in the middle is a hybrid with one
+quarter of the simulation steps replaced by the FNO and the bottom row depicts the pure
+autoregressive rollout of the 2.6M FNO. From left two right, the analytical initialization is
+created and given to the FNO model and LBM simulation to predict density and velocity
+fields for 3s simulation time.
+
+
+3.2.2. Double Shear Layer Results
+    We quantify accuracy with a normalized vorticity error and a mean-
+squared error across all fields, both computed per time step and as temporal
+averages over the 30∆T horizon (Figs. 7 and 8).
+    Across both surrogate sizes, the global MSE decreases monotonically
+with more frequent corrections (1:1→1:2→1:3). The effect is modest yet
+consistent for the 11.2M FNO, and dramatic for the 2.6M FNO, where hybrid
+coupling suppresses divergence and yields stable, low-error predictions over
+the entire rollout. Time-resolved curves corroborate these findings: hybrid
+variants remain uniformly bounded and below the pure-FNO baselines, with
+the 1:3-Hybrid providing the lowest and most consistent errors, see Figs. 7b
+and 7d.
+    Vorticity errors exhibit the same trend. Global ϵ̄ω decreases with increas-
+
+
+
+                                                            15
+                   10−4
+                                                                                           FNO      1:1-Hybrid    1:2-Hybrid       1:3-Hybrid
+ ϵ̄MSE = ⟨ϵMSE (t)⟩t
+
+
+
+
+                                                                  ∥x̄−x̄r ∥22
+
+
+
+                                                                                10−4
+                                                                    ∥x̄r ∥22
+                                                                    ϵMSE =
+
+
+
+
+                   10−5                                                         10−5
+                                         rid
+
+
+                                                  rid
+
+
+                                                           rid
+                                O
+
+
+
+
+                                                                                       0      0.5        1        1.5          2        2.5     3
+                        FN
+
+
+                                     yb
+
+
+                                                yb
+
+
+                                                         yb
+                                    H
+
+
+                                               H
+
+
+                                                        H
+
+
+
+
+                                                                                                                 Time [s]
+                                    1-
+
+
+                                               2-
+
+
+                                                        3-
+                                1:
+
+
+                                           1:
+
+
+                                                    1:
+
+
+
+
+(a) Global ϵ̄MSE 11.2M FNO.                                                            (b) Time-dependent ϵMSE of the 11.2M FNO.
+                            0
+                       10                                                                  FNO      1:1-Hybrid    1:2-Hybrid       1:3-Hybrid
+ ϵ̄MSE = ⟨ϵMSE (t)⟩t
+
+
+
+
+                   10−1                                                          100
+                                                                  ∥x̄−x̄r ∥22
+                                                                    ∥x̄r ∥22
+
+
+
+
+                   10−2
+                                                                                10−2
+                   10−3
+                                                                    ϵMSE =
+
+
+
+
+                   10−4                                                         10−4
+                        −5
+                   10
+                                                                                10−6
+                                         rid
+
+
+                                                  rid
+
+
+                                                             id
+                                O
+
+
+
+
+                                                            r
+                        FN
+
+
+
+
+                                                                                       0      0.5        1        1.5          2        2.5     3
+                                     yb
+
+
+                                                yb
+
+
+                                                         yb
+                                    H
+
+
+                                               H
+
+
+                                                        H
+                                    1-
+
+
+                                               2-
+
+
+                                                        3-
+
+
+
+
+                                                                                                                 Time [s]
+                                1:
+
+
+                                           1:
+
+
+                                                    1:
+
+
+
+
+ (c) Global ϵ̄MSE 2.6M FNO.                                                            (d) Time-dependent ϵMSE of the 2.6M FNO.
+
+
+Figure 7: Global (ϵ̄MSE ) and time-dependent (ϵMSE ) MSE of the 11.2M and 2.6M FNO
+models in pure and hybrid rollout scenarios with respect to the reference pure LBM
+simulation.
+
+
+
+
+                                                                                            16
+                                                                                             FNO      1:1-Hybrid    1:2-Hybrid        1:3-Hybrid
+                   0.04                                                         0.06
+ ϵ̄ω = ⟨ϵω (t)⟩t
+
+
+
+
+                                                                         r ∥2
+
+
+
+
+                   0.03
+                                                                     ∥ωr ∥2
+                                                               ϵω = ∥ω−ω
+
+
+
+                                                                                0.04
+                   0.02
+
+                   0.01                                                         0.02
+                     0
+                                   rid
+
+
+                                              rid
+
+
+                                                         rid
+                          O
+                    FN
+
+
+
+
+                                                                                       0        0.5        1        1.5           2        2.5     3
+                               yb
+
+
+                                          yb
+
+
+                                                     yb
+                              H
+
+
+                                         H
+
+
+                                                    H
+                              1-
+
+
+                                         2-
+
+
+                                                    3-
+
+
+
+
+                                                                                                                   Time [s]
+                          1:
+
+
+                                     1:
+
+
+                                                1:
+
+
+
+
+    (a) Global ϵ̄ω 11.2M FNO.                                                              (b) Time-dependent ϵω of the 11.2M FNO.
+                    101                                                                      FNO      1:1-Hybrid     1:2-Hybrid       1:3-Hybrid
+                                                                                 101
+ ϵ̄ω = ⟨ϵω (t)⟩t
+
+
+
+
+                                                                         r ∥2
+
+
+
+
+                    100
+                                                                     ∥ωr ∥2
+
+
+
+
+                                                                                 100
+                                                               ϵω = ∥ω−ω
+
+
+
+
+               10−1                                                             10−1
+
+
+               10−2                                                             10−2
+                                   rid
+
+
+                                            rid
+
+
+                                                         id
+                          O
+
+
+
+
+                                                        r
+                     FN
+
+
+
+
+                                                                                       0        0.5        1        1.5           2        2.5     3
+                               yb
+
+
+                                          yb
+
+
+                                                     yb
+                               H
+
+
+                                          H
+
+
+                                                    H
+                              1-
+
+
+                                         2-
+
+
+                                                    3-
+
+
+
+
+                                                                                                                   Time [s]
+                          1:
+
+
+                                     1:
+
+
+                                                1:
+
+
+
+
+       (c) Global ϵ̄ω 2.6M FNO.                                                            (d) Time-dependent ϵω of the 2.6M FNO.
+
+
+Figure 8: Global (ϵ̄ω ) and time-dependent (ϵω ) relative L2 vorticity error of the 11.2M
+and 2.6M FNO models in pure and hybrid rollout scenarios with respect to the reference
+pure LBM simulation.
+
+
+
+
+                                                                                               17
+ing correction frequency, indicating improved preservation of small-scale ro-
+tational structures. The 2.6M pure FNO shows pronounced error growth
+over time, whereas all hybrids remain stable and attain vorticity errors com-
+parable to the large-model hybrid, see Fig. 8.
+       Table 3 summarizes relative reductions in mean global errors achieved
+by the hybrid models compared to their pure FNO counterparts. For the
+11.2M model, hybridization yields global MSE reductions of 7.9%, 37.1%,
+and 49.3% for 1:1, 1:2, and 1:3 configurations, respectively. The correspond-
+ing vorticity reductions are 19.8%, 35.6%, and 42.1%. For the 2.6M model,
+reductions are even more pronounced with 99.6–99.8% (MSE) and 96.5–
+97.7% (vorticity), effectively transforming an otherwise divergent surrogate
+into one operating within the same error regime as the large-model hybrid.
+Collectively, these results show that hybridization improves accuracy and
+enforces long-horizon stability, enabling lightweight surrogates to perform
+competitively at a fraction of the parameter count.
+
+Table 3: Relative reduction of the mean global error over 100 trajectories for hybrid FNO–
+LBM models. Error reduction is computed as (ϵ̄FNO − ϵ̄Hybrid )/ϵ̄FNO .
+
+
+ Metric         Model        1:1-Hybrid (%)       1:2-Hybrid (%)         1:3-Hybrid (%)
+
+             11.2M FNO              19.8                 35.6                 42.1
+ ϵ̄ω
+              2.6M FNO              96.5                 97.3                 97.7
+
+             11.2M FNO              7.9                  37.1                 49.3
+ ϵ̄MSE
+              2.6M FNO              99.6                 99.8                 99.8
+
+
+       Lastly, the speed-up of the hybrid approach compared to the pure LBM
+is investigated, see Table 4. Wall-clock runtimes are averaged over the first
+six trajectories with standard deviations per case of less than 0.8% with ref-
+
+                                           18
+erence to the respective mean runtime. It has to be noted, that the potential
+speed-up of ML models in hybrid scenarios is highly dependent on the ra-
+tio of their learned prediction time step ∆T and the time step ∆t of the
+numerical simulation. Both investigated models achieved nearly identical
+speed-ups, reaching from around 5% to 11%, depending on the hybrid case.
+The reduction of total simulations steps is identical for both.
+
+Table 4: Relative reduction of simulation runtime ϵT = (TLBM − THybrid )/TLBM and
+number of simulation steps ϵN = (NLBM −NHybrid )/NLBM for hybrid approaches compared
+to pure LBM simulation.
+
+
+ Metric       Model        1:1-Hybrid (%)      1:2-Hybrid (%)     1:3-Hybrid (%)
+
+           11.2M FNO             11.1                7.7                 5.1
+   ϵT
+            2.6M FNO             11.8                7.7                 5.7
+
+   ϵN            –                50                  34                 25
+
+
+   Taken together, these findings demonstrate that hybrid FNO–LBM mod-
+els deliver substantial improvements in accuracy and long-term stability
+while still offering meaningful runtime savings, particularly when applied
+to compact surrogate architectures.
+
+
+4. Conclusion
+
+   This work demonstrates that FNO surrogates can be effectively cou-
+pled with LBM solvers to accelerate both steady-state and unsteady flow
+simulations while preserving physical accuracy. For steady porous media
+flows, FNO-initialized LBM substantially reduces convergence time across
+all macroscopic fields, with the greatest improvements observed in density
+
+
+
+                                        19
+and pressure-drop convergence. For unsteady double shear layer dynam-
+ics, hybrid FNO–LBM coupling consistently lowers time-resolved and global
+errors, improves long-horizon stability, and mitigates the drift typically ob-
+served in autoregressive surrogate rollouts.
+   A key outcome is the strong regularizing effect of numerical correction:
+hybridization enables a compact 2.6M-parameter FNO, which is unstable
+in standalone inference, to operate within the same accuracy regime as an
+11.2M-parameter model, yielding reductions of up to 99.8% in global MSE
+and 97.7% in vorticity error. These results highlight hybrid coupling as an
+efficient mechanism for enforcing physical consistency while retaining the
+computational benefits of neural operators.
+   Overall, the proposed framework offers a reliable and scalable pathway for
+integrating machine-learning surrogates into high-resolution CFD workflows,
+and provides a foundation for future developments in accelerated, physically
+grounded hybrid simulation methods.
+
+
+Acknowledgments
+
+   This work was funded by the European Union under the ERC Advanced
+Grant: Project 101094463 — GENUFASD
+
+
+Appendix A. Pourous Media Flow Setup
+
+Appendix B. Double Shear Layer Flow Setup
+
+References
+
+ [1] T. Krüger, H. Kusumaatmaja, A. K. O. Shardt, G. Silva, E. M. Viggen,
+    Lattice Boltzmann Method: Principles and Practice, Springer Interna-
+    tional Publishing, 2017. doi:10.1007/978-3-319-44649-3.
+
+                                     20
+              Table A.5: Porous Media Flow Simulation Parameters
+
+
+Boundary Conditions              Physical Parameters        LBM Algorithm
+Inlet: Fixed Inflow              U∞ = 0.5 ms                Single Precision
+                                            2
+Sides: Periodic                  ν = 0.01 ms                D2Q9
+Outlet: Fixed Pressure           ϕ = 0.75 − 0.9             SRT
+
+
+
+          Table A.6: Porous Media FNO Density Model Hyperparameters
+
+
+Decoder             FNO                         Scheduler
+Out Features: 1     In Channels: 1              Learning Rate: 1.e-2
+Layers: 3           Latent Channels: 16         Decay Rate: 0.85
+Layer Size: 32      Layers: 3                   Decay Frequency: 10.Epoch
+                    Fourier Modes: 6            Type: LambdaLR
+                    Padding: 9                  Optimizer AdamW
+Total Model Parameters: 114 273
+
+
+
+          Table A.7: Porous Media FNO Velocity Model Hyperparameters
+
+
+Decoder             FNO                         Scheduler
+Out Features: 2     In Channels: 1              Learning Rate: 1.e-2
+Layers: 3           Latent Channels: 16         Decay Rate: 0.85
+Layer Size: 64      Layers: 6                   Decay Frequency: 10.Epoch
+                    Fourier Modes: 12           Type: LambdaLR
+                    Padding: 9                  Optimizer AdamW
+Total Model Parameters: 896 082
+
+
+
+                                     21
+                    Table A.8: Porous Media Dataset Parameters
+
+
+Dataset                        Sample Size                       Resolution
+Training Data                  1700                              512x256
+Validation Data                200                               512x256
+Inference                      20 Trajectories                   512x256
+
+
+            Table B.9: Double Shear FNO Density Models Hyperparameters
+
+
+Decoder               FNO                        Scheduler
+Out Features: 1       In Channels: 1             Learning Rate: 1.e-2
+Layers: 1             Latent Channels: 14        Decay Rate: 0.85
+Layer Size: 32        Layers: 3,7                Decay Frequency: 8.Epoch
+                      Fourier Modes: 8,32        Type: LambdaLR
+                      Padding: 9                 Optimizer AdamW
+Total Model Parameters (3 Layers, 8 Fourier Modes): 151 811
+Total Model Parameters (7 Layers, 32 Fourier Modes): 5 621 835
+
+
+          Table B.10: Double Shear FNO Velocity Models Hyperparameters
+
+
+Decoder               FNO                        Scheduler
+Out Features: 2       In Channels: 2             Learning Rate: 1.e-2
+Layers: 1             Latent Channels: 14        Decay Rate: 0.85
+Layer Size: 32        Layers: 3,7                Decay Frequency: 8.Epoch
+                      Fourier Modes: 32          Type: LambdaLR
+                      Padding: 9                 Optimizer AdamW
+Total Model Parameters (3 Layers): 2 409 771
+Total Model Parameters (7 Layers): 5 621 875
+
+
+                                       22
+               Table B.11: Double Shear Layer Dataset Parameters
+
+
+Dataset                      Samples                         Resolution
+Training                     3000 Pairs                      128x128
+Validation                   1000 Pairs                      128x128
+Inference                    100 Trajectories                128x128
+
+
+[2] C. Caron, P. Lauret, A. Bastide, Machine learning to speed up compu-
+   tational fluid dynamics engineering simulations for built environments:
+   A review, Building and Environment 267 (2025) 112229.
+
+[3] D. Greenfeld, M. Galun, R. Basri, I. Yavneh, R. Kimmel, Learning to
+   optimize multigrid pde solvers, in: International Conference on Machine
+   Learning, PMLR, 2019, pp. 2415–2423.
+
+[4] C. M. Jiang, S. Esmaeilzadeh, K. Azizzadenesheli, K. Kashinath,
+   M. Mustafa, H. A. Tchelepi, P. Marcus, Prabhat, A. Anandkumar,
+   Meshfreeflownet: A physics-constrained deep continuous space-time
+   super-resolution framework (2020). arXiv:2005.01463.
+
+[5] M. Raissi, P. Perdikaris, G. Karniadakis, Physics-informed neu-
+   ral networks:      A deep learning framework for solving forward
+   and inverse problems involving nonlinear partial differential equa-
+   tions,    Journal of Computational Physics 378 (2019) 686–707.
+   doi:https://doi.org/10.1016/j.jcp.2018.10.045.
+
+[6] D. Kochkov, J. A. Smith, A. Alieva, Q. Wang, M. P. Brenner, S. Hoyer,
+   Machine learning–accelerated computational fluid dynamics, Proceed-
+   ings of the National Academy of Sciences 118 (21) (2021) e2101784118.
+
+
+
+                                      23
+ [7] Z. Li, N. Kovachki, K. Azizzadenesheli, B. Liu, K. Bhattacharya, A. Stu-
+    art, A. Anandkumar, Fourier neural operator for parametric partial dif-
+    ferential equations (2021). arXiv:2010.08895.
+
+ [8] Z. Li, N. Kovachki, K. Azizzadenesheli, B. Liu, K. Bhattacharya, A. Stu-
+    art, A. Anandkumar, Neural operator: Graph kernel network for partial
+    differential equations (2020). arXiv:2003.03485.
+
+ [9] K. Bhattacharya, B. Hosseini, N. B. Kovachki, A. M. Stuart, Model Re-
+    duction And Neural Networks For Parametric PDEs, The SMAI Jour-
+    nal of computational mathematics 7 (2021) 121–157. doi:10.5802/smai-
+    jcm.74.
+
+[10] L. Lu, P. Jin, G. Pang, Z. Zhang, G. E. Karniadakis, Learning nonlin-
+    ear operators via deeponet based on the universal approximation the-
+    orem of operators, Nature Machine Intelligence 3 (3) (2021) 218–229.
+    doi:10.1038/s42256-021-00302-5.
+
+[11] R. G. Patel, N. A. Trask, M. A. Wood, E. C. Cyr, A physics-informed
+    operator regression framework for extracting data-driven continuum
+    models, Computer Methods in Applied Mechanics and Engineering 373
+    (2021) 113500. doi:https://doi.org/10.1016/j.cma.2020.113500.
+
+[12] G. Wen, Z. Li, K. Azizzadenesheli, A. Anandkumar, S. M. Benson, U-
+    fno – an enhanced fourier neural operator-based deep-learning model
+    for multiphase flow (2022). arXiv:2109.03697.
+
+[13] A. Tran, A. Mathews, L. Xie, C. S. Ong, Factorized fourier neural op-
+    erators (2023). arXiv:2111.13802.
+    URL https://arxiv.org/abs/2111.13802
+
+
+                                     24
+[14] B. Bonev, T. Kurth, C. Hundt, J. Pathak, M. Baust, K. Kashinath,
+    A. Anandkumar, Spherical Fourier neural operators: Learning stable
+    dynamics on the sphere, in: A. Krause, E. Brunskill, K. Cho, B. En-
+    gelhardt, S. Sabato, J. Scarlett (Eds.), Proceedings of the 40th Inter-
+    national Conference on Machine Learning, Vol. 202 of Proceedings of
+    Machine Learning Research, PMLR, 2023, pp. 2806–2823.
+    URL https://proceedings.mlr.press/v202/bonev23a.html
+
+[15] Z. You, Z. Xu, W. Cai, Mscalefno:                 Multi-scale fourier neu-
+    ral operator learning for oscillatory functions and wave scatter-
+    ing problems, Journal of Computational Physics 547 (2026) 114530.
+    doi:https://doi.org/10.1016/j.jcp.2025.114530.
+
+[16] A. Choubineh, J. Chen, D. A. Wood, F. Coenen, F. Ma, Fourier neural
+    operator for fluid flow in small-shape 2d simulated porous media dataset,
+    Algorithms 16 (1) (2023). doi:10.3390/a16010024.
+
+[17] F.   Lehmann,    F.    Gatti,   D.    Clouteau,     Multiple-input   fourier
+    neural    operator     (mifno)   for    source-dependent     3d   elastody-
+    namics,   Journal of Computational Physics 527 (2025) 113813.
+    doi:https://doi.org/10.1016/j.jcp.2025.113813.
+
+[18] Q. Guo, Y. He, M. Liu, Y. Zhao, Y. Liu, J. Luo, Reduced geostatistical
+    approach with a fourier neural operator surrogate model for inverse
+    modeling of hydraulic tomography, Water Resources Research 60 (6)
+    (2024). doi:https://doi.org/10.1029/2023WR034939.
+
+[19] N. Margenberg,      F. X. Kärtner,       M. Bause,      Optimal dirichlet
+    boundary control by fourier neural operators applied to nonlin-
+
+
+
+                                      25
+    ear optics, Journal of Computational Physics 499 (2024) 112725.
+    doi:https://doi.org/10.1016/j.jcp.2023.112725.
+
+[20] V. Gopakumar, S. Pamela, L. Zanisi, Z. Li, A. Gray, D. Brennand,
+    N. Bhatia, G. Stathopoulos, M. Kusner, M. Peter Deisenroth, A. Anand-
+    kumar, the JOREK Team, M. Team, Plasma surrogate modelling us-
+    ing fourier neural operators, Nuclear Fusion 64 (5) (2024) 056025.
+    doi:10.1088/1741-4326/ad313a.
+
+[21] A.   Rabbani,        M.    Babaei,     Hybrid      pore-network    and    lattice-
+    boltzmann        permeability         modelling     accelerated     by    machine
+    learning,      Advances     in   Water       Resources   126    (2019)    116–128.
+    doi:https://doi.org/10.1016/j.advwatres.2019.02.012.
+
+[22] T. Zhang, H. Xiao, D. Ghosh, Physics-informed fourier neural operators:
+    A machine learning method for parametric partial differential equations,
+    J. Nonlinear Var. Anal. 9 (2025) 45–64.
+
+[23] P. Fischer, S. Kaltenbach, S. Litvinov, S. Succi, P. Koumoutsakos, Opti-
+    mal lattice boltzmann closures through multi-agent reinforcement learn-
+    ing (2025). arXiv:2504.14422.
+    URL https://arxiv.org/abs/2504.14422
+
+[24] W. Xiao, T. Gao, K. Liu, J. Duan, M. Zhao, Fourier neural opera-
+    tor based fluid-structure interaction for predicting the vesicle dynamics
+    (2024). arXiv:2401.02311.
+    URL https://arxiv.org/abs/2401.02311
+
+[25] P.   Sousa,     C.    V.     Rodrigues,       A.    Afonso,      Enhancing    cfd
+    solver   with     machine        learning     techniques,      Computer     Meth-
+
+
+                                            26
+    ods in Applied Mechanics and Engineering 429 (2024) 117133.
+    doi:https://doi.org/10.1016/j.cma.2024.117133.
+
+[26] A.   Kopaničáková,     G.     E.    Karniadakis,     Deeponet      based    pre-
+    conditioning     strategies    for   solving    parametric      linear   systems
+    of equations,      SIAM Journal on Scientific Computing 47 (1)
+    (2025)    C151–C181.          arXiv:https://doi.org/10.1137/24M162861X,
+    doi:10.1137/24M162861X.
+    URL https://doi.org/10.1137/24M162861X
+
+[27] J. M. Winter, D. Wawrzyniak, S. J. Schmidt, T. Indinger, C. F. Janßen,
+    U. Schramm, N. A. Adams, A fully-differentiable lattice-boltzmann
+    solver for integrated machine-learning simulation workflows, Conference
+    contribution at GTC 24, San José (2024).
+    URL https://www.nvidia.com/en-us/on-demand/session/gtc24
+    -s62237/
+
+[28] S. Chen, G. D. Doolen, Lattice boltzmann method for fluid flows, An-
+    nual Review of Fluid Mechanics 30 (Volume 30, 1998) (1998) 329–364.
+    doi:https://doi.org/10.1146/annurev.fluid.30.1.329.
+
+[29] S. Succi, The Lattice Boltzmann Equation: For Fluid Dynamics and
+    Beyond, Oxford University Press, Oxford, 2001.
+
+[30] P.   Lallemand,    L.-S.     Luo,   M.     Krafczyk,       W.-A.   Yong,    The
+    lattice   boltzmann      method       for    nearly     incompressible      flows,
+    Journal     of     Computational          Physics     431     (2021)     109713.
+    doi:https://doi.org/10.1016/j.jcp.2020.109713.
+
+[31] Z. Li, N. Kovachki, K. Azizzadenesheli, B. Liu, K. Bhattacharya, A. Stu-
+
+
+                                         27
+    art, A. Anandkumar, Fourier neural operator for parametric partial dif-
+    ferential equations (2021). arXiv:2010.08895.
+    URL https://arxiv.org/abs/2010.08895
+
+[32] N. B. Kovachki, Z. Li, B. Liu, K. Azizzadenesheli, K. Bhattacharya,
+    A. M. Stuart, A. Anandkumar, Neural operator: Learning maps be-
+    tween function spaces, CoRR abs/2108.08481 (2021). arXiv:2108.08481.
+    URL https://arxiv.org/abs/2108.08481
+
+[33] P. Contributors, Nvidia physicsnemo: An open-source framework for
+    physics-based deep learning in science and engineering (2023-02-24).
+    URL https://github.com/NVIDIA/physicsnemo
+
+[34] M. Espinoza-Andaluz, A. Moyón, M. Andersson, A comparative study
+    between d2q9 and d2q5 lattice boltzmann scheme for mass transport
+    phenomena in porous media, Computers & Mathematics with Applica-
+    tions 78 (9) (2019) 2886–2896.
+
+[35] A. D’Orazio, A. Karimipour, R. Ranjbarzadeh, Lattice boltzmann mod-
+    elling of fluid flow through porous media: A comparison between
+    pore-structure and representative elementary volume methods, Ener-
+    gies 16 (14) (2023). doi:10.3390/en16145354.
+
+
+
+
+                                     28
+

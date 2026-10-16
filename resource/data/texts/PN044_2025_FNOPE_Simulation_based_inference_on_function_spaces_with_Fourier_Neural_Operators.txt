@@ -1,0 +1,1824 @@
+                                                  FNOPE: Simulation-based inference on function
+                                                     spaces with Fourier Neural Operators
+
+
+                                                        Guy Moss1,2∗             Leah Sophie Muhle3                 Reinhard Drews3
+
+                                                              Jakob H. Macke1,2,4,†                    Cornelius Schröder1,2,†∗
+arXiv:2505.22573v2 [cs.LG] 14 Nov 2025
+
+
+
+
+                                                          1
+                                                         Machine Learning in Science, University of Tübingen, Tübingen, Germany
+                                                                         2
+                                                                           Tübingen AI Center, Tübingen, Germany
+                                                         3
+                                                           Department of Geosciences, University of Tübingen, Tübingen, Germany
+                                             4
+                                               Department Empirical Inference, Max Planck Institute for Intelligent Systems, Tübingen, Germany
+                                                                                     †
+                                                                                       Joint supervision
+
+
+
+                                                                                         Abstract
+
+                                                      Simulation-based inference (SBI) is an established approach for performing
+                                                      Bayesian inference on scientific simulators. SBI so far works best on low-
+                                                      dimensional parametric models. However, it is difficult to infer function-valued
+                                                      parameters, which frequently occur in disciplines that model spatiotemporal pro-
+                                                      cesses such as the climate and earth sciences. Here, we introduce an approach for
+                                                      efficient posterior estimation, using a Fourier Neural Operator (FNO) architecture
+                                                      with a flow matching objective. We show that our approach, FNOPE, can perform
+                                                      inference of function-valued parameters at a fraction of the simulation budget
+                                                      of state of the art methods. In addition, FNOPE supports posterior evaluation
+                                                      at arbitrary discretizations of the domain, as well as simultaneous estimation of
+                                                      vector-valued parameters. We demonstrate the effectiveness of our approach on
+                                                      several benchmark tasks and a challenging spatial inference task from glaciology.
+                                                      FNOPE extends the applicability of SBI methods to new scientific domains by
+                                                      enabling the inference of function-valued parameters.
+
+
+                                         1        Introduction
+                                         Probabilistic inference of mechanistic parameters in numerical models is a ubiquitous task across
+                                         many scientific and engineering disciplines. Among methods for Bayesian inference, simulation-
+                                         based inference (SBI, [1–6]) has emerged as a powerful approach for performing inference without
+                                         requiring explicit formulation or evaluation of the likelihood. Instead, SBI only requires a simulator
+                                         model which can sample from the likelihood. By training a generative model on pairs of parameters
+                                         and simulation outputs, SBI can directly estimate probability distributions such as the posterior
+                                         distribution.
+                                         However, existing SBI methods are designed to infer a limited number of vector-valued parameters,
+                                         which strongly limits their use for inferring spatially and/or temporarily varying, function-valued
+                                         parameters. In these cases, parameters are commonly inferred on fixed discretizations of the domain.
+                                         Despite some recent advances leveraging generative models to infer higher-dimensional posterior
+                                              ∗
+                                                  {firstname.secondname}@uni-tuebingen.de
+                                                  Code available at https://github.com/mackelab/fnope
+
+
+                                         39th Conference on Neural Information Processing Systems (NeurIPS 2025).
+       mechanistic models                     FNO block                       observation
+
+             SIRD model
+                                          input
+
+
+
+
+                                         spectral         return to
+                                        decompo-           original
+                                          sition           domain
+             Darcy flow
+                                                    ...
+                ...
+
+
+
+
+       functional parameters       simulations                        FNOPE                 posterior
+
+Figure 1: Overview. FNOPE approximates the posterior over function-valued parameters of a
+mechanistic model conditioned on function-valued observations. We use a FNO architecture with
+a flow matching objective to efficiently represent the function-valued parameters, enabling us to
+estimate extremely high dimensional posterior distributions at arbitrary discretizations of the domain.
+
+
+distributions [7–11], the high-dimensional inference problems that arise from such approaches remain
+a challenge.
+Furthermore, current models need to be retrained for new discretizations of the parameters or the
+observations. This is particularly challenging in fields like the geosciences, where observations cannot
+always be made at the same locations. An alternative to using fixed discretizations is to represent
+the functions using a fixed set of basis functions, where the inference problem becomes inferring the
+basis function coefficients, as used, e.g., in [12]. However, these approaches require a good selection
+of basis functions and suffer from a trade-off between choosing sufficiently expressive basis sets,
+while maintaining a tractable number of parameters to infer.
+To overcome these limitations, we require methods that are capable of modeling and inferring function-
+valued data. Here, we propose to make use of the Fourier Neural Operator (FNO, [13]) architecture,
+which operates on function-valued data, for performing SBI on function-valued parameters. Neural
+operators [14–16] combine operations on global features of function-valued data with local (typically
+pointwise) operations, thus capturing both global and local structures. In particular, FNOs use Fourier
+features to model the global structure. For smoothly varying data, the spectral power is concentrated
+in the lower frequency components of the spectral decomposition. This allows for a compact
+representation of the global structure of the data, and hence for the inference of function-valued data
+on high resolution discretizations.
+We present FNOPE (Fig. 1), an inference method for function-valued parameters: It trains FNOs
+for Posterior Estimation using a flow-matching objective [9, 17]. FNOPE is capable of solving
+inference problems for spatially and temporally varying parameters, and can generalize to posterior
+evaluations on non-uniform, previously unseen discretizations of the parameter and observation
+domains. Furthermore, FNOPE can estimate additional, vector-valued parameters of the simulator.
+We demonstrate these features on a collection of benchmark tasks, as well as a challenging real-world
+task from glaciology. We compare the performance of FNOPE to SBI approaches that use fixed-
+discretization or basis-function representation of the parameters, and show that FNOPE outperforms
+these methods, especially for low simulation budgets. Thus, FNOPE enables efficient inference for
+high dimensional inference problems that were previously challenging or even intractable.
+
+2     Preliminaries
+2.1   Simulation-based inference
+
+SBI is designed to solve stochastic inverse problems: Given a simulator parametrized by θ, a known
+prior distribution p(θ) and an observation x ∈ RNx , the goal is to infer the posterior p(θ | x) for
+
+
+                                                             2
+(typically) vector-valued parameters θ ∈ RNθ . The simulator implicitly defines the model likelihood
+p(x | θ) by allowing us to sample x ∼ p(x | θ). We can construct a training dataset by sampling
+from the joint p(θ)p(x | θ) to construct a dataset of simulations S = {(θi , xi )}Ki=1 for a number of
+simulations K. Standard approaches in neural posterior estimation (NPE) approximate the posterior
+q ϕ (θ | x) with a normalizing flow, which is trained by minimizing the negative log-likelihood
+−E(θ,x)∼S log q ϕ (θ | x) [1, 3]. In contrast to this, flow-matching posterior estimation (FMPE) [9]
+                                      ϕ
+learns a conditional velocity field vt,x (θt ) to iteratively denoise samples from a base distribution
+                                                                                           ϕ
+(typically a Gaussian distribution) to the posterior distribution p(θ | x) . The velocity vt,x is trained
+via the flow matching objective
+                                                                  ϕ
+                     LFMPE = Et∼U [0,1],(θ,x)∼S,zt ∼pt (zt |θ) ||vt,x − ut (zt | θ)||2 ,              (1)
+where pt (zt | θ) are the sample-conditional flow paths for zt , and ut (zt | θ) are the true velocity
+fields. The sample-conditional paths are chosen so that pt and ut are analytically tractable.
+
+2.2   Fourier Neural Operators
+
+We use FNOs [13] to efficiently learn the posterior distribution of function-valued parameters. FNOs
+are a class of neural operators using the Fourier basis as an intermediate representation of functional
+data to learn mappings between function spaces. We assume to have a bounded domain D ⊂ Rd ,
+on which we define function spaces A(D; Rda ) and B(D; Rdb ). The goal of neural operators is to
+approximate some given operator G : A → B by a learnable operator G̃ ϕ : A → B. In practice, the
+function-valued data is represented as discretizations of sample functions ai ∈ A, bi ∈ B on the
+domain D.
+A single-layer FNO, G̃ϕ : A → B, is defined by
+                             b(x) = σ(W ϕ a(x) + (Kϕ a)(x))          ∀x ∈ D,                          (2)
+where Wϕ is a learnable linear operator, σ is a (pointwise) non-linearity, and
+                               (Kϕ a)(x) = F −1 (Rϕ (Fa))(x)∀x ∈ D.
+Here, F and F −1 refer to the Fourier and inverse Fourier transformation, and Rϕ refers to some
+operator acting on the Fourier modes of a. Typically, Rϕ is a linear transformation, and therefore
+corresponds to a convolution in real space with Kϕ . But typically Rϕ only acts on the lower Fourier
+modes, discarding higher ones, and therefore gives rise to a compact representation of high-resolution
+data. However, as Eq. 2 includes the linear operator W ϕ a(x), FNOs are still able to capture local
+structures.
+
+3     Method
+To extend the standard SBI setting to inferring function-valued parameters, we develop FNOPE by
+extending FMPE with FNOs as backbone (Figs. 1,2). FNOPE takes the function-valued parameters θ
+and observations x as input, and estimates the FMPE flow-field v ϕ for function-valued parameters
+using a combination of several FNO blocks.
+We assume that θ as well as x are evaluated on discretizations specified by positions lθ and lx , which
+means we choose it from some set of (lθ , lx ) ∈ Dθ × Dx . Here, the parameter positions lθ are
+independent of the observation positions lx and can additionally vary between samples i. To adapt
+the parameter prior to function-valued parameters, we define a prior draw as an evaluation of an
+underlying measure µ (e.g., a Gaussian Process) at specific locations lθ : θ ∼ plθ . The simulator then
+returns observations x at locations lx following the likelihood plx (x | θ, lθ ). Many such simulations
+create a dataset S = {(liθ , θi , lix , xi )}K
+                                             i=1 for a number of simulations K. The explicit usage of the
+positions lx and lθ allows for flexible conditioning of the posterior.
+
+3.1   Function-valued FMPE objective
+
+To learn the velocity field v ϕ , we adapt the FMPE objective function [9] for the function-valued
+setting. Given a discretized observation (xo , lox ), and a desired parameter discretization lθ , we want
+
+
+                                                     3
+to sample θ ∼ plθ (θ | xo , lox ). This is done by first sampling from a base distribution ξ1 ∼ plθ (ξ) and
+then learning the velocity field vlϕθ (t, ξt , xo , lox ) for ξt . In the following, we omit the arguments of vlϕθ
+for clarity. The learned velocity field allows us to iteratively denoise ξ1 into a sample ξ0 from the
+target posterior distribution. Note that the noise distribution is discretized on the same positions lθ as
+the parameter θ. Similarly to Eq. 1, the velocity field vlϕθ is optimized via the loss function
+                      L1 = Et∼U [0,1],(lθ ,θ,lx ,x)∼S,ξt ∼plθ (ξt |θ) ||vlϕθ − ut (ξt | θ)||2 .                                                                 (3)
+Here, pt,lθ (ξt | θt ) describes a known noising process such that ξ1 | θ is (approximately) drawn from
+the base distribution plθ (ξ). Furthermore, ut (ξt | θ) is the true vector field of the path defined by
+pt,lθ (ξt | θt ). We use the rectified flows formulation [18], such that ut (ξt | θt ) = (ξt − θ).
+The noise distribution, ξ1 ∼ plθ (ξ), is com-
+monly defined to be independent Gaussian white
+noise, ξ ∼ N (0, I). Such distributions give
+rise to samples with a uniform power spectrum
+of ξ. As FNOs typically operate on the lower                                                             +
+                                                           FNO block
+frequency modes of their inputs, independent
+Gaussian white noise would not be a suitable                                                     frequency-limited
+                                                                                               spectral decomposition
+base distribution choice for our application. In-
+
+
+                                                             pointwise linear transformation
+stead, we sample noise from a Gaussian Pro-                                                        concatenation
+                                                                                                                                                frequency-limited
+                                                                                                                                              spectral decomposition
+cess ξ ∼ GP(0, k(·, ·)) [19, 20], where k(·, ·) is
+the square exponential kernel with lengthscale                                                  linear transformation
+l. Using Bochner’s theorem (Appendix S3.1)
+[21, 22], the spectral density of samples is                                                     transformation to
+                                                                                                   original domain
+
+      P (f ) = (2πl2 )dθ /2 exp −2π 2 l2 f 2 ,
+                                            
+                                                                                                         +
+where dθ is the domain dimension of θ (and
+                                                                                                         σ
+therefore of ξ). We choose l to be dependent
+                                                                                                                          freq.-lim.
+on the highest Fourier mode M used by the                                                                               spec. decomp.
+                                                                                                                                        MLP
+
+FNO. This ensures that the majority of the                                                      linear transformation
+
+signal power in the noise samples ξ1 is con-
+served by the FNO block. We use the heuristic
+         2
+l = π(M/2+1)  , which in expectation assures that
+> 99% of the spectral density of samples ξ is      Figure 2: FNOPE architecture. FNOPE is based
+in the lower M frequency modes (derivation in      on several FNO blocks (gray): A FNO block re-
+Appendix S3.2). The covariance kernel k of the     ceives the discretization-dependent spectral fea-
+Gaussian Process is scaled to have unit marginal   tures of the function-valued parameters and obser-
+variance and defines the FMPE noise sampling       vations as an input and processes them in a linear
+during training via                                layer before transforming it back to the original do-
+                                 2   θ θ           main via the approximate inverse transformation.
+    plθ (ξt | θ) = N ((1 − t)θ, t k(l , l )).
+                                                   A pointwise linear operation on the input is added,
+                                                   along with embeddings of the flow time, point po-
+3.2 Adapting to non-uniform,                       sitions, and vector-valued parameters. We expand
+unseen discretizations of the domain               this setup to several parallel channels and stack
+                                                   layers. The vector-valued velocities are separately
+To operate on non-uniform discretizations, we
+                                                   estimated via a MLP.
+adopt the work of Lingsch et al. [23] and use a
+FNO with a type II non-uniform fast Fourier transform (NUDFT, [24]). The NUDFT allows us to
+approximate the first M spectral modes of data or parameters discretized on any N points in the
+domain. We additionally add the positions lθ and lx to the input of the FNO blocks through multilayer
+perceptrons (MLPs, omitted in Fig. 2 for clarity) [25, 26].
+In addition to non-uniform discretizations, FNOPE is also able to deal with distinct data and pa-
+rameter discretizations at training and evaluation time. If we can query the simulator for arbitrary
+discretizations lθ , lx , we can generate the training data with mixed discretizations. However, this
+is not the case for all simulators. To mitigate errors when evaluating the posterior at non-uniform
+discretizations unseen during training, we perform data augmentation during training. First, we
+independently mask parts of the parameters and observations by randomly removing entries of θi and
+xi and the corresponding positions liθ and lix . Second, we add small, independent Gaussian noise to
+the remaining positions (Appendix S3.3).
+
+
+                                                         4
+In addition to this flexible implementation, we provide and evaluate FNOPE (fix), a variant of
+FNOPE which uses the fast Fourier transform (FFT) in the FNO blocks and can be used for applica-
+tions which exclusively consider parameters and observations discretized on uniform grids. The FFT
+computes spectral components in O(N log N ) in the number of points in the discretization N , com-
+pared to O(N · M D ) for the NUDFT, where D is the domain dimension. Therefore, FNOPE scales
+favorably with the parameter dimensionality N (the number of points in the discretization), but
+FNOPE (fix) scales favorably with the domain dimensionality D (details in Appendix S3.4).
+
+3.3   Inferring additional parameters
+
+As most real world simulators have additional vector-valued parameters η, we extend the FNOPE ar-
+chitecture to also infer their posterior distribution. Vector-valued parameters are drawn from a
+known prior distribution p(η) and the model likelihood becomes plix (xi | θi , liθ , η). The resulting
+inference problem is to estimate the posterior distribution plθ (θ, η | xo , lox ). Hence, we now condition
+the velocity field vlϕθ additionally on the vector-valued parameters η by embedding them into the
+channel-dimension and subsequently adding them to the input of the FNO blocks (Fig. 2).
+To estimate the velocity field of the vector-valued parameters vηϕ (Fig. 2), we use a multilayer
+perceptron (MLP) to process the spectral features of the output of the final FNO block together with
+the vector-valued parameters and the spectral features of the observation. This approach results in a
+network which targets the combined velocity v ϕ = [vlϕθ , vηϕ ]. The combined network can be trained
+by an extension of the loss in Eq. 3,
+
+where the noise p(zt | η) of the vector-valued parameters is given by a normal distribution
+N (zt ; (1 − t)η, t2 I), and ut = [ut (ξt | θ), ut (zt | η)]. The vector field ut (zt | η) for the vector-
+valued parameters is analogously defined as ut (zt | η) = (zt − η). In practice, we separately normal-
+ize the loss for vlϕθ and vηϕ by the number of parameters (Appendix S3.5).
+
+4     Experiments
+We apply FNOPE to four simulators: a Gaussian linear toy example, the SIRD model from epi-
+demiology, the Darcy flow inverse problem and a real world application from glaciology (details in
+Appendix S5).
+For the linear Gaussian simulator, we can analytically compute the posterior distribution, allowing us
+to compare the estimated posterior distributions to this ground truth using the Sliced-Wasserstein
+Distance (SWD) [27]. However, as is common in SBI applications, we do not have access to the
+ground truth posterior for the other simulators. Instead, we use a combination of two metrics to
+measure the quality of our posteriors: First, we report the predictive mean square error (Pred. MSE)
+between ground truth observations and predictive simulations from posteriors conditioned on those
+observations. We complement this metric with simulation-based calibration (SBC) [28] on the
+posterior marginal distributions. We quantify posterior calibration using the Error of Diagonal (EoD),
+measuring the average distance of the calibration curve of the estimated posterior from a perfectly
+calibrated posterior. Good performance on both of these metrics is not a sufficient condition to
+indicate a correctly estimated posterior, but healthy posteriors typically achieve good performance on
+these metrics. All evaluation metrics are averaged over three runs and we report mean ± standard
+error. We provide more details on all evaluation metrics in Appendix S2. We provide an overview of
+training and sampling times, as well as network sizes and computational resources used for all tasks,
+in Appendix S1.
+
+4.1   Baseline methods
+
+We compare FNOPE to three baseline methods: NPE (with normalizing flows) [3] and FMPE [9] on
+the coefficients of the spectral basis functions of the parameters (NPE/FMPE (spectral) respectively,
+details in Appendix S4). We also compare to FMPE with a fixed parameter discretization (FMPE
+(raw)).
+For all baseline methods, we use the sbi toolbox [29]. For the SIRD simulator we compare to
+Simformer [30], a transformer-based amortized inference approach that is also capable of flexible
+
+
+                                                    5
+discretization of function-valued parameters. The other baselines cannot be applied in their basic
+version to this task because they do not support non-uniform discretizations of both parameters and
+observations.
+
+4.2   Linear Gaussian
+
+We first show the ability of FNOPE to approximate the
+true posterior of a linear Gaussian, as commonly done
+in SBI benchmarks [31]. To illustrate FNOPE’s ability
+to infer a large number of parameters, we increase the                1
+
+
+
+
+                                                                SWD
+dimensionality to 1000. We also replace the independent
+Gaussian prior in this task with a Gaussian process to
+model smoothly-varying function-valued parameters.
+                                                                      0
+FNOPE clearly outperforms all benchmark methods on                        2       3      4        5
+this problem (Fig. 3). With a training dataset of 102 sim-             10     10      10       10
+ulations the SWD is close to zero for both FNOPE and                         # simulations
+FNOPE (fix). In contrast, both NPE and FMPE based
+on spectral features need as many as 105 simulations to               FNOPE                NPE (spectral)
+achieve similar performance. Furthermore, this exam-                  FNOPE (fix)          FMPE (spectral)
+ple shows that the data augmentation applied in training                                   FMPE (raw)
+FNOPE, results in a small difference between FNOPE and         Figure 3:  Linear    Gaussian   simulator.
+FNOPE (fix), which is an effect of the introduced posi-        Sliced-Wasserstein    distance   (SWD) to
+tional noise. FNOPE learns a posterior under a slightly ground truth posterior.
+broader likelihood than what is defined by the model and
+for very constrained posteriors the posterior quality is slightly poorer. However, we will see that for
+more challenging tasks, this is an acceptable trade off, as we gain flexibility on evaluation points.
+We perform ablation experiments (Appendix S7.1), and observe that the performance of FNOPE is
+dependent on using sufficiently many Fourier modes in the FNO blocks (Fig. S1a,b). However, other
+hyperparameters show less influence on the performance (Fig. S1c-e).
+
+4.3   SIRD: Inference on unseen, non-uniform discretizations
+
+Next, we consider the Susceptible-Infected-Recovered-Deceased (SIRD) model [32] to demonstrate
+the ability of FNOPE to solve inference problems on non-uniform discretizations of the parameters
+and observations that were not seen in the training data. In addition, we also show its ability to
+simultaneously infer vector-valued parameters. The model has three parameters: recovery rate, death
+rate, and contact rate [33, 34]. We use the same setup as in Gloeckler et al. [30], where we assume
+that the contact rate varies over time, but recovery and death rates are constant in time. We sample
+training simulations on a dense uniform grid for both parameters and observations. For evaluation we
+sample 100 observations, each discretized on a different set of 40 randomly sampled time points in
+[0, 50], using contact rates defined on a distinct set of 40 randomly sampled times.
+FNOPE, as well as Simformer, can reliably infer the posterior distribution (Fig. 4a) and the observa-
+tions lie close to the mean of the posterior predictive (Fig. 4b). Both methods are comparable in terms
+of MSE of posterior predictive samples to the observations, as well as producing well-calibrated pos-
+teriors (Fig. 4c). When we use only 20 timepoints to condition on, the performance of FNOPE slightly
+decreases (Fig. S2). This highlights the necessity of the FNO block to have enough observation
+points to perform a reliable (approx.) Fourier transformation. We also observe that FNOPE performs
+robustly across the base distribution lengthscale (Fig. S3). This experiment shows that FNOPE is on
+par with the state of the art on this low dimensional problem: It successfully infers function-valued
+parameters together with vector-valued parameters and can be conditioned on arbitrary discretizations
+of the observations. However, FNOPE can also be applied to very high dimensional problems, as
+shown in the following experiment.
+
+4.4   Darcy flow: Scalable inference in high dimensions
+
+The Darcy flow is defined by a second order elliptic PDE and has been used to model many processes
+including the deformation of linearly elastic materials, or the electric potential in conductive materials.
+
+
+                                                    6
+  a
+                  1.0                                          0.4
+
+
+   Contact rate
+
+
+
+
+                                                  Death rate
+                                                                                      Figure 4: SIRD model.          (a)
+                  0.0                                          0.2                    Posterior conditioned on 40 time
+                        0     20        40                           0.2       0.4    points. left: Posterior (mean ±
+                            Time [days]                              Recovery rate    std.) of the time-varying param-
+  b                                               c                  ×10 3
+                                                                                      eter and ground truth parameters
+                  0.1                 FNOPE                                           (dashed). right: Two dimensional
+                                                                8
+   Infected
+
+
+
+                                      Simformer                                       posterior of vector-valued param-
+
+
+
+
+                                                  Pred. MSE
+                                      Data                                            eters and ground truth parame-
+                                                                                      ters (dot). (b) Posterior predic-
+                  0.0                                                                 tive (mean ± std.) of infected, re-
+                  0.2                                           0                     covered and deceased populations
+   Recovered
+
+
+
+
+                                                                                      with observations marked. (c) up-
+                                                                                      per: MSE of posterior predictive
+                  0.0                                          0.2           lower    samples to observations. lower:
+                                                                             bound    Simulation-based calibration error
+                  0.2                             SBC EoD
+   Deceased
+
+
+
+
+                                                                                      of diagonal (SBC EoD). ‘Lower
+                                                                                      bound’ refers to the SBC EoD for
+                                                                                      uniformly sampled posterior ranks
+                  0.0                                          0.0                    (details in Appendix S2).
+                        0     20        40                               3   4
+                                                                      10 10 10
+                                                                                 5
+
+                            Time [days]                               # simulations
+
+
+In the geosciences, the Darcy equation is used to describe the distribution of groundwater as a function
+of the spatially variable hydraulic permeability, which can be inferred from point observations in
+wells [35]. The Darcy flow is a common benchmark model for FNO applications, especially in the
+context of training PDE emulator models [13, 36, 37].
+We consider the steady-state of the two dimensional Darcy flow equation on a unit square:
+                            −∇ · (a(x)∇u(x)) = 1                                       x ∈ (0, 1)2
+                                             u(x) = 0                                  x ∈ ∂(0, 1)2 ,
+where a(x) ≥ 0 is the permeability we want to infer and u(x) is the hydraulic potential. We adapt
+the implementation from [38], which provides a GPU-optimized solver. We use a log-normal prior
+distribution for the permeability, similar to Lim et al. [37]: b = log(a) ∼ N (0, (−∆ + τ I)−2 ), where
+∆ is the Laplacian operator and τ = 9. We sample the prior on a 129 × 129 grid which results in
+≈ 16k parameters. For FNOPE, we use the first 32 Fourier modes in both spatial dimensions and for
+spectral NPE/FMPE we used the first 16 modes, resulting in 2 · 162 = 512 parameter dimensions.
+For all methods, we infer the log-permeability and evaluate in the original space (as in [37]).
+Samples from the posterior inferred with FNOPE closely resemble the ground truth (Fig. 5a and
+Fig. S6). Both FNOPE and FNOPE (fix) correctly capture the fine-structure of the posterior samples
+and reproduce parameters at much higher fidelity than all baseline methods. While the spectral
+methods learn oversmoothed posteriors that do not capture local structures, the posterior samples
+from FMPE (raw) are much noisier and only capture the rough global structure. The posterior
+means show a similar trend (Fig. S7), and the standard deviations of the baseline methods are higher
+compared to FNOPE (Fig. S8).
+The MSEs between posterior predictive samples and ground truth observations of FNOPE and
+FNOPE (fix) are consistently better compared to the spectral baseline methods, especially at lower
+simulation budgets, and are in the same range as FMPE (raw) (Fig. 5b). While all methods are
+reasonably well-calibrated (Fig. 5c), the visual appearance is vastly different. We additionally
+measure the posterior quality in terms of posterior log-probability (normalized by the number of
+pixels) of the associated ground truth parameter θ [31]. FNOPE has a much higher log probability
+(Fig. 5d) compared to FMPE (raw). FNOPE (fix) also achieves strong performance for a sufficient
+number of simulations. As the spectral methods do not model the parameters directly, we cannot
+calculate the log-probabilities they assign to the ground truth parameters. Overall, FNOPE is the only
+
+
+                                                                     7
+a
+
+
+
+
+b                             c                                d
+
+
+
+
+Figure 5: Darcy flow. (a) Ground truth parameter and posterior samples for a simulation budget of
+104 training samples (more posterior samples in Fig. S6). (b) MSE of posterior predictives to the
+ground truth observation (FNOPE, FNOPE (fix) and FMPE (raw) visually overlap). (c) Simulation-
+based calibration Error of Diagonal (EoD) for 50 dimensions. (d) Posterior log-probability of ground
+truth samples normalized by the number of dimensions (higher is better).
+
+
+method that consistently performs well on all presented metrics. In additional ablation experiments
+(Fig. S4), we show that FNOPE attains strong performance across different hyperparameter choices,
+and that our lengthscale heuristic (Sec. 3.1) is an appropriate choice for this task.
+
+4.5   Mass balance rates of Antarctic ice shelves: Real world application
+
+Finally, we turn to a real-world task from glaciology: Inference of snow accumulation and basal
+melt rates of Antarctic ice shelves from radar internal reflection horizons (IRHs) [39–41]. Snow
+continuously accumulates on top of the ice shelf. Over time, it is transported to larger depths where
+the former surfaces are further deformed by ice flow and form internal layers of constant age, which
+are measured by radar (Fig. 6a,b). The inference of accumulation and melt rates is a challenging
+SBI task, where the model is misspecified, as it cannot accout for all real-world effects. We use an
+isochronal advection scheme forward model as described in [39]. In this work, the authors consider
+simulations on a grid of 500 points along a one-dimensional spatial domain and directly infer 50
+parameters on a fixed downsampling of this domain using NPE. We refer to this approach as NPE
+(raw) and compare it to FNOPE and the baseline methods.
+First, we evaluate all methods on a test set of simulations (Fig. 6c). As with the previous tasks, the
+performance of FNOPE at 103 simulations is comparable to the performance of the other methods at
+105 simulations in terms of predictive MSE, and is only marginally worse at 102 simulations. All
+methods show a reasonable calibration in terms of SBC EoD at all simulation budgets (Fig. 6d).
+We then test the performance of all methods on real data (as in [39]). Posterior predictive samples
+from FNOPE match the observation very well (Fig.6b), and while FNOPE still performs better at
+low simulation budgets than the other methods, the relative improvement compared to the baselines
+is smaller than the one observed on synthetic data (Fig. 6e). We note that this modeling problem
+was explicitly set up by Moss et al. [39] so that NPE (raw) can infer the posterior using a feasible
+number of simulations. FNOPE achieves the same performance with two orders of magnitude fewer
+
+
+                                                  8
+a                                  b
+
+
+
+
+c                              d                                e
+
+
+
+
+Figure 6: Mass balance rates of ice shelves. (a) Measurement transect of the radar data in Ekström
+Ice Shelf, Antarctica (adapted from [39], published under Creative Commons CC BY license). (b)
+Posterior predictive results obtained with FNOPE (trained on 105 simulations), compared to radar-
+based observation on one layer in the ice shelf. (c)-(e) Performance measures on test simulations and
+the real observation, where NPE (raw) refers to the method used in [39].
+
+
+simulations. Additionally, FNOPE is able to infer the full parameter dimensionality (500) instead of
+downsampling to 50 dimensions (Fig. S5).
+
+5   Discussion
+
+We present FNOPE, a simulation-based inference method using Fourier Neural Operators to efficiently
+infer function-valued parameters. On a variety of task, we showed that FNOPE can infer posteriors for
+function-valued data at very small simulation budgets compared to baseline methods, especially for
+high-dimensional problems. In addition, by building upon existing work for FNOs on non-uniform
+discretizations of the domain, FNOPE can generate samples from posteriors and observations defined
+on any discretizations of the domain, even if these discretizations were never seen during training.
+
+Related work Scaling SBI methods to high-dimensional parameter spaces has been the focus of
+many works which make use of state of the art generative modeling techniques such as generative
+adversarial networks [7], diffusion models [8, 10, 11] and flow matching [9]. In particular, recent
+works [30, 42] use a transformer architecture to tokenize function-valued parameters, allowing for
+complete flexibility in estimating conditional distributions. However, as these methods explicitly
+model each point for discretized function-valued parameters, they are limited in terms of scalability.
+Our FNO-based approach allows us to compactly represent the parameters, significantly lowering
+the computational costs as the number of parameters grows. Finally, for applications where only the
+one-dimensional marginal distributions of the Bayesian posterior are needed, it is possible to scale
+SBI methods to higher dimensions, as the correlation between the parameters does not need to be
+captured [43]. However, in most scientific applications the correlation structure is an essential object
+of interest and marginal distributions are only of limited use.
+Estimating function-valued parameters using FNOs [44–46] and other neural operators [47–49] has
+been explored in previous work. A majority of these approaches consider deterministic inversion, or
+estimating a single value for the parameters as opposed to targeting the Bayesian posterior. While
+
+
+                                                   9
+probabilistic generative models such as invertible Fourier Neural Operators (iFNOs, Long et al. [50])
+estimate a conditional distribution, they do not explicitly target the Bayesian posterior. We compare
+the performance of iFNO on the Darcy task, and while it has comparable performance in terms of
+predictive MSE, the uncertainty estimates are not well-calibrated and the conditional distribution
+collapses to a tiny parameter region (Appendix S8).
+The closest neighbours to our work are Lingsch et al. [51], who use a FNO architecture with an
+FMPE objective to learn vector-valued parameters and, additionally, learn an emulator producing
+function-valued observations. The crucial difference to our approach is that their simulators are
+deterministic and the inferred parameters are not function-valued. Recently, Lim et al. [37] developed
+an approach for score-based modeling in function spaces using FNOs. This enables high-dimensional
+posterior inference, but their approach is limited to uniform grids and does not allow for flexible
+conditioning.
+Another related approach is diffusion posterior sampling [52–54], which seeks to learn a high-
+dimensional prior distribution from samples using score-based models. The learned priors can then
+be used to generate samples from the posterior using analytically tractable model likelihoods [55, 56].
+Other works extended such approaches for intractable likelihoods [57, 58]. Similarly to diffusion
+posterior sampling, we only require prior samples. However, instead of learning the prior distribution,
+we learn the posterior distribution directly.
+
+Limitations The FNO-backbone used by FNOPE inherently makes assumptions about the structure
+of the parameters. These assumptions enable computationally efficient inference, but result in
+some limitations. First, the FNO assumes limited high-frequency information in the parameter and
+observation domains. Therefore, they are ill-suited to infer parameters with high power in higher
+frequencies—for example, parameters with discontinuities. This could potentially be addressed by
+neural operators using other transforms, such as wavelet transforms [59]. Furthermore, to (accurately)
+compute the FFT or NUDFT of the observations, we require sufficiently many points in their
+discretization. Therefore, unlike other flexible methods [30, 42], our approach cannot perform
+inference using extremely sparse observations. Still, the SIRD experiment shows that even for
+20 points we get reasonable estimations (Fig. S2). Finally, the computational complexity of our
+approaches still scales exponentially with the domain dimension, which could be challenging in
+high-dimensional domains.
+
+Conclusion We presented FNOPE, a simulation-based inference approach for inferring function-
+valued data. FNOPE can be applied to non-uniform, unseen discretizations of the domain, can scale
+to large parameter dimensions, and can be trained using comparatively small simulations budgets. As
+we show in various experiments, FNOPE can therefore tackle spatiotemporal inference problems that
+were previously challenging or even intractable for simulation-based inference.
+
+
+Acknowledgments and Disclosure of Funding
+
+This work was funded by the German Research Foundation (DFG) under Germany’s Excellence
+Strategy – EXC number 2064/1 – 390727645 and SFB 1233 ’Robust Vision’ (276693517) and DFG
+(DR 822/3-1) and the Heinrich-Böll-Stiftung. Data collection was supported by Alfred Wegener
+Institute through logistic grants AWI_ANT_18. The authors acknowledge support by the state of
+Baden-Württemberg through bwHPC. GM is a member of the International Max Planck Research
+School for Intelligent Systems (IMPRS-IS). We thank Manuel Gloeckler for providing the training
+data and Simformer results for the SIRD experiment. We thank Daniel Gedon and Julius Vetter, and
+all members of Mackelab for discussions and feedback on the manuscript.
+
+
+References
+ [1] George Papamakarios and Iain Murray. Fast ϵ -free inference of simulation models with bayesian
+     conditional density estimation. In Advances in Neural Information Processing Systems, volume 29, 2016.
+
+ [2] Jan-Matthis Lueckmann, Pedro J Goncalves, Giacomo Bassetto, Kaan Öcal, Marcel Nonnenmacher, and
+     Jakob H Macke. Flexible statistical inference for mechanistic models of neural dynamics. In Advances in
+     Neural Information Processing Systems, volume 30, 2017.
+
+
+                                                    10
+ [3] David S. Greenberg, Marcel Nonnenmacher, and Jakob H. Macke. Automatic posterior transformation for
+     likelihood-free inference. In International Conference on Machine Learning, 2019.
+
+ [4] George Papamakarios, David Sterratt, and Iain Murray. Sequential neural likelihood: Fast likelihood-free
+     inference with autoregressive flows. In The 22nd international conference on artificial intelligence and
+     statistics. PMLR, 2019.
+
+ [5] Conor Durkan, Iain Murray, and George Papamakarios. On contrastive learning for likelihood-free
+     inference. In Proceedings of the 37th International Conference on Machine Learning, volume 119. PMLR,
+     2020.
+
+ [6] Stefan T. Radev, Ulf Kai Mertens, Andreas Voss, Lynton Ardizzone, and U. Köthe. Bayesflow: Learning
+     complex stochastic models with invertible neural networks. IEEE Transactions on Neural Networks and
+     Learning Systems, 33, 2020.
+
+ [7] Poornima Ramesh, Jan-Matthis Lueckmann, Jan Boelts, Álvaro Tejero-Cantero, David S. Greenberg,
+     Pedro J. Goncalves, and Jakob H. Macke. GATSBI: Generative adversarial training for simulation-based
+     inference. In International Conference on Learning Representations, 2022.
+
+ [8] Tomas Geffner, George Papamakarios, and Andriy Mnih. Compositional score modeling for simulation-
+     based inference. In International Conference on Machine Learning, 2022.
+
+ [9] Jonas Wildberger, Maximilian Dax, Simon Buchholz, Stephen Green, Jakob H Macke, and Bernhard
+     Schölkopf. Flow matching for scalable simulation-based inference. In Advances in Neural Information
+     Processing Systems, volume 36, 2023.
+
+[10] Marvin Schmitt, Valentin Pratz, Ullrich Koethe, Paul-Christian Bürkner, and Stefan T. Radev. Consistency
+     models for scalable and fast simulation-based inference. In The Thirty-eighth Annual Conference on Neural
+     Information Processing Systems, 2024.
+
+[11] Julia Linhart, Gabriel Cardoso, Alexandre Gramfort, Sylvain Le Corff, and Pedro L. C. Rodrigues.
+     Diffusion posterior sampling for simulation-based inference in tall data settings. ArXiv, 2024.
+
+[12] R. Hull, E. Leonarduzzi, L. De La Fuente, H. Viet Tran, A. Bennett, P. Melchior, R. M. Maxwell, and
+     L. E. Condon. Simulation-based inference for parameter estimation of complex watershed simulators.
+     Hydrology and Earth System Sciences, 28, 2024.
+
+[13] Zongyi Li, Nikola Borislavov Kovachki, Kamyar Azizzadenesheli, Burigede liu, Kaushik Bhattacharya,
+     Andrew Stuart, and Anima Anandkumar. Fourier neural operator for parametric partial differential
+     equations. In International Conference on Learning Representations, 2021.
+
+[14] Lu Lu, Pengzhan Jin, Guofei Pang, Zhongqiang Zhang, and George Em Karniadakis. Learning nonlinear
+     operators via deeponet based on the universal approximation theorem of operators. Nature Machine
+     Intelligence, 3, 2019.
+
+[15] Nikola Kovachki, Zongyi Li, Burigede Liu, Kamyar Azizzadenesheli, Kaushik Bhattacharya, Andrew
+     Stuart, and Anima Anandkumar. Neural operator: Learning maps between function spaces with applications
+     to pdes. Journal of Machine Learning Research, 24, 2023.
+
+[16] Nikola B. Kovachki, Samuel Lanthaler, and Andrew M. Stuart. Operator learning: Algorithms and analysis.
+     arXiv, 2024.
+
+[17] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matthew Le. Flow matching
+     for generative modeling. In The Eleventh International Conference on Learning Representations, 2023.
+
+[18] Xingchao Liu, Chengyue Gong, and qiang liu. Flow straight and fast: Learning to generate and transfer
+     data with rectified flow. In The Eleventh International Conference on Learning Representations, 2023.
+
+[19] Marin Biloš, Kashif Rasul, Anderson Schneider, Yuriy Nevmyvaka, and Stephan Günnemann. Modeling
+     temporal data as continuous functions with stochastic process diffusion. In Proceedings of the 40th
+     International Conference on Machine Learning, volume 202. PMLR, 2023.
+
+[20] Alexander Tong, Kilian Fatras, Nikolay Malkin, Guillaume Huguet, Yanlei Zhang, Jarrid Rector-Brooks,
+     Guy Wolf, and Yoshua Bengio. Improving and generalizing flow-based generative models with minibatch
+     optimal transport. Transactions on Machine Learning Research, 2024.
+
+[21] M.L. Stein. Interpolation of Spatial Data: Some Theory for Kriging. Springer New York, 2012. ISBN
+     9781461214946.
+
+
+                                                     11
+[22] Christopher KI Williams and Carl Edward Rasmussen. Gaussian processes for machine learning, volume 2.
+     MIT press Cambridge, MA, 2006.
+[23] Levi Lingsch, Mike Y. Michelis, Emmanuel De Bézenac, Sirani M. Perera, Robert K. Katzschmann,
+     and Siddhartha Mishra. Beyond regular grids: Fourier-based neural operators on arbitrary domains. In
+     Proceedings of the 41st International Conference on Machine Learning, 2024.
+[24] Leslie Greengard and June-Yub Lee. Accelerating the nonuniform fast fourier transform. SIAM Review,
+     46, 2004.
+[25] Boris Bonev, Thorsten Kurth, Christian Hundt, Jaideep Pathak, Maximilian Baust, Karthik Kashinath,
+     and Anima Anandkumar. Spherical fourier neural operators: Learning stable dynamics on the sphere. In
+     International Conference on Machine Learning, 2023.
+[26] Zongyi Li, Nikola Borislavov Kovachki, Chris Choy, Boyi Li, Jean Kossaifi, Shourya Prakash Otta,
+     Mohammad Amin Nabian, Maximilian Stadler, Christian Hundt, Kamyar Azizzadenesheli, and Anima
+     Anandkumar. Geometry-informed neural operator for large-scale 3d PDEs. In Thirty-seventh Conference
+     on Neural Information Processing Systems, 2023.
+[27] Nicolas Bonneel, Julien Rabin, Gabriel Peyré, and Hanspeter Pfister. Sliced and radon wasserstein
+     barycenters of measures. Journal of Mathematical Imaging and Vision, 51, 2015.
+[28] Sean Talts, Michael Betancourt, Daniel Simpson, Aki Vehtari, and Andrew Gelman. Validating bayesian
+     inference algorithms with simulation-based calibration. ArXiv, 2018.
+
+[29] Jan Boelts, Michael Deistler, Manuel Gloeckler, Álvaro Tejero-Cantero, Jan-Matthis Lueckmann, Guy
+     Moss, Peter Steinbach, Thomas Moreau, Fabio Muratore, Julia Linhart, Conor Durkan, Julius Vetter,
+     Benjamin Kurt Miller, Maternus Herold, Abolfazl Ziaeemehr, Matthijs Pals, Theo Gruner, Sebastian
+     Bischoff, Nastya Krouglova, Richard Gao, Janne K. Lappalainen, Bálint Mucsányi, Felix Pei, Auguste
+     Schulz, Zinovia Stefanidi, Pedro Rodrigues, Cornelius Schröder, Faried Abu Zaid, Jonas Beck, Jaivardhan
+     Kapoor, David S. Greenberg, Pedro J. Gonçalves, and Jakob H. Macke. sbi reloaded: a toolkit for
+     simulation-based inference workflows. Journal of Open Source Software, 10, 2025.
+[30] Manuel Gloeckler, Michael Deistler, Christian Weilbach, Frank Wood, and Jakob H. Macke. All-in-one
+     simulation-based inference. In Proceedings of the 41st International Conference on Machine Learning,
+     2024.
+[31] Jan-Matthis Lueckmann, Jan Boelts, David Greenberg, Pedro Goncalves, and Jakob Macke. Benchmarking
+     simulation-based inference. In International conference on artificial intelligence and statistics, 2021.
+[32] William Ogilvy Kermack and Anderson G McKendrick. A contribution to the mathematical theory of
+     epidemics. Proceedings of the royal society of london. Series A, Containing papers of a mathematical and
+     physical character, 115, 1927.
+[33] Yi-Cheng Chen, Ping-En Lu, Cheng-Shang Chang, and Tzu-Hsuan Liu. A time-dependent sir model for
+     covid-19 with undetectable infected persons. Ieee transactions on network science and engineering, 7,
+     2020.
+[34] Jonathan Schmidt, Nicholas Krämer, and Philipp Hennig. A probabilistic state space model for joint
+     inference from differential equations and data. Advances in neural information processing systems, 34,
+     2021.
+[35] Wolfgang Nowak and Olaf A. Cirpka. Geostatistical inference of hydraulic conductivity and dispersivities
+     from hydraulic heads and tracer data. Water Resources Research, 42, 2006.
+[36] Zongyi Li, Hongkai Zheng, Nikola Kovachki, David Jin, Haoxuan Chen, Burigede Liu, Kamyar Aziz-
+     zadenesheli, and Anima Anandkumar. Physics-informed neural operator for learning partial differential
+     equations. ACM/JMS Journal of Data Science, 1, 2024.
+[37] Jae Hyun Lim, Nikola B Kovachki, Ricardo Baptista, Christopher Beckham, Kamyar Azizzadenesheli,
+     Jean Kossaifi, Vikram Voleti, Jiaming Song, Karsten Kreis, Jan Kautz, et al. Score-based diffusion models
+     in function space. ArXiv, 2025.
+[38] PhysicsNeMo Contributors. Nvidia physicsnemo: An open-source framework for physics-based deep
+     learning in science and engineering. version: 1.2.0, 2023.
+[39] Guy Moss, Vjeran Višnjević, Olaf Eisen, Falk M. Oraschewski, Cornelius Schröder, Jakob H. Macke, and
+     Reinhard Drews. Simulation-based inference of surface accumulation and basal melt rates of an antarctic
+     ice shelf from isochronal layers. Journal of Glaciology, 71, 2025.
+
+
+                                                     12
+[40] Edwin D. Waddington, Thomas A. Neumann, Michelle R. Koutnik, Hans Peter Marshall, and David L.
+     Morse. Inference of accumulation-rate patterns from deep layers in glaciers and ice sheets. Journal of
+     Glaciology, 53, 2007.
+
+[41] M. J. Wolovick, J. C. Moore, and L. Zhao. Joint inversion for surface accumulation rate and geothermal
+     heat flow from ice-penetrating radar observations at dome a, east antarctica. part i: Model description, data
+     constraints, and inversion results. Journal of Geophysical Research: Earth Surface, 126, 2021.
+
+[42] Paul E. Chang, Nasrulloh Loka, Daolang Huang, Ulpu Remes, Samuel Kaski, and Luigi Acerbi. Amortized
+     probabilistic conditioning for optimization, simulation and inference. ArXiv, 2024.
+
+[43] Luca Ambrogioni, Umut Güçlü, Julia Berezutskaya, Eva van den Borne, Yaǧmur Güçlütürk, Max Hinne,
+     Eric Maris, and Marcel van Gerven. Forward amortized inference for likelihood-free variational marginal-
+     ization. In Kamalika Chaudhuri and Masashi Sugiyama, editors, Proceedings of the Twenty-Second
+     International Conference on Artificial Intelligence and Statistics, volume 89 of Proceedings of Machine
+     Learning Research, pages 777–786. PMLR, 16–18 Apr 2019.
+
+[44] Md Ashiqur Rahman, Manuel A Florez, Anima Anandkumar, Zachary E Ross, and Kamyar Azizzade-
+     nesheli. Generative adversarial neural operators. Transactions on Machine Learning Research, 2022. ISSN
+     2835-8856.
+
+[45] Jacob H Seidman, Georgios Kissas, George J. Pappas, and Paris Perdikaris. Variational autoencoding
+     neural operators. In Proceedings of the 40th International Conference on Machine Learning, volume 202.
+     PMLR, 2023.
+
+[46] Abdolmehdi Behroozi, Chaopeng Shen, and Daniel Kifer. Sensitivity-constrained fourier neural operators
+     for forward and inverse problems in parametric differential equations. In The Thirteenth International
+     Conference on Learning Representations, 2025.
+
+[47] Zhongkai Hao, Zhengyi Wang, Hang Su, Chengyang Ying, Yinpeng Dong, Songming Liu, Ze Cheng, Jian
+     Song, and Jun Zhu. GNOT: A general neural operator transformer for operator learning. In Proceedings of
+     the 40th International Conference on Machine Learning, volume 202. PMLR, 2023.
+
+[48] Tian Wang and Chuang Wang. Latent neural operator for solving forward and inverse pde problems. In
+     Advances in Neural Information Processing Systems, volume 37, 2024.
+
+[49] Haixu Wu, Huakun Luo, Haowen Wang, Jianmin Wang, and Mingsheng Long. Transolver: A fast
+     transformer solver for pdes on general geometries. In International Conference on Machine Learning,
+     2024.
+
+[50] Da Long, Zhitong Xu, Qiwei Yuan, Yin Yang, and Shandian Zhe. Invertible fourier neural operators for
+     tackling both forward and inverse problems. In Proceedings of The 28th International Conference on
+     Artificial Intelligence and Statistics, volume 258. PMLR, 2025.
+
+[51] Levi E. Lingsch, Dana Grund, Siddhartha Mishra, and Georgios Kissas. FUSE: Fast unified simulation and
+     estimation for PDEs. In The Thirty-eighth Annual Conference on Neural Information Processing Systems,
+     2024.
+
+[52] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole.
+     Score-based generative modeling through stochastic differential equations. In International Conference on
+     Learning Representations, 2021.
+
+[53] Jiaming Song, Arash Vahdat, Morteza Mardani, and Jan Kautz. Pseudoinverse-guided diffusion models for
+     inverse problems. In International Conference on Learning Representations, 2023.
+
+[54] Hyungjin Chung, Jeongsol Kim, Michael Thompson Mccann, Marc Louis Klasky, and Jong Chul Ye.
+     Diffusion posterior sampling for general noisy inverse problems. In The Eleventh International Conference
+     on Learning Representations, 2023.
+
+[55] Yinhuai Wang, Jiwen Yu, and Jian Zhang. Zero-shot image restoration using denoising diffusion null-space
+     model. In The Eleventh International Conference on Learning Representations, 2023.
+
+[56] Bahjat Kawar, Michael Elad, Stefano Ermon, and Jiaming Song. Denoising diffusion restoration models.
+     In Proceedings of the 36th International Conference on Neural Information Processing Systems, 2022.
+
+[57] Gabriel Cardoso, Yazid Janati el idrissi, Sylvain Le Corff, and Eric Moulines. Monte carlo guided denoising
+     diffusion models for bayesian linear inverse problems. In The Twelfth International Conference on Learning
+     Representations, 2024.
+
+
+                                                       13
+[58] Zihui Wu, Yu Sun, Yifan Chen, Bingliang Zhang, Yisong Yue, and Katherine Bouman. Principled
+     probabilistic imaging using diffusion models as plug-and-play priors. In The Thirty-eighth Annual
+     Conference on Neural Information Processing Systems, 2024.
+
+[59] Tapas Tripura and Souvik Chakraborty. Wavelet neural operator for solving parametric partial differ-
+     ential equations in computational mechanics problems. Computer Methods in Applied Mechanics and
+     Engineering, 404, 2023.
+
+
+
+
+                                                  14
+Supplementary Material
+S1      Software and Computational Resources
+For all baseline SBI methods, we use the sbi toolbox [29], for the Simformer baseline we use the
+publicly available code from Gloeckler et al. [30] . We use an optimized solver to solve the Darcy
+Flow PDE [38].
+We use various compute resources for the different experiments. For each experiment, we run the
+training and evaluation for each method, for each simulation budget, and for each of the three random
+seeds separately. The summary of network sizes and compute times for all tasks are provided in
+Tab. S1,S2,S3.
+For the Linear Gaussian and SIRD experiments, we perform our experiments on Nvidia RTX 2080ti
+GPU nodes. Both simulators have negligible wall-clock costs on these GPU nodes. The Darcy
+flow experiment required GPUs with higher VRAM to accommodate the large (≈ 16k dimensional)
+parameters and observations. We performed these experiments on Nvidia A100 GPUs. For the
+Antarctic Ice experiment, we perform training and evaluation on CPU, namely Intel Xeon Gold 16
+cores, 2.9GHz. We perform this experiment on CPU as the main computation cost is in running the
+simulations for the predictive MSE check, and the implementation of the model is not accelerated by
+use of GPUs. The simulation costs are described in Moss et al. [39].
+Table S1: Network sizes and training times for Gaussian Linear (GL) and Darcy Flow (Darcy)
+tasks. We report the mean over 3 runs with a training budget of 10k simulations. Baselines estimating
+the "raw" (untransformed) parameters are denoted (R) and those estimating Fourier coefficients are
+denoted (S). Linear Gaussian task was run on a 2080ti GPU, Darcy flow on an A100 GPU.
+
+ Task      Metric                   FNOPE         FNOPE (fix)       NPE (S)     FMPE (S)         FMPE (R)
+ GL        # params.                    110K               109K       567K             86.3K            299K
+ GL        train (Tot.) [m]              3.12               1.98       6.77             2.46             5.14
+ GL        train (/epoch) [s]            0.99               0.87       2.17             0.24             0.31
+ GL        sample (/sample) [ms]         2.16               1.06       0.05             0.24             0.20
+ Darcy     # params.                    11.6M           11.6M         3.54M             898K        9.18M
+ Darcy     train (Tot.) [m]               72.2            41.8          20.5             10.9         12.2
+ Darcy     train (/epoch) [s]             20.3            26.2          2.82             0.66         0.73
+ Darcy     sample (/sample) [ms]           280            35.2          0.21             1.95         2.70
+
+Table S2: Network sizes and training times for SIRD. We report the mean over 3 runs with a
+training budget of 10k simulations. Both methods were trained and evaluated on a 2080ti GPU.
+
+                      Task     Metric                       FNOPE       Simformer
+                      SIRD     # params.                      117K             286K
+                      SIRD     train (Tot.) [m]                6.95            47.17
+                      SIRD     train (/epoch) [s]              1.19             9.43
+                      SIRD     sample (/sample) [ms]           0.22             0.22
+
+Table S3: Network sizes and training times for Antarctic Ice (Ice) task. We report the mean over
+3 runs with a training budget of 10k simulations. Baselines estimating the "raw" (untransformed)
+parameters are denoted (R) and those estimating Fourier coefficients are denoted (S). All methods
+were trained and evaluated on CPU.
+ Task     Metric                   FNOPE         NPE (S)     FMPE (S)      NPE (R)        FMPE (R)
+ Ice      # params.                 25.3K          236K            92.3K        361K            96.2K
+ Ice      train (Tot.) [m]           47.4           19.7            31.6         6.80            33.5
+ Ice      train (/epoch) [s]         9.82           4.21            1.92         5.64            2.02
+ Ice      sample (/sample) [ms]      22.8           1.50            16.6         1.53            23.9
+
+
+
+                                                   15
+S2     Evaluation details
+We here describe more details about our evaluation procedures. We evaluate on a heldout test
+set {(θjo , ljθ , ηjo , xoj , ljx )}Jj=1
+                                      test
+                                           , where Jtest is the number of test simulations. Given an approximate
+                                   ϕ
+posterior distribution qlθ (θ, η | x, lx ) and a test observation (xoj , ljx ), we draw Kpost posterior samples
+(θkj , ηkj ) ∼ qlϕθ (θ, η | xoj , ljx ). In the case where no vector-valued parameters η are present, they can
+be omitted. Similarly, for methods which do not explicitly use the positions lθ , lx (e.g. FNOPE (fix)),
+the positions can be omitted, as we do not apply these methods to tasks where we consider arbitrary
+discretizations.
+We report the average and standard error over all Jtest test simulations.
+
+S2.1    Sliced Wasserstein Distance
+
+Following Bonneel et al. [27], we define the (empirical) sliced Wasserstein(-2) distance (SWD)
+between N samples from two probability distributions p and q as
+                                            
+                                                    K
+                                                                           !1/2 
+                                                 1 X
+                SWD(p, q) = Eu∼U (SD−1 )              ||x(k) − yu(k) ||22      ,          (4)
+                                                K i=1 u
+
+where xk ∼ p(x), yk ∼ q(y) are samples from the two distributions, u are uniformly randomly
+                                               (k) (k)
+sampled vectors on the unit sphere SD−1 , and xu , yu are the 1-dimensional i-th order statistics of
+                 ⊤      ⊤
+the projections u xk , u yk respectively. We calculate the SWD with 50 random projections u and
+K = 1000 posterior samples.
+
+S2.2    Simulation-based Calibration Error of Diagonal
+
+Simulation-based calibration (SBC) [28] is a standard measure of the calibration of approximate
+posterior distributions (in terms of over- or underconfidence). We obtain ranks rij for each sample
+(θjo , xoj ) in the test set using SBC with the 1-dimensional marginal distributions used as the reducing
+functions. That is, for each of the dimensions i of θ, the rank rij is an integer in (1, Kpost + 1). This
+results in Jtest ranks. The cumulative distribution function of ranks is therefore
+                                                  1 X
+                                     CDFi (α) =          I[rij /Kpost < α].
+                                                 Jtest j
+The SBC Error of Diagonal (SBC EoD) is then the mean absolute distance between this cumulative
+distribution and the cumulative distribution function of a uniform distribution,
+                                               Z 1
+                              SBC EoD(i) =          |CDFi (α) − α|dα.
+                                                         0
+
+In contrast to the SBC area under the curve (SBC AUC), the EoD will detect poor calibrations
+for posteriors that are overconfident at low confidence levels α, and underconfident at high α (or
+vice-versa).Finally, we report the average SBC EoD across the dimensions of θ,
+                                                 1
+                                    SBC EoD =      SBC EoD(i).
+                                                Nθ
+For SIRD, since the posterior dimensionalities are low, we compute an average SBC EoD over all
+one-dimensional marginals of the posterior. For the Darcy Flow and Antarctic Ice tasks, we select a
+subset of 50 marginal distribution for computing the SBC EoD, regularly spread across the domain.
+
+S2.3    Predictive MSE
+
+To calculate the MSE for posterior predictive samples, we run for each posterior sample (θkj , ηkj ),
+and each true observation xoj , the simulator xkj ∼ pljx (x | θkj , lθ , ηkj ). We then compute the average
+mean square error of the simulation xkj to the corresponding observations xoj ,
+                                                      Jtest ,Kpost
+                                              1          X             1
+                              MSE =                                         ||xkj − xoj ||2L2 ,
+                                        Jtest Kpost                  |ljx |
+                                                      k=1,j=1
+
+
+                                                          16
+where |ljx | is the number of points in the discretization ljx and therefore the dimensionality of xoj .
+We use this metric since the simulators considered in this work correspond to (unknown) unimodal
+likelihood functions—a correctly estimated posterior will produce simulations clustered around the
+true observation. We opt for this metric to quantify predictive performance due its clear interpretability.
+However, for multimodal likelihood functions, this metric can be replaced with a scoring rule.
+
+S2.4   Posterior Log Probability
+
+For the Darcy Flow task, we additionally report the posterior log-probability of the true parameters
+[31], normalized by the number of pixels:
+                                                                1
+                         log-probability per pixel =                  log qlϕθ (θjo | xoj , ljx ).
+                                                               |ljθ |        j
+
+
+For the spectral methods NPE/FMPE (spectral), we cannot directly compute the posterior-log-
+probabilities, as we can only compute the posterior-log-probabilities of the first M modes of the
+spectral decomposition of the ground truth parameters θjo . However, by discarding the information
+of the higher modes, we remove the information which these baseline methods cannot capture, thus
+biasing the resulting log-probabilities in favor of these baselines.
+
+S3     FNOPE details
+S3.1   Bochner’s Theorem
+
+We state Bochner’s theorem following Williams and Rasmussen [22]. A complex-valued function k
+on Rd is the covariance function of a weakly stationary mean continuous complex-valued random
+process on RD if and only if it can be represented as
+                                            Z
+                                    k(τ ) =      exp2πif ·τ dµ(s)                          (5)
+                                                    RD
+
+for some positive finite measure µ. Crucially, in the less general but relevant case that µ admits a
+density P (f ), the integral is a Fourier transform between the kernel k(τ ) and the spectral density
+P (f ). We apply this result to relate the lengthscale of the square exponential kernel to the spectral
+density of its Fourier decomposition in Sec. 3.1.
+
+S3.2   Kernel lengthscale heuristic
+
+The spectral density of samples from a Gaussian Process with a square exponential kernel of
+lengthscale l is stated in Sec. 3.1 as
+                                 P (f ) = (2πl2 )dθ /2 exp(−2π 2 l2 f 2 ).
+This is also a Gaussian density, and trivially we see that the full spectral power is
+                                              Z
+                                        P̄ =       P (f )df = 1
+                                                    Rdθ
+
+We consider discretizations normalized to [0, 1] in each dimension, and so the power contained in the
+first M spectral modes, P̄M , corresponds to the above integral within the domain ||f ||∞ ≤ M/2, i.e.
+where all the components of f are within [−M/2, M/2]. Therefore P̄M simplifies to the product of
+the Gaussian integrals
+                                                                        !dθ
+                                   Z     M/2
+                           P̄M =                 (2πl2 )1/2 exp(−2π 2 l2 fi )dfi
+                                        −M/2
+                                                dθ
+                                             πlM
+                               =       erf    √
+                                                2
+                                           "      √ #!dθ
+                                               M 2
+                               =       erf               ,
+                                             M/2 + 1
+
+
+                                                          17
+                                                                                                 2
+where erf is the Gauss error function, and in the last line we substituted our heuristic l = π(M/2+1)  .
+This value saturates the error function and produces values very close to 1. For example, for the
+Darcy Flow example (dθ = 2), we set M = 32. The resulting spectral power in the first 32 modes is
+P̄32 ≈ 0.9997. While individual samples from the Gaussian process can result in discrete Fourier
+transforms where this spectral property is not fulfilled, it is clear that the majority of the spectral
+power will be contained in the first M modes for all samples.
+
+S3.3   Flexible discretization
+
+We provide further detail of the data augmentation scheme introduced in Sec. 3.2. First, we describe
+why this is necessary despite the use of the non-uniform fast fourier transform (NUDFT). The NUDFT
+is applied as a matrix multiplication., Θ = V (lθ )θ, where Θ is a vector containing the first M spectral
+components of θ, and V is the discretization-dependent transformation matrix. The inverse NUDFT is
+similarly implemented as a matrix multiplication θ = V̄ ⊤ (lθ )Θ, where V̄ ⊤ is the conjugate transpose
+of V . This approach enables the computational efficiency of the NUDFT, as the exact inverse matrix
+does not need to be computed at runtime. However, V̄ ⊤ is only an approximate inverse of V , with
+the approximation error increasing for increasing non-uniformity of the discretization.
+Consider the common case where the simulation dataset S (Sec. 3) provides parameters θi and
+observations xi always discretized on the same, uniform simulation domain. Without data aug-
+mentation, we always apply the NUDFT and its inverse without approximation error. However, if
+we wish to condition a posterior on xo measured at some non-uniform discretization lx , then the
+NUDFT and its inverse will produce some error, which was unseen during training. This could lead
+to unpredictable, out of distribution errors at evaluation time. By explicitly passing the positions
+lθ and lx to the network, as well as augmenting them to ensure the network is not always applied
+on uniform discretizations during training, we give FNOPE capacity to learn to counteract these
+approximation errors.
+
+Masking We define a uniform distribution over the binary mask vectors with a fixed num-
+ber of nonzero entries, Nds . Suppose we are given a simulation (θ, lθ , x, lx ), where θ, lθ con-
+sist of Nθ points, and x, lx consist of Nx points. We construct two random binary masks,
+Mθ ∈ {0, 1}Nθ , Mx ∈ {0, 1}Nx , each with exactly Nds nonzero entries. We then remove the cor-
+responding elements of θ, lθ where Mθ is zero, and similarly remove the corresponding elements
+of x, lx where Mx is zero. For a minibatch of simulations, we independently sample the masks
+Mθi , Mxi for each simulation. If Nds > Nθ or Nds > Nx , we leave the corresponding value and
+position vector unchanged. The value of Nds used in our work is reported for each experiment in
+Appendix S6.
+
+Positional noise We additionally add small, independent gaussian noise ϵi ∼ N (0, σ 2 ) to each
+point in lθ and lx in the unmasked positions. This reduces generalization error for simulation datasets
+where the discretization of θ and x is fixed. The value of σ 2 can be set according to the spacing of
+the discretization. In our experiments, we always normalize the simulation domain to [0, 1] in all
+dimensions, and set σ = 10−3 .
+
+S3.4   Fixed discretization
+
+For applications with uniform grids, we provide FNOPE (fix). Here, we use the FFT instead of
+the NUDFT in the FNO blocks to transform the data from physical to spectral space and back. In
+addition, we do not mask any parameters during training and do not add any positional noise. We
+expect this method to have improved performance on uniform grids as we do not introduce additional
+noise through the data augmentation process described above.
+Another potential advantage of FNOPE (fix) is its computational efficiency. Consider the case
+of a parameter discretized uniformly in a D-dimensional domain, with L points per dimension,
+leading to a total of LD points. The computational cost of computing the spectral decomposition
+of the parameters using the FFT is O(LD log LD ) = O(DLD log L). Assuming the maximum
+number of modes in each dimension modeled by the FNO is M , this leads to M D total modes to
+compute. Therefore, the computational cost of the frequency-limited NUDFT is O(M D LD ). For
+one-dimensional domains, the NUDFT may well be faster to compute than the FFT. However, for
+
+
+                                                   18
+higher dimensions, the NUDFT scales exponentially with both M and L. This discrepancy increases
+with both the dimensionality of the domain, and the number of modes M modeled by the FNO
+blocks.
+
+S3.5   Additional Parameters
+
+The näive extension of the FMPE objective as stated in Sec. 3.3 is to minimize the L2 loss ||v ϕ − ut ||2 ,
+where v ϕ = [vlϕθ , vηϕ ] and ut = [ut (ξt |θ), ut (zt |η)]. However, the scale of the loss for the continuous
+parameters, ||vlϕθ − ut (ξt |θ)||2 varies with the number of points in the discretization lθ , which we
+denote Nθ . To ensure that the loss is balanced for the function- and vector-valued parameters, we
+in practice add their L2 losses, normalized by their respective vector dimensionalities. That is, we
+minimize                                                                            
+                                 1                            1
+                            E      ||vlϕθ − ut (ξt |θ)||2 +     ||vηϕ − ut (zt |η)||2 ,
+                                Nθ                           Nη
+where Nη is the fixed dimensionality of η. The expectation is over the same random variables as for
+the statement of the loss L2 in Sec. 3.3.
+
+S4     Baseline Methods
+S4.1   Spectral preprocessing
+
+For spectral NPE/FMPE we first apply a Fourier transformation to the parameters, take the first
+M Fourier modes and expand these M complex values to a real vector of dimension 2M − 1
+representing the real and imaginary parts (the imaginary part of the first component is always 0, hence
+it is discarded). For two dimensional data, the same preprocessing results in 2M 2 − 1 parameters.
+After inferring the posterior of the parameters in Fourier space and sampling from it, we apply the
+inverse Fourier transform to get samples in the spatial domain.
+For the one dimensional problems (Linear Gaussian and Ice Shelf) we first pad the data by replicating
+the first/last value and perform a real FFT with torch.fft.rfft. We then use the first M fourier
+components and expand these complex numbers to a real tensor of dimension 2M , which we use as
+input to NPE/FMPE. For the Linear Gaussian and Ice Shelf we use M = 50, 10, respectively. We then
+revert this process for samples from the posterior with torch.fft.irfft with the corresponding
+settings.
+For the two dimensional Darcy flow, we use the two dimensional FFT implemented in pytorch on
+the padded data (in mode ‘replicate’). We then center the frequencies before cropping to the first M
+Fourier components in both dimensions, and expanding it to a real tensor of dimension 2M 2 . For
+posterior samples we again revert this process with the corresponding settings.
+
+S4.2   NPE (spectral)
+
+For NPE (spectral) we infer the posterior over the coefficients of the first M Fourier modes following
+the spectral preprocessing described above. We use NPE [3] with normalizing flows. We do not apply
+spectral preprocessing to the observations but pass raw observations through an embedding net as it
+is common practice in NPE.
+
+S4.3   NPE (raw)
+
+For the mass balance experiment (Sec. 4.5), we also compare to the approach of Moss et al. [39],
+which we refer to as NPE (raw). This approach infers the mass balance parameters on a fixed
+discretization of 50 gridpoints. The authors use a Neural Spline Flow with 5 transformations, two
+residual blocks of 50 hidden units each, ReLU nonlinearities and 10 bins. The embedding net used
+to embed the 441-dimensional observation is a CNN with two convolutional layers of kernel size 5,
+with ReLU activations and max pooling of kernel size 2. The convolutional layers are followed by
+two linear layers with 50 hidden units and output dimension 50. The same settings are used in the
+500-dimensional experiment (Appendix S7.4). Training is performed with a batch size of 200 and an
+Adam optimizer with learning rate of 0.0005.
+
+
+                                                     19
+S4.4   FMPE (spectral)
+
+As with NPE (spectral), in this approach we apply spectral preprocessing to the parameters, and
+infer the coefficients of the top M Fourier modes, but process the observations directly using an
+embedding net. We use MLPs to estimate the flows, as in Wildberger et al. [9], as implemented in the
+sbi toolbox [29]. This implementation also uses the rectified flow [18] objective for FMPE, and we
+use independent Gaussian noise as the noise distribution. The flow networks are conditioned on time
+by concatenating the time to the inputs.
+
+
+S4.5   FMPE (raw)
+
+In this approach, we infer the parameters directly on a fixed discretization of the domain. We again use
+embedding nets to encode the observations, and MLPs to learn the flows. As with FMPE (spectral),
+we use a rectified flow objective, and independent Gaussian noise as the noise distribution, as in the
+sbi toolbox. The flow networks are conditioned on time by concatenating the time to the inputs.
+
+
+S4.6   Simformer
+
+For the SIRD experiment, we apply Simformer with the same settings as in Gloeckler et al. [30]. That
+is, we use a transformer model with a token dimension of 50, 8 layers, and 4 heads. The widening
+factor is 3, and the training was performed with a batch size of 1000 and an Adam optimizer. We
+train Simformer to learn all conditionals, and so uniformly draw between the posterior, joint, and
+likelihood masks, as well as two random masks drawn from Bernoulli distributions with p = 0.3
+and p = 0.7 respectively. For both SIRD experiments, where we evaluate on 20 and 40 time points
+respective, we use the same Simformer model which is trained using 20 randomly sampled time
+points.
+
+
+S5     Simulators
+
+S5.1   Linear Gaussian model
+
+The Gaussian Simulator is inspired by Lueckmann et al. [31], but instead of a 10 dimensional
+Gaussian distribution with independent dimensions we expanded the problem to 1000 dimensions
+and use a Gaussian Process prior (see below). Draws from the simulator are still drawn independently
+per dimension as x ∼ N (θ, σ 2 I), where σ 2 = 0.1 (as in [31]).
+
+
+Prior The prior is defined as a Gaussian process GP on [0, 1] with an equidistant discretization
+with 1000 timepoints. A draw from the prior is therefore defined as θ ∼ GP(0, k(·, ·)), where k is the
+                                                  ′ 2
+squared exponential kernel, k(t, t′ ) = exp(− (t−t )
+                                                2l2 ). We set the lengthscale l = 0.05 and variance
+to 1. Only in the ablation experiments (Fig. S1a,b) we changed the lenghtscale l to 0.005.
+
+
+Evaluation parameters The results for Fig. 3 is based on 100 observations and 1000 posterior
+samples for each observation.
+
+
+S5.2   SIRD model
+
+Similar to Gloeckler et al. [30] we extend the SIRD (Susceptible, Infected, Recovered, Deceased)
+model to have a time-dependent contact rate. Compared to the classical SIR framework the model
+additionally incorporates a deceased (D) population. Similar models were explored by Chen et al.
+[33], Schmidt et al. [34]. This addition is important for modeling diseases with significant mortality
+rates. The SIRD model, including a time-dependent contact rate β(t), is defined by the following set
+
+
+                                                  20
+of differential equations:
+                                       dS
+                                           = −β(t)SI,
+                                        dt
+                                        dI
+                                           = β(t)SI − γI − µI,
+                                        dt
+                                       dR
+                                           = γI,
+                                        dt
+                                       dD
+                                           = µI.
+                                       dt
+
+Here, S, I, R and D are the susceptible, infected, recovered, and deceased population, β(t) is the
+time dependent contact rate, and γ and µ are the recovery and mortality rates among the infected
+population. We simulate on a dense uniform grid of 100 time points for parameters and observations.
+The simulations are additionally contaminated by an observation noise model, which is described by
+a log-normal distribution with mean S(t) and standard deviation σ = 0.05.
+
+Prior We impose the same prior as in Gloeckler et al. [30]: the global variables γ and µ are drawn
+from a uniform distribution, γ, µ ∼ Unif(0, 0.5). For the time-dependent contact rate we define a
+Gaussian process prior which is further transformed by a sigmoid function to ensure that β(t) ∈ [0, 1]
+                                                                                            ′ 2
+for all t. For the Gaussian process we use a RBF kernel k defined as k(t, t′ ) = exp(− ∥t−t  ∥
+                                                                                         2·72 ).
+
+Evaluation parameters MSE as well as SBC EoD is based on 100 observations with 1000 posterior
+samples each (Fig. 4c and Fig. S2c). To calculate the posterior predictive, we sample the initial
+condition I(0) from the Simformer prediction for both methods, as opposed to the prior defined
+above, to match the setting of Gloeckler et al. [30].
+
+S5.3   Darcy Flow
+
+Details for the Darcy model are already given in the main text. We additionally scale the log-
+permebility a by the scale factor of 1000 before taking the exponential - this results in permeabilities
+which produce sufficiently variable solutions using the Darcy flow simulator, and the permeabilities
+on the same scale as reported in Lim et al. [37]. The simulation output is additionally corrupted by an
+independent Gaussian observational noise per pixel ζi ∼ N (0, σi2 ). We set σi = E[u2i /30], where
+the expectation is per simulation batch, resulting in a signal to noise ratio (SNR) of 30.
+
+Evaluation Parameters All metrics are calculated over a test set of 10 observations (Fig. 5 b-d).
+For MSE and SBC EoD, 100 posterior samples were used for each observation and for each method.
+Finally, for SBC EoD, we use a subset of 50 pixels of the full 129 × 129 as the marginals used for
+the reducing functions. The same pixels were used across all methods and all observations.
+
+S5.4   Mass balance rates of Antarctic Ice Shelves
+
+We use the same simulator as described in Moss et al. [39]. This model takes in spatially varying
+surface accumulation rates ȧ(l), which are related to the basal melt rates ḃ(l) through the total balance
+condition ṁ(l) = ȧ(l) − ḃ(l). ṁ(l) is known and fixed across all simulations.
+The layer prediction model consists of a set of isochronal layer with prescribed thicknesses
+                                          PK
+{h1 (l), h2 (l), . . . , hK (l)} such that k=1 hk (l) = h(l), where h(l) is the known and fixed to-
+tal ice shelf thickness. At each time step, the thickness of the layers are simultaneously updated
+through an advection equation,
+                                           ∂hk
+                                                = −∇ · (hk u),
+                                            ∂t
+where u(l) is the known velocity profile of the ice shelf which is fixed across simulations. Additional
+layers are added at the top of the ice shelf and removed from the bottom according to ȧ(l), ḃ(l)
+accordingly. The noise model approximates the observation noise of the radar measurement given an
+assumed density profile of the ice shelf. At the final timestep T , the layer that most closely matches
+
+
+                                                    21
+the ground truth observation xo according to the L2 -norm is selected as the simulator output. Full
+details are described in Moss et al. [39].
+
+Prior The prior is defined over the accumulation rate parameter ȧ(l), and is motivated by physical
+observations at Ekström ice shelf. Prior samples are drawn using
+                                         ȧ(l) = σsc α̇ + µoff ,                                   (6)
+                           2
+where µoff ∼ N (0.5, 0.25 ), σsc ∼ U([0.1, 0.3]), and α̇ is drawn from a Gaussian Process with a
+unit-variance, zero-mean Matérn-ν kernel of lengthscale 2500 and ν = 2.5.
+
+Evaluation Parameters For SBC EoD, as well as the predictive MSE on synthetic test simulations,
+we use 100 test observations and sample 10 posterior samples for each observations and for each
+method. The real test data consists of one field observation (shown in Fig. 6a-b), and the posterior
+predictive was estimated using 1000 posterior samples.
+
+S6     Experimental details
+S6.1   Linear Gaussian
+
+For all the baseline methods, we train the networks using an Adam optimizer with a learning rate
+of 0.0001, and a batch size of 200. For NPE/FMPE (spectral), we use 50 modes, leading to 100
+parameters to learn, and a pad width of 20 for the spectral preprocessing (Appendix S4.1). For NPE
+(spectral) the density estimator is a Neural Spline Flow (NSF) with 2 residual blocks with 50 hidden
+dimensions each, 5 transforms, with RELU activations. For FMPE (spectral), we use an MLP with 5
+linear layers with 64 hidden dimensions to estimate the flow, with ELU activations. In both cases, we
+embed the 1000 dimensional observation into a 40-dimensional vector using an MLP with 2 layers
+and 50 hidden units and RELU activations. For FMPE (raw), we use an MLP with 5 layers and 64
+hidden features, with ELU activations.
+For FNOPE and FNOPE (fix) we use 50 Fourier modes for the FNO blocks. We use 5 FNO blocks
+with 16 channels, while the context is embedded into 8 channels. We train for a maximum of 500
+epochs with an early patience of 50. We used a training batch size of 512 and a learning rate of 0.001.
+For FNOPE, we use 4 channels each for the positional and time embeddings and the target gridsize
+Nds = 256 (for FNOPE (fix), no positional embedding is included). All nonlinearities are GELUs.
+
+S6.2   SIRD
+
+For FNOPE we use 32 Fourier modes for the FNO blocks. We use 5 FNO blocks with 16 channels,
+while the context is embedded into 8 channels. We train for a maximum of 1000 epochs with
+an early patience of 50. We use a training batch size of 200 and a learning rate of 0.001. The
+discretization positions and flow times are embedded into 4 channel dimensions each, and the target
+gridsize Nds = 40. This experiment additionally included vector-valued parameters in R2 . These are
+embedded into a 16-dimensional vector using a 1-layer MLP with a hidden dimension of 64. The flow
+for the vector-valued parameters is estimated using an 1-layer MLP with a hidden dimension of 64.
+The spectral decomposition of the output of the FNO blocks, as well as the spectral decomposition
+of the observation, are embedded into a 32-dimensional vector and concatenated to the input of the
+MLP. All nonlinearities were GELUs.
+The training hyperparameters for simformer are described in S4.6.
+
+S6.3   Darcy Flow
+
+For all the baseline methods, we train the network using an Adam optimizer with a learning rate
+of 0.0001, and a batch size of 200. For NPE/FMPE (spectral), we use 16 modes, leading to
+2 × 162 = 512 parameters to learn, and a pad width of 20 in each dimension for the spectral
+preprocessing (Appendix S4.1). For NPE (spectral) the density estimator is a NSF with 2 residual
+blocks with 50 hidden dimensions each, 5 transforms, with RELU activations. For FMPE (spectral),
+we use an MLP with 8 layers with 256 hidden dimensions to estimate the flow, with ELU activations.
+For FMPE (raw), we use an MLP with 8 layers and 256 hidden features, with ELU activations. All
+
+
+                                                   22
+baseline methods embed the observation with a CNN embedding net into a 100-dimensional vector
+using 4 convolutional layers with kernel size 5 followed by max pooling of kernel size 2, followed by
+a 4-layer MLP with 100 hidden units, with RELU nonlinearities throughout.
+For FNOPE and FNOPE (fix) we use 32 Fourier modes for the FNO blocks. The network is made
+of 5 FNO blocks with 32 channels, while the context is embedded into 32 channels. We train for
+a maximum of 300 epochs with an early patience of 50. We use a training batch size of 200 and a
+learning rate of 0.0005. For FNOPE, we set the target gridsize Nds = 2048. The architecture includes
+8 channels for positional embedding, and 8 channels for time embedding. All nonlinearities are
+GELUs.
+
+S6.4   Mass balance rates of Antarctic Ice Shelves
+
+For all the baseline methods, we train the network using an Adam optimizer with a learning rate
+of 0.0001, and a batch size of 200. For NPE/FMPE (spectral), we use 10 modes, leading to 20
+parameters to learn, and a pad width of 20 for the spectral preprocessing (Appendix S4.1). For NPE
+(spectral) the density estimator is a NSF with 2 residual blocks with 50 hidden dimensions each, 5
+transforms, with RELU activations. For FMPE (spectral), we use an MLP with 5 linear layers with 64
+hidden dimensions to estimate the flow, with ELU activations. For FMPE (raw), we use an MLP with
+5 layers and 64 hidden features, with ELU activations. For all baseline methods, we used the same
+embedding as Moss et al. [39], which was a CNN embedding the 441-dimensional observation into a
+50-dimensional vector using 2 convolutional layers with kernel size 5 followed by max pooling of
+kernel size 2, followed by a 2-layer MLP with 50 hidden units, with RELU nonlinearities throughout.
+The configuration of NPE (raw) is described in Appendix S4.3.
+For FNOPE we use 10 Fourier modes for the FNO blocks. The network is made of 5 FNO blocks
+with 16 channels, while the context is embedded into 8 channels. We train for a maximum of 1000
+epochs with an early patience of 50. We use a training batch size of 200 and a learning rate of 0.001.
+We do not include the data augmentation procedure for this experiment, as the discretizations of both
+observations and parameters was fixed to the setting of [39]. We still include positional embedding
+due to the parameter and observations being discretized differently to one another: the architecture
+included 4 channels for positional embedding, and 4 channels for time embedding. All nonlinearities
+are GELUs.
+For the experiments on 500 gridpoints (Fig. S5) we use the same hyperparameters.
+
+S7     Ablation experiments
+S7.1   Linear Gaussian
+
+To investigate the influence of different hyperparameters on the performance of FNOPE, we ran
+several ablation experiments. First, we studied the performance of FNOPE in the deliberately
+insufficient setting where the prior distribution over the parameter contains higher-frequency modes
+than what is modeled by the FNO blocks. To this end, we changed the lengthscale of the prior
+distribution for the Linear Gaussian task (Sec. 4.2) by a factor of 10 to 0.005, resulting in higher
+frequency components for the parameter θ. We then trained FNOPE with a varying number of spectral
+modes in the FNO blocks. With a lower number of modes, the performance of FNOPE degrades,
+and the posterior samples clearly miss the high frequency components present in the ground truth
+observations (Fig. S1a,b). Second, we varied the number of unmasked points in the FNOPE training
+procedure (Sec. 3.1). While the SWD decreases with the number of unmasked points, it saturates at
+512 unmasked points, which is approximately half of the observed data (Fig. S1c). We then consider
+changing the lengthscale heuristic used to define the base distribution for FNOPE (Sec. 3.1), by
+defining l = L0 /M for the number of modes M and some lengthscale scaling factor L0 . In the
+extreme case L0 = 0, this corresponds to the base distribution sampling uncorrelated white noise
+(WN). The lengthscale heuristic used in our work corresponds approximately to L0 = 4/π ≈ 1.27.
+In contrast to the other hyperparameter ablation experiments, varying the lengthscale scaling factor
+does not seem to impact the performance of FNOPE considerably for this task. FNOPE performs well
+over a wide range of lengthscale scaling factors (Fig. S1d). Finally, we consider a version of FNOPE
+which keeps the masking scheme as described in Sec. 3.1, but without adding positional noise to
+the remaining positions, which effectively only sees positions on the simulation grid during training
+
+
+                                                 23
+(FNOPE (no jitter)). On this task, we evaluate on an equispaced grid, and we see that FNOPE (no
+jitter) performs similarly to FNOPE (Fig. S1e). Therefore, the performance of FNOPE does not
+degrade from the inclusion of positional noise in this task.
+
+
+ a 1                                  b
+                                                   3               modes
+                                              10              8            128
+
+
+
+
+                                      Power
+ SWD
+
+
+
+                                                              16           256
+                                                   1          32           ground
+                                              10                            truth
+                                                              64
+       0
+             8 16 32 64 128 256                          1                    10                        100
+                  # modes                                                           Frequency
+ c                                    d                                             e
+  0.15                                        0.15                                      0.15
+ SWD
+
+
+
+
+  0.00                                        0.00                                      0.00
+                                                                                                    2      3       4         5
+            128       256 512 1000                     WN 0.1 1.0 10.0                         10        10     10      10
+                  # unmasked points                    Lengthscale Scaling Factor                       # simulations
+                                FNOPE                   FNOPE (fix)          FNOPE (no jitter)
+
+
+Figure S1: Linear Gaussian ablation experiments. (a) Performance for 104 training samples
+in terms of SWD for the Linear Gaussian experiments with varying number of Fourier modes in
+the FNO block. Note that we changed the lengthscale of the simulator prior by a factor of 10 to
+0.005 (Appendix S5. (b) Power analysis of FNOPE (fix) samples and ground truth x for different
+number of used modes in the FNO block. (c) Performance in terms of SWD for different numbers of
+masked points in FNOPE. (d) Influence of the lengthscale of the noise process on the SWD. “WN”
+corresponds to white noise (an uncorrelated Gaussian distribution). (e) Same as Fig. 3 with a version
+of FNOPE in which we omit the adding of positional noise (FNOPE (no jitter)).
+
+
+S7.2       SIRD
+
+First, we compare the performance of FNOPE to Simformer on the SIRD task when using observations
+at 20 (instead of 40) randomly sampled times (Fig. S2). The performance of FNOPE slightly degrades,
+while Simformer still performs robustly. Second, we adapt the lengthscale heuristic used to define the
+base distribution for FNOPE (Sec. 3.1), by defining l = L0 /M for the number of modes M and some
+lengthscale scaling factor L0 . The lengthscale heuristic used in our work corresponds approximately
+to L0 = 4/π ≈ 1.27. We observe that FNOPE performs robustly for a wide range of lengthscale
+scaling factors.
+
+S7.3       Darcy Flow
+
+In the Darcy task, we ablate the number of modes used in the FNO block for FNOPE. We see
+that while the MSE of posterior predictive simulation and posterior calibration as measured by
+the SBC EoD of marginal distributions is not strongly affected by the number of modes used, the
+posterior log-probability per pixel increases with the increased model capacity (Fig. S4a). This is
+expected, as more modes allow FNOPE to estimate a more constrained posterior distribution, leading
+to higher posterior densities. Second, we adapt the lengthscale heuristic used to define the base
+distribution for FNOPE (Sec. 3.1), by defining l = L0 /M for the number of modes M and some
+lengthscale scaling factor L0 . The lengthscale heuristic used in our work corresponds approximately
+to L0 = 4/π ≈ 1.27. We see that increasing the lengthscale scaling factor improves the calibration
+
+
+                                                             24
+                            a
+                                             1.0                                              0.4
+
+
+
+
+                              Contact rate
+
+
+
+
+                                                                                 Death rate
+                                                                                              0.2
+                                             0.0
+                                                   0     20        40                               0.2       0.4
+                                                       Time [days]                                  Recovery rate
+                            b                                                    c                  ×10 3
+                                             0.2                 FNOPE
+
+
+                              Infected
+                                                                 Simformer
+
+
+
+
+                                                                                 Pred. MSE
+                                                                 Data                          8
+                                             0.0
+                                             0.8                                               0
+                              Recovered
+
+
+
+
+                                             0.0                                              0.2          lower
+                                                                                                           bound
+
+
+
+
+                                                                                 SBC EoD
+                                             0.4
+                              Deceased
+
+
+
+
+                                             0.0                                              0.0
+                                                   0     20        40                                  3    4
+                                                                                                     10 10 10
+                                                                                                                5
+
+                                                       Time [days]                                   # simulations
+
+Figure S2: SIRD model on 20 conditioning points. (a) Posterior conditioned on 20 time points.
+left: Posterior (mean ± std.) of the time-varying parameter and ground truth parameters (dashed).
+right: Two dimensional posterior of vector-valued parameters and ground truth parameters (dot). (b)
+Posterior predictive (mean ± std.) of infected, recovered and deceased populations with observations
+marked. (c) upper: MSE of posterior predictive samples to observations. lower: Simulation-based
+calibration error of diagonal (SBC EoD). ‘Lower bound’ refers to the SBC EoD for uniformly sampled
+posterior ranks (details in Appendix S2). See Fig. 4 for the results with 40 conditioning points.
+
+
+                ×10 3                                                      0.2
+            8
+Pred. MSE
+
+
+
+
+                                                                 SBC EoD
+
+
+
+
+                                                                           0.1
+
+            0                                                              0.0
+                 0.1            1.0              10.0                            0.1                        1.0              10.0
+                        Lengthscale scaling factor                                                  Lengthscale scaling factor
+
+Figure S3: SIRD ablation experiments. Influence of the lengthscale of FNOPE’s base distribution
+(Sec. 3.1) on posterior quality in terms of MSE of posterior predictive simulations and Simulation-
+based calibration error of diagonal (SBC EoD).
+
+
+of the posterior learned with FNOPE. We observe that FNOPE achieves its best performance in terms
+of posterior log-probability when the base distribution lengthscale scaling factor is set to a value
+around our lengthscale heuristic (Fig. S4b).
+
+S7.4            Mass balance rates of Antarctic Ice Shelves
+
+We repeat the Antarctic ice mass balance experiment (Sec. 4.5), without downsampling the parameter
+space from simulation to inference, i.e. inferring the full 500-dimensional posterior distribution
+over the mass balance parameters. Overall, we observed that FNOPE maintains its performance
+on this higher-dimensional problem (Fig. S5). For low simulation budgets, the performance of
+
+
+                                                                25
+  a                  ×10 4
+                 4                                                  0.2
+
+
+
+
+                                                                                                                 Posterior log prob
+                                                                                                                                      1.5
+
+     Pred. MSE
+
+
+
+
+                                                          SBC EoD
+                 2                                                  0.1                                                               1.2
+                                                                                                                                      1.0
+                 0                                                  0.0
+                     16               24        32                          16                24        32                                  16             24         32
+                                   # modes                                                 # modes                                                      # modes
+  b
+                 4
+                     ×10 4                                          0.2
+
+
+
+
+                                                                                                                 Posterior log prob
+                                                                                                                                      2.0
+     Pred. MSE
+
+
+
+
+                                                          SBC EoD
+                 2                                                  0.1
+
+                                                                                                                                      1.0
+                 0                                                  0.0
+                     0.1      1.0       10.0                              0.1      1.0       10.0                                           0.1      1.0       10.0
+                     Lengthscale scaling factor                           Lengthscale scaling factor                                        Lengthscale scaling factor
+
+Figure S4: Darcy ablation experiments (a) Influence of number of used modes in the FNO block on
+different performance measures. The original experiments used 32 modes. Measures are the same as
+in Fig. 5b-d. (b) Influence of the noise length scale on different performance measures. The original
+experiments used a lengthscale of ≈ 1.27. Measures are the same as in Fig. 5b-d.
+
+
+FNOPE exceeds the other methods in terms of predictive MSE for both synthetic and real observations.
+As expected, spectral baseline methods significantly outperform the other baselines, especially at low
+simulation budgets.
+
+                                                                      0.2                      lower bound
+(synth. obs.)
+
+
+
+
+                 0.6                                                                                                                  0.6
+                                                                                                              (real obs.)
+Pred. MSE
+
+
+
+
+                                                                                                             Pred. MSE
+                                                            SBC EoD
+
+
+
+
+                 0.0                                                  0.0                                                             0.0
+                               3          4           5                               3          4           5                                     3          4           5
+                          10            10       10                              10            10       10                                    10            10       10
+                                   # simulations                                          # simulations                                                # simulations
+                                        FNOPE                       NPE (spectral)                   FMPE (spectral)                                   NPE (raw)
+
+Figure S5: Mass balance rates of ice shelves. Inference of mass balance rates where the parameter
+discretization uses 500 gridpoints (observation discretization remains unchanged). Performance
+measures on test simulations and the real observation, where NPE (raw) refers to the method used in
+Moss et al. [39]. Results for FMPE (raw) omitted as this baseline was not able to always produce
+samples within the prior bounds across all test observations. See Fig. 6 for the results based on 50
+grid points.
+
+
+
+
+                                                                                          26
+S8                Additional Results
+S8.1              Additional Darcy results
+
+
+                      1             2        3         4              5              6
+Ground truth
+FNOPE (fix)
+FNOPE
+NPE (spectral)
+FMPE (spectral)
+FMPE (raw)
+
+
+
+
+Figure S6: Posterior samples Darcy flow experiment. Additional posterior samples for the Darcy
+flow experiment for six distinct observations simulated from ground truth parameter θi .
+
+
+
+
+                                                 27
+                  1      2              3              4              5              6
+                                                                                                 1.8
+Ground truth
+
+
+
+
+                                                                                                 1.6
+FNOPE (fix)
+
+
+
+
+                                                                                                 1.4
+
+
+
+                                                                                                 1.2
+FNOPE
+
+
+
+
+                                                                                                 1.0
+NPE (spectral)
+
+
+
+
+                                                                                                 0.8
+FMPE (spectral)
+
+
+
+
+                                                                                                 0.6
+
+
+
+                                                                                                 0.4
+FMPE (raw)
+
+
+
+
+                                                                                                 0.2
+
+Figure S7: Posterior means for Darcy flow experiment. Posterior means (based on 100 samples)
+for the Darcy flow experiment for six distinct observations simulated from ground truth parameter θi .
+
+
+
+
+                                                 28
+                  1     2              3             4             5              6
+                                                                                             0.6
+FNOPE (fix)
+
+
+
+
+                                                                                             0.5
+FNOPE
+
+
+
+
+                                                                                             0.4
+NPE (spectral)
+
+
+
+
+                                                                                             0.3
+FMPE (spectral)
+
+
+
+
+                                                                                             0.2
+
+
+
+                                                                                             0.1
+FMPE (raw)
+
+
+
+
+                                                                                             0.0
+
+Figure S8: Posterior standard deviation for Darcy flow experiment. Posterior standard deviations
+(based on 100 samples) for the Darcy flow experiment for six distinct observations simulated from
+ground truth parameter θi .
+
+
+
+
+                                               29
+S8.2   Comparison to invertible Fourier Neural Operator
+
+As an additional comparison, we apply the work of Long et al. [50] and train an invertible Fourier
+Neural Operator (iFNO) to solve the Darcy Flow inverse problem, using the same training data and
+simulation budgets. We train the iFNO with the same settings as described in Long et al. [50] for
+the D-CURV experiment, summarized below. We observe that while iFNO achieves a comparable
+performance to FNOPE in terms of its predictive MSE, the posterior distribution is not calibrated
+as measured by the SBC EoD (Fig. S9a,b) and essentially collapsed to a point estimate. The SBC
+EoD value measured for iFNO (around 0.25) is consistent with this point estimate, because the
+one-dimensional marginal of a point mass distribution either always overestimates or underestimates
+the ground truth value. Hence, recalling the definition of SBC EoD (Sec. S2.2), the ground truth
+will have rank rij = 1 or rij = Kpost + 1. Supposing that over different observations xoj , the point
+mass distribution is equally likely to underestimate or overestimate the ground truth, the cumulative
+distribution of the ranks will be given by CDFi (α) = 0.5 for all significance levels α ∈ (0, 1). Given
+the definition of the SBC EoD, a point mass distribution results in a SBC EoD value of
+                                     Z 1
+                                         |CDFi (α) − α|dα = 0.25                                     (7)
+                                     0
+
+for each dimension i. This overconfidence is also reflected in the standard deviations of the estimated
+distributions (Fig. S9c), which show that iFNO essentially estimates a point mass for this task.
+
+iFNO hyperparameters We trained iFNO with 4 FNO blocks and 16 Fourier modes. The number
+of training epochs for the invertible Fourier blocks was set to 100, for the β-VAE 1000, and for joint
+training 100. The architecture of the β-VAE was the same as in Long et al. [50] with rank 32, as well
+as the value β = 10−6 . We used a minibatch size of 10 for joint training and 20 for the VAE and
+iFNO pretraining.
+
+a                                    c
+
+
+
+
+b
+
+
+
+
+Figure S9: Darcy Flow, comparison of FNOPE to iFNO [50]. (a) MSE of posterior predictives to
+the ground truth observation (zoomed in relative to Fig. 5). (b) Simulation-based calibration Error of
+Diagonal (SBC EoD) for different training budgets. (c) Ground truth θ, Posterior means, pixelwise
+error of means relative to ground truth, and posterior standard deviations. The color bars of the means
+match Fig. S7, and for errors and standard deviations they match Fig. S8.
+
+
+
+
+                                                  30
+

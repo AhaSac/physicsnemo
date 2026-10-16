@@ -1,0 +1,1719 @@
+                                               Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+
+                                                            Haixu Wu 1 Huakun Luo 1 Haowen Wang 1 Jianmin Wang 1 Mingsheng Long 1
+
+
+                                                                   Abstract                                    even days for complex structures (Umetani & Bickel, 2018).
+                                               Transformers have empowered many milestones                     Recently, deep models have emerged as promising tools for
+                                               across various fields and have recently been ap-                solving PDEs (Lu et al., 2021; Li et al., 2021). Benefiting
+                                               plied to solve partial differential equations (PDEs).           from their impressive non-linear modeling capacity, they
+arXiv:2402.02366v2 [cs.LG] 1 Jun 2024
+
+
+
+
+                                               However, since PDEs are typically discretized                   can learn to approximate the input and output mappings of
+                                               into large-scale meshes with complex geometries,                PDE-governed tasks from data during training and then infer
+                                               it is challenging for Transformers to capture intri-            the solution significantly faster than numerical methods at
+                                               cate physical correlations directly from massive                the inference phase (Goswami et al., 2022; Wu et al., 2023).
+                                               individual points. Going beyond superficial and                 As the major backbone of foundation models, Transformers
+                                               unwieldy meshes, we present Transolver based on                 (Vaswani et al., 2017) have achieved remarkable processes
+                                               a more foundational idea, which is learning intrin-             in extensive areas (Devlin et al., 2019; Brown et al., 2020;
+                                               sic physical states hidden behind discretized ge-               Dosovitskiy et al., 2021; Liu et al., 2021), which have also
+                                               ometries. Specifically, we propose a new Physics-               been introduced in PDE solving (Li et al., 2023c). However,
+                                               Attention to adaptively split the discretized do-               as PDEs are usually discretized into large-scale meshes with
+                                               main into a series of learnable slices of flexible              complex geometrics for precise simulation, directly apply-
+                                               shapes, where mesh points under similar physical                ing Transformers to massive mesh points faces difficulties
+                                               states will be ascribed to the same slice. By calcu-            in both computational efficiency and relation learning (Liu
+                                               lating attention to physics-aware tokens encoded                et al., 2021; Katharopoulos et al., 2020b), impeding them
+                                               from slices, Transovler can effectively capture                 from being ideal PDE solvers. For instance, to calculate the
+                                               intricate physical correlations under complex ge-               drag force of a driving car (Figure 1), the model needs to
+                                               ometrics, which also empowers the solver with                   approximate the solution of Navier-Stokes equations, includ-
+                                               endogenetic geometry-general modeling capacity                  ing estimating the pressure for surface meshes and velocity
+                                               and can be efficiently computed in linear complex-              for surrounding volumes, which poses the following two
+                                               ity. Transolver achieves consistent state-of-the-art            challenges. First, this problem involves collaborative mod-
+                                               with 22% relative gain across six standard bench-               eling of tens of thousands of irregularly placed mesh points,
+                                               marks and also excels in large-scale industrial sim-            which is computationally prohibited for canonical atten-
+                                               ulations, including car and airfoil designs. Code is            tion due to its quadratic complexity. Second, PDEs involve
+                                               available at https://github.com/thuml/Transolver.               extremely complex spatiotemporal interactions among mul-
+                                                                                                               tiple physics quantities. It is hard to capture these high-order
+                                                                                                               and intricate correlations directly from massive individual
+                                        1. Introduction                                                        points. Thus, how to efficiently capture physical correlations
+                                                                                                               underlying the discretized domain is the key to “transform”
+                                        Solving partial differential equations (PDEs) is of immense
+                                                                                                               Transformers into practical PDE solvers.
+                                        importance in extensive real-world applications, such as
+                                        weather forecasting, industrial design, and material analysis          Previous methods attempt to tackle the complexity problem
+                                        (Roubı́ček, 2013). As a basic scientific problem, it is usually       by introducing linear attention (Hao et al., 2023; Tran et al.,
+                                        hard to obtain analytic solutions for PDEs. Thus, PDEs are             2023), but directly applying the attention to massive mesh
+                                        typically discretized into meshes and then solved by numer-            points may overwhelm the model from learning informative
+                                        ical methods in practice, which usually takes a few hours or           relations (Wu et al., 2022). In addition, solely relying on
+                                           1                                                                   features of individual points is also insufficient in captur-
+                                            School of Software, BNRist, Tsinghua University.
+                                        Haixu Wu <wuhx23@mails.tsinghua.edu.cn>. Correspondence                ing intricate physical correlations of PDEs (Trockman &
+                                        to: Mingsheng Long <mingsheng@tsinghua.edu.cn>.                        Kolter, 2022), especially for industrial design, which usu-
+                                                                                                               ally involves extremely complex multiphysics interactions.
+                                        Proceedings of the 41 st International Conference on Machine           Besides, although the patchify operation is widely adopted
+                                        Learning, Vienna, Austria. PMLR 235, 2024. Copyright 2024 by           to augment the feature of a single pixel with local informa-
+                                        the author(s).
+
+                                                                                                           1
+                                                                                       Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+
+
+                                                                                                 2023/12/18 15:07                                               .
+
+
+
+
+                                                                                       …                                                               …                                                       …
+2023/12/18 16:09                                             pv_velo.html
+
+
+
+
+                                                   (a) Slices for Darcy, 2D Regular Grid                            (b) Slices for Elasticity, 2D Point Cloud                (c) Slices for Airfoil, 2D Mesh
+
+
+
+
+                                                                                                                            …                                                                                      …
+                                                   (d) Slices for Shape-Net Car Surrounding Velocity, 3D Volumes                                  (e) Slices for Shape-Net Car Surface Pressure, 3D Mesh
+
+                                             Figure 1. Visualization of learned slices in Transolver. For each case, the leftmost subfigure is model input and the right shows learned
+                                             slices. A brighter color indicates the mesh point is more ascribed to the corresponding slice. See Appendix D for more visualizations.
+
+                                             tion in Vision Transformers (Dosovitskiy et al., 2021; Liu                                                     excels in large-scale industrial simulations (e.g. car
+                                             et al., 2021), the regular shape of patches is not applicable                                                  and airfoil designs), presenting favorable efficiency,
+                                             to unstructured geometries, let alone captures complicated                                                     scalability and out-of-distribution generalizability.
+                                             physical states hidden under various discretized meshes.
+                                             Seeing through superficial and unwieldy meshes, this pa-                                                2. Related Work
+                                             per presents Transolver based on a more foundational idea,
+ﬁle:///Users/thuml/Desktop/ICML2024/pv_velo.html                                 1/2
+
+
+
+                                                                                                                                                     2.1. Neural PDE Solvers
+                                             which is learning intrinsic physical states under complex
+                                             geometrics. We present the Physics-Attention to decom-                                                  As a long-standing foundational problem in science and
+                                             pose the discretized domain into a series of learnable slices,                                          engineering, solving PDEs has gained significant attention.
+                                             where mesh points under similar physical states will be                                                 In the past centuries, various classical numerical methods,
+                                             ascribed to the same slice and then encoded into a physics-                                             such as finite element method and spectral methods, have
+                                             aware token. By applying attention to these learned physics-                                            been proposed and widely used in practical applications
+                                             aware tokens, Physics-Attention can effectively capture                                                 (Wazwaz, 2002; Ŝolı́n, 2005). Recently, in view of the
+                                             complex underlying interactions behind the discretized do-                                              remarkable non-linear modeling capacity, deep models have
+                                             main. As shown in Figure 1, the learned slices clearly reflect                                          also been introduced for solving PDEs as a fast surrogate
+                                             miscellaneous physical states of PDEs, such as various fluid-                                           (Karniadakis et al., 2021; Wang et al., 2023), which can be
+                                             structure interactions in a Darcy flow, different extrusion
+                                                                                                   :///    /        /D   /IC L2024/ .                roughly categorized into the following two paradigms.
+                                                                                                                                                                                                1/2
+
+
+                                             regions of elastic materials, shock wave and wake flow
+                                             around the airfoil, front-back surfaces and up-bottom spaces                                            Physics-informed neural networks This paradigm for-
+                                             of driving cars. This design can also natively adapt to intri-                                          malizes PDE constraints, including equations, initial and
+                                             cate geometries and be effectively computed in linear time.                                             boundary conditions as objective functions of deep mod-
+                                             We conduct extensive experiments on six well-established                                                els (Weinan & Yu, 2017; Raissi et al., 2019; Wang et al.,
+                                             benchmarks with various geometries and large-scale indus-                                               2020a;b). During training, the output of deep models will
+                                             trial simulations, where Transolver achieves consistent state-                                          gradually satisfy PDE constraints, which can successfully
+                                             of-the-art with impressive relative gain. Overall, our contri-                                          approximate the PDE solution. However, this paradigm
+                                             butions are summarized as follows:                                                                      requires the exact formalization of PDEs, thus usually hard
+                                                                                                                                                     to apply to partially observed real-world applications.
+                                                      • Beyond prior methods, we propose to solve PDEs by
+                                                        learning intrinsic physical states behind the discretized                                    Neural operators Another paradigm is to learn neural
+                                                        domain, which frees our model from complex meshes                                            operators to approximate the input-output mappings in PDE-
+                                                        and allows it to focus more on physical interactions.                                        governed tasks, such as predicting the future fluid based
+                                                                                                                                                     on past observations or estimating the inner stress of solid
+                                                      • We present Transolver with Physics-Attention to de-                                          materials (Lu et al., 2021; Kovachki et al., 2023). The most
+                                                        compose discretized domain into a series of learnable                                        well-established models are FNO (Li et al., 2021) and its
+                                                        slices and apply attention to encoded physics-aware                                          variants. Li et al. (2021) proposed Fourier neural operators
+                                                        tokens, which can be computed in linear complexity.                                          by approximating integration with linear projection in the
+                                                                                                                                                     Fourier domain. Afterward, U-NO (Rahman et al., 2023)
+                                                      • Transolver achieves consistent state-of-the-art with                                         and U-FNO (Wen et al., 2022) are presented by plugging the
+                                                        22% relative gain across six standard benchmarks and                                         FNO with U-Net (Ronneberger et al., 2015) for multiscale
+
+                                                                                                                                                 2
+                           Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+modeling. Besides, WMT (Gupta et al., 2021) introduces               3. Method
+multiscale wavelet bases to capture the complex correlations
+at various scales. F-FNO (Tran et al., 2023) enhances model          To tackle difficulties in efficiency and correlation model-
+efficiency by employing factorization on the Fourier domain.         ing, we present Transolver with Physics-Attention to learn
+LSM (Wu et al., 2023) is recently proposed to tackle the             high-level correlations among intrinsic physical states under
+high-dimension complexity of PDEs by applying spectral               discretized meshes in PDE-governed tasks. Different from
+methods (Gottlieb & Orszag, 1977) in learned latent space.           learning low-level relations over mesh points, focusing on
+                                                                     physical states will free our model from complex geometrics,
+To tackle irregular meshes, GNO (Li et al., 2020b) employs           benefiting physics solving and computation efficiency.
+graph neural operators, and geo-FNO (Li et al., 2023b)
+utilizes the geometric Fourier transform to project the ir-          Problem setup Consider PDEs defined on input domain
+regular input domain into uniform latent mesh. Recently,             Ω ⊂ RCg , where Cg denotes the dimension of input space.
+GINO (Li et al., 2023a) combines GNO and geo-FNO for                 For numerical calculation, Ω is firstly discretized into a finite
+local and global simultaneous modeling. 3D-GeoCA (Deng               set of N mesh points g ∈ RN ×Cg . The task is to estimate
+et al., 2024) enhances GNO by incorporating pre-trained 3D           target physical quantities based on input geometrics g and
+vision backbones (Xue et al., 2023) as better model initial-         quantities u ∈ RN ×Cu observed on g. Here u is optional in
+izations. However, due to the periodic boundary assumption           some PDE-governed tasks. For instance, for fluid prediction,
+of Fourier bases (Gottlieb & Orszag, 1977), geo-FNO will             the input includes both the observation grid and observed
+degenerate seriously in complex meshes, e.g. a car shape.            past fluid velocity, where the target is the future velocity on
+Graph kernels also fall short in learning global information.        each grid point. As for car or airfoil designs, the input only
+Especially, Transformers (Vaswani et al., 2017), as a vi-            contains the discretized mesh structure and the model needs
+tal cornerstone of deep learning, have also been applied to          to estimate the surface and surrounding physics quantities.
+solve PDEs. HT-Net (Liu et al., 2022) integrates Swin Trans-
+former (Liu et al., 2021) and multigrid method (Wesseling,           3.1. Learning Physics-Aware Tokens
+1995) to capture the multiscale spatial correlations. Fact-          As we discussed before, the key to solving PDEs is to cap-
+Former (Li et al., 2023d) utilizes the low-rank structure to         ture intricate physical correlations. However, the numerous
+boost the model efficiency with multidimensional factorized          discretized mesh points may overwhelm the attention mech-
+attention. However, these methods assume that PDEs are               anism from learning reliable correlations. Seeing through
+discretized into a uniform grid, limiting their applications         superficial meshes, we find that these mesh points are a fi-
+in unstructured meshes. Besides, to address the quadratic            nite discrete sampling of the underlying continuous physics
+complexity of attention, OFormer (Li et al., 2023c), GNOT            space, which inspires us to learn the intrinsic physical states.
+(Hao et al., 2023) and ONO (Xiao et al., 2024) utilize the           As shown in Figure 2, which is to estimate the surface pres-
+well-established linear Transformers, such as Reformer (Ki-          sure of a driving car, we notice that the surface mesh set can
+taev et al., 2020), Performer (Choromanski et al., 2021b)            be ascribed to several physically internal-consistent subsets,
+and Galerkin Transformer (Cao, 2021). Still, all of these            such as front, bevel and back areas. This discovery provides
+methods directly apply attention to massive mesh points. In
+                                         2023/12/18 15:07            a more foundational view for solving PDE-governed tasks.
+                                                                                    .
+
+
+contrast, Transolver applies attention to intrinsic physical
+states captured by learnable slices, thereby better adept at                                                                     Token 2
+                                                                     (a) Discretized Domain       (b) Physics Domain
+                                                                                                                       Token 1             Token M
+modeling intricate physical correlations.                                                                                                  …
+                                                                        Back
+                                                                                  Bevel
+2.2. Geometric Deep Learning
+                                                                                          Front
+
+A series of techniques have been developed to handle irreg-
+                                                                                                                                                 …
+ular geometrics, named geometric deep learning (Bronstein                                             Slice 1               Slice 2                  Slice M
+et al., 2017). Graph neural networks are representative ones,
+which employ kernels on connected graphs for representa-             Figure 2. Learning physics-aware tokens from Transolver slices.
+tion learning (Hamilton et al., 2017; Gao & Ji, 2019; Pfaff
+et al., 2021). Besides, PointNet (Qi et al., 2017) and Point         Technically, given a mesh set g = {gi }N
+                                                                                                            i=1 with the coordi-
+Transformer (Zhao et al., 2021) are also presented for scatter       nate information of N mesh points and observed quantities
+point clouds. However, most of these methods are proposed            u, we firstly embed them into deep features x = {xi }N   i=1
+for computer vision or graphics, which are different from the        by a linear layer, where each mesh point feature contains
+PDE-solving task in this paper. Besides, all of these methods        C channels, i.e. xi ∈ R1×C , and involves both geometry
+are well-designed for complex geometrics, while Transolver,          and physics information. To capture physical states under
+benefiting from learning physical-sensitive slices, is apt at        the whole input domain, we propose a bottom-up paradigm,
+capturing physics information underlying unwieldy meshes.            that ascribes each mesh point gi to M potential slices based
+
+                                                                 3
+                             Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+                                                                    Physics-aware Token
+          +                                                         Aggregate & Broadcast
+                                                                                                              NxM
+                               Linear
+         Feed-
+        Forward
+                               Deslice
+       LayerNorm                    Broadcast
+
+                               Attention         Slice                                                   Attention
+          +                   for Tokens        Weights
+                                                                                                        for Tokens
+                                    Aggregate
+       Physics-
+                                Slice
+       Attention
+                                                              NxC                                                                            NxC
+                                                      Heads
+                               Linear
+       LayerNorm                                                                            MxC        MxC
+
+                                                                                   M x (N x C)                       M x (N x C)
+
+
+Figure 3. Overall design of Transolver layer, which replaces the standard attention with Physics-Attention. Each head encodes the input
+domain into a series of physics-aware tokens and then captures physical correlations under intricate geometrics by attention among tokens.
+
+on its learned feature xi , which is formalized as follows:                          the slice weights will be further optimized to assign mesh
+                                                N                                   points under similar physical states to the same slice during
+         {wi }N
+                     
+              i=1 = Softmax Project (xi )         i=1                                training. Otherwise, the attention among tokens could be
+                                                          (1)
+                               N
+               sj = {wi,j xi }i=1 ,                                                  confused by the less distinguishable and state-hybrid token
+                                                                                     features, resulting in a less satisfying performance.
+where Project() projects C channels into M weights and                               Remark 3.2 (Learning slice is different from splitting com-
+yields slice weights wi ∈ R1×M after Softmax(). Specif-                              putation area). Classical numerical methods, such as finite
+ically, wi,j represents the degree that the i-th mesh point                          element method, usually split the whole mesh into several
+                                PM
+belongs to the j-th slices with j=1 wi,j = 1. sj ∈ RN ×C                             computation areas for better simulation. This process re-
+represents the j-th slice feature, which is a weighted combi-                        quires huge specialized knowledge and manual effort (Ŝolı́n,
+nation of N mesh point features x. Note that mesh points                             2005) and can only cover spatially local areas. It is insuf-
+with close features will derive similar slice weights, which                         ficient to capture points under similar physical states but
+means they are more likely to be assigned to the same slice.                         spatially distant, e.g. windshield and license plate of driving
+To avoid a uniform assignment of each mesh point, we                                 cars. In this paper, we take benefits from deep features and
+adopt Softmax() along the slice dimension (i.e. newly pro-                           learn physical states in a bottom-up paradigm. The learned
+jected M dimension) to make learned slice weights low-                               slices are beyond local areas. As shown in Figure 1(e), the
+entropy and ensure informative physical states. In practice,                         model learns to ascribe the windshield, license plate and
+Project() is configured as a point-wise linear layer, which                          headlight of the car into the same slice because they are all
+can naturally adapt to general geometries. As for structured                         in the front area during driving, which is highly related to
+meshes or uniform grid, it can also be instantiated as a local                       the drag force, verifying the effectiveness of learning slices.
+convolution, mesh-free layer for better representations.
+Afterward, since each slice contains mesh points with simi-                          3.2. Transolver
+lar geometry and physics features, we further encode them                            Based on the idea of learning physics-aware tokens, we pro-
+into physical-aware tokens by spatially weighted aggrega-                            pose the Transolver by renovating Transformer with Physics-
+tion, which can be written as follows:                                               Attention to capture intricate physical correlations of PDEs.
+                  PN              PN
+                     i=1 sj,i          wi,j xi                                       Physics-Attention As described in the last section, for a
+            zj = P N          = Pi=1 N
+                                               ,        (2)
+                    i=1 wi,j         i=1 wi,j
+                                                                                     deep feature x ∈ RN ×C embedded from input, we firstly
+                                                                                     decompose it into M physically internal-consistent slices
+where zj ∈ R1×C . We normalize each token feature zj                                 s = {sj }M       M ×(N ×C)
+                                                                                              j=1 ∈ R             based on learned slice weights
+by dividing the sum of slice weights. After encoding from                            w∈R    N ×M
+                                                                                                 . Then, to obtain the specific physics informa-
+physically internal-consistent slices by spatial aggregation,                        tion contained in each slice, we aggregate M slices to M
+each token contains information of a specific physical state.                        physics-aware tokens z = {zj }M         M ×C
+                                                                                                                     j=1 ∈ R       by Eq. (2).
+Remark 3.1 (Why slices can learn physically internal-con-
+                                                                                     Next, as shown in Figure 3, we employ the attention mecha-
+sistent information). Firstly, as we aforementioned, slice
+                                                                                     nism among encoded tokens to capture intricate correlations
+weights are projected from mesh features. Thus, mesh points
+                                                                                     among different physical states, that is
+with similar features will be more likely to be assigned to
+                                                                                                                               T
+the same slice. Secondly, since we will apply attention to                                                                      qk
+the tokens encoded from slices, to decrease the final loss,                             q, k, v = Linear(z), z′ = Softmax √            v, (3)
+                                                                                                                                  C
+
+                                                                               4
+                             Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+where q, k, v, z′ ∈ RM ×C . Afterward, transited physical            which is embedded from input geometries g ∈ RN ×Cg and
+tokens z′ = {z′j }M
+                  j=1 are transformed back to mesh points            initial observation u ∈ RN ×Cu by a linear embedding layer,
+by deslicing, which recomposes tokens with slice weights:            i.e. x0 = Linear (Concat(g, u)). Here Cg is the dimen-
+                                                                     sion of geometry space and Cu is the number of observed
+                             M
+                             X                                       physical quantities. At last, we adopt a linear projection
+                     x′i =         wi,j z′j ,             (4)        upon xL and obtain the final output as predictions of u.
+                             j=1
+
+where 1 ≤ i ≤ N and each token z′j is broadcasted to all             4. Experiments
+mesh points during above calculation. For clarity, we sum-
+marize the above process as x′ = Physics-Attn(x), whose              We conduct extensive experiments to evaluate Transolver, in-
+overall complexity is O(N M C + M 2 C). Since we set M               cluding six well-established benchmarks and two industrial-
+as a constant and M ≪ N , the computation complexity                 level design tasks, covering various geometrics.
+is linear w.r.t. the number of mesh points. Following the
+                                                                     Benchmarks As presented in Table 1, our experiments
+convention of attention mechanism (Vaswani et al., 2017),
+                                                                     span point cloud, structured mesh, regular grid and unstruc-
+we adopt the multi-head version for Physics-Attention to
+                                                                     tured mesh in both 2D and 3D space. Elasticity, Plasticity,
+augment the model capacity, which splits the input feature
+                                                                     Airfoil, Pipe, Navier-Stokes and Darcy were proposed by
+into several subspaces along the channel dimension.
+                                                                     FNO (Li et al., 2021) and geo-FNO (Li et al., 2022), which
+Remark 3.3 (Attention as learnable integral operator).               have been widely followed. Besides, we also experiment
+Prior methods define the PDE-solving task as an iterative            with car and airfoil design tasks. Shape-Net Car (Umetani
+updated process (Li et al., 2020b) and prove that canonical          & Bickel, 2018) is to estimate the surface pressure and
+attention is a Monte-Carlo approximation of the integral             surrounding air velocity given vehicle shapes. AirfRANS
+operator on the input domain Ω (Cao, 2021; Kovachki et al.,          (Bonnet et al., 2022) contains high-fidelity simulation data
+2023), which can be used to approximate the solving process          for Reynolds-Averaged Navier–Stokes equations on airfoils
+of each iteration step. However, in our work, the attention is       from the National Advisory Committee for Aeronautics.
+applied to tokens encoded from slices. Toward a better the-
+oretical understanding of Physics-Attention, we will prove           Table 1. Summary of experiment benchmarks, which includes var-
+that our design is also equivalent to learnable integral on Ω.       ious geometrics. #Mesh records the size of discretized meshes.
+Theorem 3.4 (Physics-Attention is equivalent to learn-                 G EOMETRY           B ENCHMARKS          #D IM     #M ESH
+able integral on Ω). Given input function u : Ω → RC and
+                                                                       P OINT C LOUD        E LASTICITY          2D         972
+a mesh point g∗ ∈ Ω, Physics-Attention is to approximate
+the integral operator G, which is defined as:                          S TRUCTURED          P LASTICITY       2D+T IME     3,131
+                                                                       M ESH                  A IRFOIL          2D        11,271
+                                                                                                P IPE           2D        16,641
+                          Z
+             G(u)(g∗ ) =     κ(g∗ , ξ)u(ξ)dξ,         (5)
+                              Ω                                                           NAVIER –S TOKES     2D+T IME     4,096
+                                                                       R EGULAR G RID
+                                                                                              DARCY             2D         7,225
+where κ(·, ·) denotes the kernel function defined on Ω × Ω.            U NSTRUCTURED      S HAPE -N ET C AR      3D       32,186
+                                                                       M ESH                 A IRF RANS          2D       32,000
+Proof. By constructing a diffeomorphism projection be-
+tween mesh domain Ω and slice domain Ωs , and substituting           Baselines We comprehensively compare Transolver with
+integration variable from ξ ∈ Ω to ξ s ∈ Ωs , we can rewrite         more than 20 baselines, including typical neural operators:
+Eq. (5) as an integral on Ωs , which is approximated by at-          FNO (2021), U-NO (2023), LSM (2023), etc, Transformer
+tention in Eq. (3). See Appendix A for complete proof.               PDE solvers: GNOT (2023), FactFormer (2023d), etc, and
+                                                                     classical geometric deep models: PointNet (2017), Graph-
+Overall design Following the architecture of canonical               SAGE (2017), MeshGraphNet (2021), etc. LSM (Wu et al.,
+Transformer (Vaswani et al., 2017), we propose the Tran-             2023) and GNOT (Hao et al., 2023) are previous state-of-
+solver by replacing the attention mechanism with Physics-            the-art on standard benchmarks. GINO (Li et al., 2023a) and
+Attention. Suppose there are L layers, as shown in Figure 3,         3D-GeoCA (Deng et al., 2024) are advanced deep models
+the l-th layer of Transolver can be formalized as follows:           for large-scale industrial-level simulation benchmarks.
+   x̂l = Physics-Attn LayerNorm xl−1 + xl−1
+                                            
+                                                                     Implementations For fairness, we set the number of lay-
+                                                         (6)
+   xl = FeedForward LayerNorm x̂l + x̂l ,                            ers L as 8 and the channel of hidden features C as 128 or
+                                         
+                                                                     256 according to the number of observed quantities of input
+where l ∈ {1, · · · , L}. xl ∈ RN ×C is the output of the            data, which ensures that our model parameter is compa-
+l-th layer. x0 ∈ RN ×C represents the input deep feature,            rable to other Transformer-based models, such as GNOT
+
+                                                                 5
+                              Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+
+Table 2. Performance comparison on standard benchmarks. Relative L2 is recorded. A smaller value indicates better performance. For
+clarity, the best result is in bold and the second best is underlined. Promotion refers to the relative error reduction w.r.t. the second best
+                   Our error
+model (1 − The second   best error
+                                   ) on each benchmark. “/” means that the baseline cannot apply to this benchmark.
+
+                                            P OINT C LOUD                               S TRUCTURED M ESH                                         R EGULAR G RID
+  M ODEL
+                                             E LASTICITY        P LASTICITY                             A IRFOIL         P IPE          NAVIER –S TOKES            DARCY
+  FNO (L I ET AL ., 2021)                          /                       /                               /               /                     0.1556            0.0108
+  WMT (G UPTA ET AL ., 2021)                    0.0359                  0.0076                          0.0075          0.0077                   0.1541            0.0082
+  U-FNO (W EN ET AL ., 2022)                    0.0239                  0.0039                          0.0269          0.0056                   0.2231            0.0183
+  GEO -FNO (L I ET AL ., 2022)                  0.0229                  0.0074                          0.0138          0.0067                   0.1556            0.0108
+  U-NO (R AHMAN ET AL ., 2023)                  0.0258                  0.0034                          0.0078          0.0100                   0.1713            0.0113
+  F-FNO (T RAN ET AL ., 2023)                   0.0263                  0.0047                          0.0078          0.0070                   0.2322            0.0077
+  LSM (W U ET AL ., 2023)                       0.0218                  0.0025                          0.0059          0.0050                   0.1535            0.0065
+  G ALERKIN (C AO , 2021)                       0.0240                  0.0120                          0.0118          0.0098                   0.1401            0.0084
+  HT-N ET (L IU ET AL ., 2022)                     /                    0.0333                          0.0065          0.0059                   0.1847            0.0079
+  OF ORMER (L I ET AL ., 2023 C )               0.0183                  0.0017                          0.0183          0.0168                   0.1705            0.0124
+  GNOT (H AO ET AL ., 2023)                     0.0086                  0.0336                          0.0076          0.0047                   0.1380            0.0105
+  FACT F ORMER (L I ET AL ., 2023 D )              /                    0.0312                          0.0071          0.0060                   0.1214            0.0109
+  ONO (X IAO ET AL ., 2024)                     0.0118                  0.0048                          0.0061          0.0052                   0.1195            0.0076
+  T RANSOLVER (O URS )                          0.0064                  0.0012                          0.0053          0.0033                   0.0900            0.0057
+  R ELATIVE P ROMOTION                          25.6%                   29.4%
+                                                                2024/1/10 11:40                         10.2%      .h   29.7%                    24.7%             12.3%
+
+
+(2023) or ONO (2024). The number of slices M is chosen                                                                  Drag Force
+                                                                                                                                                                   Wind
+from {32, 64} according to the hidden dimension to balance
+model efficiency. All the experiments are conducted on one                                                                                Lift
+                                                                                                                                        Force
+NVIDIA A100 GPU and repeated three times. In addition to
+the relative L2 of estimated physics fields, we also calculate                                                                   Wind
+the error and Spearman’s rank correlation of drag and lift
+                                                                                                           (a) Shape-Net Car                        (b) AirfRANS
+coefficients for practical design tasks. See Appendix B for
+comprehensive descriptions of implementations.                                            Figure 4. Car and airfoil design tasks. The key problem is to esti-
+                                                                                          mate the drag and lift force of a driving car or a flying airplane.
+4.1. Main Results                                                                         from learning physical states, Transolver can obtain more
+                                                                                          informative geometry tokens than single mesh points and
+Standard Benchmarks To clearly benchmark our model                                        significantly reduce the token number, thereby capturing
+among multifarious neural operators, we first experiment                                  complex fluid-structure interactions better.
+on six well-established datasets, which can conveniently
+build a complete leaderboard from previous papers (Li et al.,                             Practical Design Wind tunnel testing is one of the most
+2022; Wu et al., 2023; Hao et al., 2023).                                                 essential steps in industrial design. As described in Figure 4,
+As presented in Table 2, Transolver achieves consistent                                   to examine the model effectiveness in complex real-world
+state-of-the-art across six widely-used benchmarks, cover-                                applications, we also experiment with the simulated wind
+ing solid and fluid physics in various geometrics. Notably,                               tunnel scenario. Concretely, we simulate a driving car and
+Transolver gains significant promotion in tasks on point         e:///U e / h     /De
+                                                                                          record the surface pressure and surrounding air velocity,
+                                                                                        /ICML2024/ .h                                             1/2
+
+
+
+
+cloud and structured mesh (25.6% in Elasticity, 29.4% in                                  which can be used to calculate drag force. The task is to
+Plasticity, 29.7% in Pipe), demonstrating the effectiveness                               estimate the surface and surrounding physics fields based
+of our design in handling complex geometrics. Also, some                                  on the car’s surface geometry. As for the AirfRANS, in
+advanced Transformer-based models, such as OFormer and                                    addition to different airfoil shapes, our dataset also includes
+GNOT, directly apply linear attention to mesh points, where                               different angles of attack with different Reynolds numbers,
+we can find that they fall short in handling the Darcy bench-                             which can better cover real flying cases. Note that these two
+mark. This is because Darcy requires the model to simu-                                   tasks are quite challenging since they require the model to
+late the fluid pressure through the porous medium, which                                  handle multiphysics simulation for hybrid geometrics.
+involves complex fluid-structure interaction (Bungartz &                                  As shown in Table 3, we can find that Transolver also excels
+Schäfer, 2006) along the twisty medium boundary, while di-                               in these two complex tasks among various geometric deep
+rectly applying attention to massive mesh points will degen-                              models and neural operators. In addition to achieving more
+erate in correlation modeling (Wu et al., 2022). Benefiting                               accurate physics field estimation in both volume and surface,
+
+                                                                                   6
+                             Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+
+Table 3. Performance comparison on practical design tasks. Both benchmarks are with unstructured mesh. In addition to the relative L2
+of the surrounding (Volume) and surface (Surf) physics fields, the relative L2 of drag coefficient (CD ) and lift coefficient (CL ) is also
+recorded, along with their Spearman’s rank correlations ρD and ρL . A Spearman’s correlation close to 1 indicates better performance.
+
+                                                             S HAPE -N ET C AR                                 A IRF RANS
+ M ODEL∗
+                                                VOLUME ↓       S URF ↓     CD ↓       ρD ↑     VOLUME ↓       S URF ↓    CL ↓       ρL ↑
+ S IMPLE MLP                                      0.0512       0.1304     0.0307     0.9496      0.0081       0.0200     0.2108    0.9932
+ G RAPH SAGE (H AMILTON ET AL ., 2017)            0.0461       0.1050     0.0270     0.9695      0.0087       0.0184     0.1476    0.9964
+ P OINT N ET (Q I ET AL ., 2017)                  0.0494       0.1104     0.0298     0.9583      0.0253       0.0996     0.1973    0.9919
+ G RAPH U-N ET (G AO & J I , 2019)                0.0471       0.1102     0.0226     0.9725      0.0076       0.0144     0.1677    0.9949
+ M ESH G RAPH N ET (P FAFF ET AL ., 2021)         0.0354       0.0781     0.0168     0.9840      0.0214       0.0387     0.2252    0.9945
+ GNO (L I ET AL ., 2020 A )                       0.0383       0.0815     0.0172     0.9834      0.0269       0.0405     0.2016    0.9938
+ G ALERKIN (C AO , 2021)                          0.0339       0.0878     0.0179     0.9764      0.0074       0.0159     0.2336    0.9951
+ GEO -FNO (L I ET AL ., 2022)                     0.1670       0.2378     0.0664     0.8280      0.0361       0.0301     0.6161    0.9257
+ GNOT (H AO ET AL ., 2023)                        0.0329       0.0798     0.0178     0.9833      0.0049       0.0152     0.1992    0.9942
+ GINO (L I ET AL ., 2023 A )                      0.0386       0.0810     0.0184     0.9826      0.0297       0.0482     0.1821    0.9958
+ 3D-G EO CA (D ENG ET AL ., 2024)                 0.0319       0.0779     0.0159     0.9842         /            /          /         /
+ T RANSOLVER (O URS )                             0.0207       0.0745     0.0103     0.9935      0.0037       0.0142     0.1030    0.9978
+   ∗ Since both datasets are with unstructured mesh, not all the baselines are applicable. Concretely, the capability to handle unstructured
+   mesh of typical neural operators (e.g., U-NO, LSM, etc) is based on geo-FNO (2022), which degenerates a lot in complex geometrics.
+   Some Transformer-based models will also come across unstable training due to the massive mesh points, such as ONO and OFormer.
+
+Transolver also performs best in design-oriented metrics,                Table 4. Ablations on Physics-Attention. We experiment on two
+including drag and lift coefficient, as well as Spearman’s               variants: changing the number of slices M and replacing the
+rank correlation. Note that this metric measures the correla-            learnable slices with fixed regular squares in 4 × 4 size (#Regular
+tion between the ranking distribution of real coefficients and           Squares). Efficiency is calculated on inputs with 1024 unstructured
+model-estimated values on all test samples, which quantifies             mesh points and batch size as 1. See Appendix C for full ablations.
+the model’s ability to rank different car or airfoil designs,
+                                                                                              #M EMORY     #T IME        R ELATIVE L2
+therefore especially essential to shape optimization.                        A BLATIONS
+                                                                                                 (GB)     ( S / EPOCH ) E LASTICITY DARCY
+It is also worth noticing that geo-FNO degenerates seriously                           1         0.60      37.76        0.0148    0.0386
+in Shape-Net Car. This is because geo-FNO transforms the                               8         0.60      37.82        0.0071    0.0096
+input geometry into a uniform latent grid based on Fourier                            16         0.61      37.96        0.0067    0.0067
+                                                                                      32         0.62      38.00        0.0067    0.0063
+bases, which is insufficient for surface-volume hybrid geom-              N UMBER     64         0.64      38.18        0.0064    0.0059
+etry. Besides, 3D-GeoCA enhances GNO by employing the                     OF S LICES 96          0.68      38.31        0.0061    0.0055
+advanced 3D geometric deep model Point-BERT (Yu et al.,                              128         0.69      38.78        0.0058    0.0054
+2022) as the feature encoder. However, even empowered                                256         0.81      39.13        0.0054    0.0050
+with the advanced 3D geometric encoder, it still underper-                           512         1.01      39.75        0.0059    0.0056
+                                                                                     1024        1.53      40.49        0.0068    0.0055
+forms the Transolver. These results further demonstrate the
+advantages of our model in solving PDEs.                                  R EGULAR S QUARES        /          /           /       0.0088
+
+
+Ablations In addition to the main results, we also include               ing in too many tokens for subsequent attention calculation.
+ablations of our design in Table 4. In general, we can find              In principle, the best choice of slice number is up to the
+that increasing the number of slices will benefit the final              physical property of the target PDE. In our experiments, M
+performance, which enables the model to capture more fine-               is easy-to-tune in the range from 32 to 256.
+grained physical states but also brings more computation                 Besides, replacing learnable slices with fixed regular squares
+costs. To balance efficiency and performance, we set M                   will damage the model performance seriously, even for
+as 64 for Elasticity and Darcy and choose it from {32, 64}               Darcy which is originally discretized into regular grids. This
+for other benchmarks. Note that when we set M = 1, the                   result further demonstrates the advantages of capturing phys-
+Physics-Attention will degenerate to a global pooling opera-             ical states over solely computing in the discretized domain.
+tor, which omits all the physical correlations and will cause
+a serious performance drop. Also, we can further observe                 Efficiency To further demonstrate the model practicability,
+that an extremely large M (e.g. 1024) will slightly decrease             we provide the model efficiency comparison in Figure 6. We
+the final performance. This may be because a too-large M                 can find that in comparison with other Transformer-based
+will make the physics domain seriously fragmented, result-               models, Transolver presents favorable efficiency, consid-
+
+                                                                    7
+                                                            Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+                                                                                                                                                   Transolver                    Galerkin Transformer
+  Original Mesh
+
+
+                                                                                                                                            Attention among Tokens           Attention among Mesh Points
+  Resampled Mesh
+
+
+
+
+                                                       (a) Learned Slice Visualization                                                                      (b) Attention Map Visualization
+
+Figure 5. Physics-Attention visualization on Elasticity: (a) slice weights in the last layer of Transolver for both original and resampled
+meshes, (b) attention maps of the last layer in Transolver and Galerkin Transformer (Cao, 2021). See Appendix D.1 for more visualizations.
+
+                                    (a) Elasticity                                              (b) Shape-Net Car
+                                                                                                                                     Table 5. Comparison of linear attention in Galerkin Transformer
+                     Params Count                    ONO                                                                             and Physics-Attention in Transolver. Kullback–Leibler (KL) diver-
+                                                                                                                        ONO
+                                                                                                    GNOT
+                    1.00MB   2.00MB
+                                                                                                                                     gence between learned attention weights and a uniform distribution
+GPU Memory (GB)
+
+
+
+
+                                                                 GPU Memory (GB)
+
+
+
+
+                                                                                                                                     is recorded, which is averaged from the whole test set.
+                                             GNOT
+                                                                                                                                                                               G ALERKIN T RANSOLVER
+                                                                                                                Params Count          B ENCHMARKS
+                                                                                                                                                                              (C AO , 2021)       (O URS )
+                                                                                   Transolver
+                   OFormer
+                                                                                                OFormer
+                                                                                                               1.00MB   2.00MB
+                                                                                                                                      E LASTICITY (972 MESH POINTS )             0.3803           1.7795
+                                      Transolver
+                      Galerkin                                                          Galerkin                                      DARCY (7,225 MESH POINTS )                 0.2739           1.8274
+                              Running Time (s/epoch)                                        Running Time (s/epoch)
+
+
+
+Figure 6. Efficiency comparison on Elasticity (972 mesh points)                                                                      As shown in Figure 5(a), we randomly sample 50% input
+and Shape-Net Car (32,186 mesh points). Metrics are measured                                                                         mesh of Elasticity. Surprisingly, Transolver can still capture
+on the batch size as 1 and one epoch contains 1000 iterations. The                                                                   physical states precisely even for broken meshes.
+growth curves w.r.t. input mesh size are provided in Appendix F.
+                                                                                                                                     Besides, we also compare learned attention maps of the
+ering running time, GPU memory and model parameters.                                                                                 Transolver and Galerkin Transformer. As aforementioned,
+Specifically, in Elasticity, Transolver achieves the 25.6%                                                                           directly calculating attention among massive mesh points
+error reduction (0.0064 vs. 0.0086) with 5x fewer param-                                                                             may overwhelm the model from learning informative rela-
+eters and 1.3x running speed than the second-best model                                                                              tions (Wu et al., 2022). Statistical results in Table 5 present
+GNOT. Especially for large-scale meshes, our design of                                                                               that the linear attention among mesh points is closer to a de-
+linear-complexity Physics-Attention benefits more signifi-                                                                           generated uniform distribution than Physics-Attention. As a
+cantly, where Transolver surpasses Galerkin Transformer                                                                              supplement, we also include the attention visualization in
+and OFormer in both running time and final performance.                                                                              Figure 5(b), where we can observe that the attention map
+                                                                                                                                     among physics-aware tokens is much sharper than mesh-
+4.2. Model Analysis                                                                                                                  point attention. These results further verify the benefits of
+                                                                                                                                     our physics-inspired design in facilitating attention learning.
+Physics-Attention analysis Toward an intuitive under-
+standing of Transolver, we visualize Physics-Attention in                                                                            Case study We plot error maps of different models in
+Figure 5. It is observed that slices can precisely capture                                                                           Figure 7 to provide a clear comparison. It is observed that
+mesh points under similar physics states. Also, it is worth                                                                          Transolver performs significantly better in boundaries and
+noticing that we adopt the Softmax function in learning                                                                              multiple material junctions, such as the extrusion zone of
+slice weights (Eq. (1)). Since Softmax function will make                                                                            elasticity, the medium boundary in Darcy and the curved re-
+the learned weight distribution sharper, slices will also be                                                                         gion in the car surface. Note that these areas usually involve
+optimized to capture more diverse patterns correspondingly,                                                                          intricate physical interactions, which require the model to
+which empowers the model with better representation capa-                                                                            precisely capture the geometry information and its hidden
+bility for intricate physics. For example, in the inner-stress                                                                       physics, thereby further verifying the effectiveness of our de-
+estimation task of Elasticity, we can find that slices learn                                                                         sign in handling complex geometrics. Especially, Transolver
+to cover diverse subareas that are under similar extrusion                                                                           surpasses 3D-GeoCA (Deng et al., 2024) and GNOT (Hao
+degrees, such as the left and right of the hollow area, cor-                                                                         et al., 2023) in predicting the wake flow behind the car and
+ners of the material, etc. Further, learning physical states                                                                         the pressure in the front area, demonstrating its capability
+also frees our model from complex and unwieldy meshes.                                                                               in solving multiphysics PDEs on hybrid geometrics.
+
+                                                                                                                                 8
+                                                                                                                                                                 Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+                                                                      Ground Truth                                                              Transolver Error                                                         GNOT Error                                                       Input (Porous Medium)                                Ground Truth                             Transolver Error              GNOT Error
+                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                                                         [                                                                [
+                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+                                                                                                                                                                                                                                                                                
+                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                             
+                                                                                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                         
+                                                                                                                                                                                                                                                             2024/1/18 17:23                                    2024/1/18 17:23                     2024/1/18 17:23
+                                                                                                                                                                                                                                                                                                                                                                4_e   .h ml                        4_error.h ml                 4_error.h ml
+                                                                                                                             
+                                                                                                                                                                                                                                                                                                                                                                                                                                              
+
+                                                                                                                                                                               4_e                                 .h            ml                                          
+  .h      ml
+                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+                                                                                                                                                                                                                                                                                                                                  
+                                                                                                                             
+                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                
+                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+                                                                                                                                                                                                                                                                                                                                 
+
+
+                                                     (a) Elasticity                                        2024/1/18 17:12                                                 2024/1/18 17:12 4_e o .h ml                                     2024/1/18 17:13    4_error.h ml                (b) Darcy                 4_error.h ml
+   2024/1/18 17:06                                                                  p _case_pressure_bar.html
+
+
+                                                                      Ground Truth                                                                                    Transolver Error                                                3D-GeoCA Error                                                       GNOT Error                             Transolver Error                      3D-GeoCA Error                GNOT Error
+                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+                                                                                                                                                                                                                                                                                                                                     
+
+
+                                                                                                                                                                                                                                                                                                                                          
+                                                                                                                                                                                                                                                                                                                                                                                                                                               
+                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                          
+                                                                                                                                                
+                                                                                                                                                                                                                                                                                                                                                                                                                                                
+                                                                                                                                                                                                                                                                                                                                          
+
+                                                                                                                                                
+                                                                                                                                                                                                                                                                                                                                          
+                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+                                                                                                                                                
+                                                                                                                                                                                                                                                                                                                                          
+
+                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+                                                                                                                                                                                                                                                                                                                                         
+
+
+                                                     (c) Shape-Net Car                                                                                         (c.1) Surrounding Velocity                                                                                                                                                       (c.2) Surface Pressure
+
+
+                                            Figure 7. Case study on error maps of different models. Notably, Shape-Net Car requires to predict the surrounding velocity and surface
+                                            pressure simultaneously. For clearness, we plot the error on volume and surface separately. See Appendix D.2 for more showcases.
+
+                                                           
+                                                                                   (a) Resolution                                            
+                                                                                                                                                                         (b) Data                                              
+                                                                                                                                                                                                                                                     (c) Parameter
+                                                      [                                                                                 [                                                                             [
+                                                                                                                                                                                                                                                                                                                        Table 6. OOD generalization experiments on the AirfRANS. Rela-
+                                                                                                                                                                                                                                                                                                                     tive error of lift coefficient (CL ) and Spearman’s rank correlations
+                                                                                                                                                                                                                                                                                                                        (ρL ) are recorded. See Appendix E.3 for complete results.
+                                             Relative L2
+
+
+
+
+                                                                                                                                                                                                                            
+
+
+
+                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                                                                                                       OOD R EYNOLDS OOD A NGLES
+                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                                               M ODELS
+                                                                                                                                                                                                                                                                                                                                                                                       CL ↓              ρL ↑         CL ↓                ρL ↑
+                                                                            
+                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                                         
+       le:///Users/thuml/Desktop/ICML2024/sho case/p _case_pressure_bar.html
+                                                                                   Input resolution                                                     Number of training samples
+                                                                                                                                                            1/1 o o _channel_256_
+                                                                                                            le:///U e / h ml/De k o /ICML2024/ ho ca e/UniPDE_d           le:///Users/elo/4_e o .h op/ICML2024/sho
+                                                                                                                                                                                        h ml/Desk  ml
+                                                                                                                                                                                                                                             Number of model Layers
+                                                                                                                                                                                                                   case/GNOT_ elo/4_error.h le:///Users/
+                                                                                                                                                                                                                                            ml                  1/2op/ICML2024/sho case/GNO_ elo/4_error.h ml
+                                                                                                                                                                                                                                                         h ml/Desk                                                     1/2
+                                                                                                                                                                                                                                                                                                                               S IMPLE MLP              0.6205
+                                                                                                                                                                                                                                                                                                                                                      1/2
+                                                                                                                                                                                                                                                                                                                                                                                                      0.9578          0.4128 0.9572
+                                                                                                                                                                                                                                                                                                                               G RAPH SAGE (2017)       0.4333                                        0.9707          0.2538 0.9894
+                                            Figure 8. Model scalability on Darcy. We re-train the Transolver                                                                                                                                                                                                                   P OINT N ET (2017)       0.3836                                        0.9806          0.4425 0.9784
+                                            for PDEs on different (a) resolutions, (b) training samples and (c)                                                                                                                                                                                                                G RAPH U-N ET (2019) 0.4664                                            0.9645          0.3756 0.9816
+                                            model layers. See Appendix E.1 for full results on all benchmarks.                                                                                                                                                                                                                 M ESH G RAPH N ET (2021) 1.7718                                        0.7631          0.6525 0.8927
+iPDE_d                                                         _channel_256/4_e
+                                                                         1/2  1/1
+                                                                                 .h                                                                                                   ml
+                                                                                                                                                                                                                                                                                                                               GNO (2020 A )
+                                                                                                                                                                                                                                                                                                                                   1/2                                                 0.4408         0.9878          0.3038 0.9884            1/2
+
+
+                                            PDE solving at scale One well-acknowledged merit of                                                                                                                                                                                                                                G ALERKIN (2021)                                        0.4615         0.9826          0.3814 0.9821
+                                            Transformers is their scalability (Achiam et al., 2023). Thus,                                                                                                                                                                                                                     GNOT (2023)                                             0.3268         0.9865          0.3497 0.9868
+                                            we also include a comprehensive test about the scalability                                                                                                                                                                                                                         GINO (2023 A )                                          0.4180         0.9645          0.2583 0.9923
+                                            of Transolver on resolution, data and model parameters                                                                                                                                                                                                                             T RANSOLVER (O URS )                                    0.2996 0.9896 0.1500 0.9950
+                                            in Figure 8. Specifically, we gradually increase the PDE
+                                            resolution to 25x of the original setting, training data and                                                                                                                                                                                                                 man’s rank correlations of nearly 99% on unseen Reynolds
+                                            model parameters to 5x. It is observed that Transolver can                                                                                                                                                        le:///U e / h ml/De k                               h ca ere/UniPDE_d
+                                                                                                                                                                                                                                                                                                      /ICML2024/ le:///U   / h ml/De k op/ICML2024/  ho
+                                                                                                                                                                                                                                                                                                                                           _channel_256/4_eca e/GNOT/4_error.h
+                                                                                                                                                                                                                                                                                                                                                                .h hmlml/Desk op/ICML2024/sho
+                                                                                                                                                                                                                                                                                                                                                      le:///Users/              ml
+                                                                                                                                                                                                                                                                                                                         and angles of attacks. These results indicate that Tran-
+                                                                                                                                                                                                                                                                                                                                                                                              case/GNO/4_error.h ml       1/2                              1/2
+
+
+
+                                            achieve consistent performance at scaled resolutions and                                                                                                                                                                                                                     solver not only fits the training data but also captures some
+                                            benefit from more training data and larger model parameters,                                                                                                                                                                                                                 generalizable physical information, further highlighting the
+                                            posing a potential for a large-scale pre-trained PDE solver.                                                                                                                                                                                                                 advantage of calculating attention among physical states.
+                                            Out-of-distribution (OOD) generalization In the previ-
+                                            ous research, neural solvers are mainly trained and tested                                                                                                                                                                                                                   5. Conclusions and Future Work
+                                            with samples under the same or in-distribution PDE co-
+                                                                                                                                                                                                                                                                                                                         This paper presents Transolver to solve PDEs on general
+                                            efficients and varied initial or boundary conditions. For
+                                                                                                                                                                                                                                                                                                                         geometrics. Unlike prior Transformer operators, Transolver
+                                            example, in the car design task, different samples of diverse
+                                                                                                                                                                                                                                                                                                                         proposes to apply attention to learned physical states, which
+                                            shapes are all generated under the headwind with the same
+                                                                                                                                                                                                                                                                                                                         empowers our model with endogenetic geometry-general
+                                            speed. As for the airfoil design, although training samples
+                                                                                                                                                                                                                                                                                                                         capacity and benefits physical correlations modeling. Tran-
+                                            contain various Reynolds and angles of attacks, the test set
+                                                                                                                                                                                                                                                                                                                         solver not only performs impressively on well-established
+                                            is still under the same range of Reynolds and angles as the
+                                                                                                                                                                                                                                                                                                                         benchmarks but also excels in practical design tasks, which
+                                            training set. Here, to further examine the generalizability
+                                                                                                                                                                                                                                                                                                                         consist of extremely complex geometrics and tanglesome
+                                            of Transolver in real-world applications, we also experi-
+                                                                                                                                                                                                                                                                                                                         multiphysics interactions. Extensive analyses are provided
+                                            ment with OOD airfoil design tasks, where the test set has
+                                                                                                                                                                                                                                                                                                                         to verify the model’s performance, efficiency, scalability and
+                                            completely different Reynolds and angles of attacks.
+                                                                                                                                                                                                                                                                                                                         out-of-distribution generalizability. In the future, we will
+                                            As presented in Table 6, Transolver can handle OOD sam-                                                                                                                                                                                                                      further explore the large-scale pre-training of Transolver in
+                                            ples well, where it consistently performs best with Spear-                                                                                                                                                                                                                   pursuit of foundation models for PDE solving.
+
+                                                                                                                                                                                                                                                                                                                9
+                           Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+Acknowledgements                                                      Chang, A. X., Funkhouser, T., Guibas, L., Hanrahan, P.,
+                                                                        Huang, Q., Li, Z., Savarese, S., Savva, M., Song, S.,
+This work was supported by the National Key Research and                Su, H., et al. Shapenet: An information-rich 3d model
+Development Plan (2021YFC3000905), the National Natu-                   repository. arXiv preprint arXiv:1512.03012, 2015.
+ral Science Foundation of China (U2342217 and 62022050),
+the BNRist Innovation Fund (BNR2024RC01010), and the                  Chen, T., Xu, B., Zhang, C., and Guestrin, C. Training
+National Engineering Research Center for Big Data Soft-                 deep nets with sublinear memory cost. arXiv preprint
+ware. We thank our colleagues Hang Zhou and Yuezhou Ma                  arXiv:1604.06174, 2016.
+for their suggestions in the OOD experiments of this paper.
+                                                                      Choromanski, K., Likhosherstov, V., Dohan, D., Song, X.,
+Impact Statement                                                        Gane, A., Sarlós, T., Hawkins, P., Davis, J., Mohiuddin,
+                                                                        A., Kaiser, L., Belanger, D., Colwell, L. J., and Weller, A.
+This paper presents work whose goal is to advance the deep              Rethinking attention with performers. ICLR, 2021a.
+learning research for solving PDE. The proposed method is
+based on a new idea of capturing correlations among learned           Choromanski, K. M., Likhosherstov, V., Dohan, D., Song,
+physical states, which could be inspiring for future research.          X., Gane, A., Sarlos, T., Hawkins, P., Davis, J. Q., Mo-
+And our model also performs well in large-scale design                  hiuddin, A., Kaiser, L., Belanger, D. B., Colwell, L. J.,
+tasks, which can be useful in industrial production. Note               and Weller, A. Rethinking attention with performers. In
+that this paper mainly focuses on the scientific problem.               ICLR, 2021b.
+When developing our approach, we are fully committed to
+                                                                      Deng, J., Li, X., Xiong, H., Hu, X., and Ma, J. Geometry-
+ensuring ethical considerations are taken into account. Thus
+                                                                        guided conditional adaption for surrogate models of large-
+we believe there are no potential ethical risks in our work.
+                                                                        scale 3d PDEs on arbitrary geometries. In IJCAI, 2024.
+
+References                                                            Devlin, J., Chang, M.-W., Lee, K., and Toutanova, K. Bert:
+                                                                        Pre-training of deep bidirectional transformers for lan-
+Achiam, J., Adler, S., Agarwal, S., Ahmad, L., Akkaya, I.,
+                                                                        guage understanding. In NAACL, 2019.
+  Aleman, F. L., Almeida, D., Altenschmidt, J., Altman, S.,
+  Anadkat, S., et al. Gpt-4 technical report. arXiv preprint          Dosovitskiy, A., Beyer, L., Kolesnikov, A., Weissenborn,
+  arXiv:2303.08774, 2023.                                               D., Zhai, X., Unterthiner, T., Dehghani, M., Minderer,
+                                                                        M., Heigold, G., Gelly, S., Uszkoreit, J., and Houlsby, N.
+Bonnet, F., Mazari, J. A., Cinnella, P., and patrick gal-              An image is worth 16x16 words: Transformers for image
+  linari. AirfRANS: High fidelity computational fluid                   recognition at scale. In ICLR, 2021.
+  dynamics dataset for approximating reynolds-averaged
+  navier–stokes solutions. In NeurIPS Datasets and Bench-             Dym, C. L., Shames, I. H., et al. Solid mechanics. Springer,
+  marks Track, 2022.                                                   1973.
+
+Bronstein, M. M., Bruna, J., LeCun, Y., Szlam, A., and Van-           Gao, H. and Ji, S. Graph u-nets. In ICML, 2019.
+  dergheynst, P. Geometric deep learning: going beyond
+  euclidean data. IEEE Signal Processing Magazine, 2017.              Goswami, S., Kontolati, K., Shields, M. D., and Karniadakis,
+                                                                        G. E. Deep transfer operator learning for partial differen-
+Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J. D.,             tial equations under conditional shift. Nat. Mach. Intell,
+  Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G.,                 2022.
+  Askell, A., Agarwal, S., Herbert-Voss, A., Krueger, G.,
+                                                                      Gottlieb, D. and Orszag, S. A. Numerical analysis of spec-
+  Henighan, T., Child, R., Ramesh, A., Ziegler, D., Wu, J.,
+                                                                        tral methods: theory and applications. SIAM, 1977.
+  Winter, C., Hesse, C., Chen, M., Sigler, E., Litwin, M.,
+  Gray, S., Chess, B., Clark, J., Berner, C., McCandlish,             Gupta, G., Xiao, X., and Bogdan, P. Multiwavelet-based
+  S., Radford, A., Sutskever, I., and Amodei, D. Language               operator learning for differential equations. In NeurIPS,
+  models are few-shot learners. In NeurIPS, 2020.                       2021.
+Bungartz, H.-J. and Schäfer, M. Fluid-structure interaction:         Hamilton, W., Ying, Z., and Leskovec, J. Inductive repre-
+  modelling, simulation, optimisation. Springer Science &               sentation learning on large graphs. NeurIPS, 2017.
+  Business Media, 2006.
+                                                                      Hao, Z., Ying, C., Wang, Z., Su, H., Dong, Y., Liu, S.,
+Cao, S. Choose a transformer: Fourier or galerkin. In                   Cheng, Z., Zhu, J., and Song, J. Gnot: A general neural
+  NeurIPS, 2021.                                                        operator transformer for operator learning. ICML, 2023.
+
+                                                                 10
+                           Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+Hubbert, M. K. Darcy’s law and the field equations of the             Li, Z.-Y., Huang, D. Z., Liu, B., and Anandkumar,
+  flow of underground fluids. Transactions of the AIME,                 A. Fourier neural operator with learned deforma-
+ 1956.                                                                  tions for pdes on general geometries. arXiv preprint
+                                                                        arXiv:2207.05209, 2022.
+Karniadakis, G. E., Kevrekidis, I. G., Lu, L., Perdikaris,
+  P., Wang, S., and Yang, L. Physics-informed machine                 Liu, X., Xu, B., and Zhang, L. HT-net: Hierarchical
+  learning. Nat. Rev. Phys., 2021.                                      transformer based operator learning model for multiscale
+Katharopoulos, A., Vyas, A., Pappas, N., and Fleuret, F.                PDEs. arXiv preprint arXiv:2210.10890, 2022.
+  Transformers are rnns: Fast autoregressive transformers             Liu, Z., Lin, Y., Cao, Y., Hu, H., Wei, Y., Zhang, Z., Lin, S.
+  with linear attention. In ICML, 2020a.                                C.-F., and Guo, B. Swin transformer: Hierarchical vision
+Katharopoulos, A., Vyas, A., Pappas, N., and Fleuret, F.                transformer using shifted windows. ICCV, 2021.
+  Transformers are rnns: Fast autoregressive transformers
+                                                                      Loshchilov, I. and Hutter, F. Decoupled weight decay regu-
+  with linear attention. In ICML, 2020b.
+                                                                        larization. In ICLR, 2019.
+Kingma, D. P. and Ba, J. Adam: A method for stochastic
+  optimization. In ICLR, 2015.                                        Lu, L., Jin, P., Pang, G., Zhang, Z., and Karniadakis, G. E.
+                                                                        Learning nonlinear operators via deeponet based on the
+Kitaev, N., Kaiser, L., and Levskaya, A. Reformer: The                  universal approximation theorem of operators. Nat. Mach.
+  efficient transformer. In ICLR, 2020.                                 Intell, 2021.
+Kovachki, N., Li, Z., Liu, B., Azizzadenesheli, K., Bhat-             McCormick, B. W. Aerodynamics, aeronautics, and flight
+  tacharya, K., Stuart, A., and Anandkumar, A. Neural                  mechanics. John Wiley & Sons, 1994.
+  operator: Learning maps between function spaces with
+  applications to pdes. JMLR, 2023.                                   McLean, D. Continuum fluid mechanics and the navier-
+                                                                       stokes equations. Understanding Aerodynamics: Arguing
+Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhat-
+                                                                       from the Real Physics, 2012.
+  tacharya, K., Stuart, A., and Anandkumar, A. Neural
+  operator: Graph kernel network for partial differential             Pfaff, T., Fortunato, M., Sanchez-Gonzalez, A., and
+  equations. arXiv preprint arXiv:2003.03485, 2020a.                    Battaglia, P. Learning mesh-based simulation with graph
+Li, Z., Kovachki, N. B., Azizzadenesheli, K., liu, B., Bhat-            networks. In ICLR, 2021.
+  tacharya, K., Stuart, A., and Anandkumar, A. Fourier                Qi, C. R., Su, H., Mo, K., and Guibas, L. J. Pointnet: Deep
+  neural operator for parametric partial differential equa-             learning on point sets for 3d classification and segmenta-
+  tions. In ICLR, 2021.                                                 tion. In CVPR, 2017.
+Li, Z., Kovachki, N. B., Choy, C., Li, B., Kossaifi, J., Otta,
+                                                                      Rahman, M. A., Ross, Z. E., and Azizzadenesheli, K. U-no:
+  S. P., Nabian, M. A., Stadler, M., Hundt, C., Azizzade-
+                                                                        U-shaped neural operators. TMLR, 2023.
+  nesheli, K., and Anandkumar, A. Geometry-informed
+  neural operator for large-scale 3d PDEs. In NeurIPS,                Raissi, M., Perdikaris, P., and Karniadakis, G. E. Physics-
+  2023a.                                                                informed neural networks: A deep learning framework for
+Li, Z., Kovachki, N. B., Choy, C., Li, B., Kossaifi, J., Otta,          solving forward and inverse problems involving nonlinear
+  S. P., Nabian, M. A., Stadler, M., Hundt, C., Azizzade-               partial differential equations. J. Comput. Phys., 2019.
+  nesheli, K., et al. Geometry-informed neural operator for
+                                                                      Ronneberger, O., Fischer, P., and Brox, T. U-net: Convolu-
+  large-scale 3d pdes. arXiv preprint arXiv:2309.00583,
+                                                                        tional networks for biomedical image segmentation. In
+  2023b.
+                                                                        MICCAI, 2015.
+Li, Z., Meidani, K., and Farimani, A. B. Transformer for
+  partial differential equations’ operator learning. TMLR,            Roubı́ček, T. Nonlinear partial differential equations with
+  2023c.                                                                applications. Springer Science & Business Media, 2013.
+
+Li, Z., Shu, D., and Farimani, A. B. Scalable transformer             Sanchez-Gonzalez, A., Godwin, J., Pfaff, T., Ying, R.,
+  for pde surrogate modeling. NeurIPS, 2023d.                           Leskovec, J., and Battaglia, P. Learning to simulate
+                                                                        complex physics with graph networks. In International
+Li, Z.-Y., Kovachki, N. B., Azizzadenesheli, K., Liu, B.,               conference on machine learning, 2020.
+  Bhattacharya, K., Stuart, A., and Anandkumar, A. Neural
+  operator: Graph kernel network for partial differential             Ŝolı́n, P. Partial differential equations and the finite element
+  equations. arXiv preprint arXiv:2003.03485, 2020b.                     method. John Wiley & Sons, 2005.
+
+                                                                 11
+                          Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+Spearman, C. The proof and measurement of association               Xue, L., Yu, N., Zhang, S., Li, J., Martı́n-Martı́n, R., Wu,
+  between two things. 1961.                                          J., Xiong, C., Xu, R., Niebles, J. C., and Savarese, S.
+                                                                      Ulip-2: Towards scalable multimodal pre-training for 3d
+Tran, A., Mathews, A., Xie, L., and Ong, C. S. Factorized             understanding. arXiv preprint arXiv:2305.08275, 2023.
+  fourier neural operators. In ICLR, 2023.
+                                                                    Yu, X., Tang, L., Rao, Y., Huang, T., Zhou, J., and Lu, J.
+Trockman, A. and Kolter, J. Z. Patches are all you need?              Point-bert: Pre-training 3d point cloud transformers with
+  arXiv preprint arXiv:2201.09792, 2022.                              masked point modeling. In CVPR, 2022.
+Umetani, N. and Bickel, B. Learning three-dimensional flow          Zhao, H., Jiang, L., Jia, J., Torr, P. H., and Koltun, V. Point
+ for interactive aerodynamic design. ACM Transactions                 transformer. In ICCV, 2021.
+ on Graphics (TOG), 2018.
+
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones,
+  L., Gomez, A. N., Kaiser, L. u., and Polosukhin, I. Atten-
+  tion is all you need. In NeurIPS, 2017.
+
+Wang, H., Fu, T., Du, Y., Gao, W., Huang, K., Liu, Z.,
+ Chandak, P., Liu, S., Van Katwyk, P., Deac, A., et al.
+ Scientific discovery in the age of artificial intelligence.
+ Nature, 2023.
+
+Wang, S., Teng, Y., and Perdikaris, P. Understanding and
+ mitigating gradient pathologies in physics-informed neu-
+ ral networks. SIAM J. Sci. Comput., 2020a.
+
+Wang, S., Yu, X., and Perdikaris, P. When and why pinns fail
+ to train: A neural tangent kernel perspective. J. Comput.
+ Phys., 2020b.
+
+Wazwaz, A. M. Partial differential equations : methods and
+ applications. 2002.
+
+Weinan, E. and Yu, T. The deep ritz method: A deep
+ learning-based numerical algorithm for solving varia-
+ tional problems. Commun. Math. Stat., 2017.
+
+Wen, G., Li, Z., Azizzadenesheli, K., Anandkumar, A.,
+ and Benson, S. M. U-fno–an enhanced fourier neural
+ operator-based deep-learning model for multiphase flow.
+ Advances in Water Resources, 2022.
+
+Wesseling, P. Introduction to multigrid methods. Technical
+ report, 1995.
+
+Wu, H., Wu, J., Xu, J., Wang, J., and Long, M. Flowformer:
+ Linearizing transformers with conservation flows. In
+ ICML, 2022.
+
+Wu, H., Hu, T., Luo, H., Wang, J., and Long, M. Solving
+ high-dimensional pdes with latent spectral models. In
+ ICML, 2023.
+
+Xiao, Z., Hao, Z., Lin, B., Deng, Z., and Su, H. Improved
+  operator learning by orthogonal attention. In ICML, 2024.
+
+Xiong, Y., Zeng, Z., Chakraborty, R., Tan, M., Fung, G. M.,
+  Li, Y., and Singh, V. Nyströmformer: A nyström-based
+  algorithm for approximating self-attention. AAAI, 2021.
+
+                                                               12
+                               Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+A. Proof of Theorem 3.4
+Firstly, we would like to present how to formalize canonical attention into a Monte-Carlo approximation of an integral
+operator as a Lemma, which is summarized from proofs provided by Cao (2021) and Kovachki et al. (2023).
+Lemma A.1. The canonical attention mechanism in Transformers is a Monte-Carlo approximation of an integral operator.
+
+Proof. Given input function u : Ω → RC , the integral operation G defined on the function space Ω → RC is formalized as:
+                                                        Z
+                                           G(u)(g∗ ) =      κ(g∗ , ξ)u(ξ)dξ,                                        (7)
+                                                                  Ω
+
+        ∗           Cg
+where g ∈ Ω ⊂ R and κ(·, ·) denotes the kernel function defined on Ω. According to the formalization of attention, we
+propose to define the kernel function as follows:
+                           Z                                            −1                             
+                                                                   T                                      T
+                ∗                                          ′
+                                                 Wq u(ξ ) (Wk u(ξ)) dξ ′         exp (Wq u(g∗ )) (Wk u(ξ)) Wv ,
+                                                         
+            κ(g , ξ) =                 exp                                                                                  (8)
+                                   Ω
+
+where Wq , Wk , Wv ∈ RC×C .
+Suppose that there are N discretized mesh points {g1 , · · · , gN }, where gi ∈ Ω ⊂ RCg . Approximating the inner-integral
+in Eq. (8) by Monte-Carlo, we have:
+                                                                   N
+                                                               |Ω| X
+                    Z                                                                         
+                                                       T                                       T
+                                   Wq u(ξ ′ ) (Wk u(ξ)) dξ ′ ≈
+                                             
+                         exp                                          exp (Wq u(gi )) (Wk u(ξ)) .                           (9)
+                    Ω                                           N i=1
+
+Applying the above equation to Eq. (7) and using the same approximation for the outer-integral, we have:
+                                                                            
+                                           N exp (W u(g∗ )) (W u(g ))T W u(g )
+                                          X             q          k     i        v     i
+                            G(u)(g∗ ) ≈         PN                                     ,                                 (10)
+                                                                                     T
+                                          i=1      j=1 exp (Wq u(gj )) (Wk u(gi ))
+
+
+which is the calculation of the attention mechanism with Wq , Wk , Wq as linear layers for queries, keys and values.
+Remark A.2 (Solving PDEs by learning integral neural operators). Li et al. (2020a) firstly formalized the PDE-solving
+task as learning neural operators and defined the operator learning process as an iterative architecture, which corresponds
+to multiple layers in deep models. Then, Li et al. (2021) further defined each iteration step as a composition of a non-
+local integral operator and a local, nonlinear activation function. Since the nonlinear activation function can be easily
+parameterized by the feedforward layer. The key to solving PDEs is learning non-local integral operators. Thus, Lemma A.1
+proves that a Transformer model can theoretically work as a neural operator and be applied to solve PDEs.
+Lemma A.3. Suppose that Ω is a countable domain, the slice domain Ωs is isomorphic to Ω.
+
+Proof. For the i-th element gi ∈ Ω, we define its slice weight to the j-th slice sj as wgi ,sj ∈ R. Given a constant K ≥ 1
+and K ∈ N, since input domain Ω is countable, we can construct the projection g between input domain and slice domain
+Ωs as follows: for i iterated from 1 to +∞, its projected slice is defined as
+
+            g(gi ) =                             arg max          wgi ,sj subject to j-th slice is not projected before.
+                        sj , where (⌊ i−1           i−1                                                                    (11)
+                                       K ⌋×K )<j≤((⌊ K ⌋+1)×K )
+
+
+Here we construct a bijection between the input domain and the slice domain. Thus, Ω ∼
+                                                                                     = Ωs .
+
+Next, we will prove Theorem 3.4, which provides a theoretical understanding of our design in Physics-Attention. The
+formalization of Physics-Attention can be directly derived from integral based on proper assumptions.
+
+Proof. According to Lemma A.3, we can obtain an isomorphic projection g between a countable input domain Ω and slice
+domain Ωs . Suppose that the slice weight w∗,∗ : Ω × Ωs → R is smooth in both Ω and Ωs , where the Ω and Ωs denote the
+continuation of Ω and Ωs respectively, we can obtain g as a diffeomorphism projection.
+
+                                                                   13
+                                  Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+Then, we define the value function us on the physics-aware token domain Ωs as follows:
+                                                             Z                  Z         
+                                              us (ξ s ) =           wξ,ξs u(ξ)dξ /   wξ,ξs dξ ,                                             (12)
+                                                                Ω                          Ω
+
+
+which corresponds to the slice token definition in Eq. (2).
+Based on the above assumptions and definitions, we have:
+             Z
+G(u)(g) =       κ(g, ξ)u(ξ)dξ
+              Ω
+  Z
+       κms g, ξ s us (ξ s ) dg −1 (ξ s )                                            (κms (·, ·) : Ω × Ωs → RC×C is a kernel function)
+                  
+=
+   Ωs
+  Z
+       κms g, ξ s us (ξ s ) | det(∇ξs g −1 (ξ s ))|dξ s
+                  
+=
+   Ωs
+
+              w ′ κ ξ ′ , ξ dξ ′s
+  Z       R                           !
+            Ωs g,ξs ss s s
+=               R             ′          us (ξ s ) | det(∇ξs g −1 (ξ s ))|dξ s      (κms is a linear combination of κss with weights w∗,∗ )
+   Ωs               w  ′
+                 Ωs g,ξs
+                          dξ  s
+  Z           Z                                                                                                    Z
+                      κss ξ ′s , ξ s         us (ξ s ) | det(∇ξs g −1 (ξ s ))|dξ s dξ ′s                               wg,ξ′s dξ ′s = 1)
+                                     
+=      wg,ξ′s                                                                                        (Suppose that
+    Ωs | {z } Ωs      | {z }                 | {z }                                                                 Ωs
+          DeSlice    Attention among slice tokens Slice token
+                                                  T 
+    M            M                                                                         PN                        !
+                       Wq us (ξ s,j ) Wk us (ξ s,t ) /τ
+                        exp
+                                                                                                p=1 wp,t u(gp )
+    X            X
+≈     wi,j     PM                                     T  Wv                                  PN                               (Lemma A.1)
+                                                                                                   p=1 wp,t
+                                        
+  j=1      t=1  p=1 exp   Wq us (ξ s,j ) Wk us (ξ s,p ) /τ
+  | {z } |                           {z                      }                             |         {z          }
+     Eq. (4)                                                                                       Eq. (2)
+                                                 Eq. (3)
+    M            M
+    X            X     exp(qj kT
+                               t /τ )
+=         wi,j       PM                  vt ,
+                                   T
+    j=1          t=1  p=1 exp(qj kp /τ )
+                                                                                                                                            (13)
+
+
+where κms defines the kernel function between mesh points and slices, and κss is defined among slices. Since slices are
+permutation-invariant in our implementation, we take | det(∇ξs g −1 (ξ s ))| = 1 for simplification. Different from the attention
+among mesh points, the usage of Lemma A.1 here is based on the Monte-Carlo approximation in the slice domain.
+
+B. Implementation Details
+In this section, we provide the details of our experiments, including benchmarks, metrics, and implementations.
+
+Table 7. Summary of experiment benchmarks, where the first six datasets are from FNO (Li et al., 2021) and geo-FNO (Li et al., 2022),
+Shape-Net Car is from (Umetani & Bickel, 2018) and preprocessed by (Deng et al., 2024), and AirfRANS is from (Bonnet et al., 2022).
+#Mesh records the size of discretized meshes. #Dataset is organized as the number of samples in training and test sets.
+
+  G EOMETRY                B ENCHMARKS                #D IM         #M ESH            #I NPUT                    #O UTPUT           #DATASET
+  P OINT C LOUD              E LASTICITY                2D           972            S TRUCTURE                 I NNER S TRESS      (1000, 200)
+  S TRUCTURED                P LASTICITY           2D+T IME          3,131        E XTERNAL F ORCE        M ESH D ISPLACEMENT       (900, 80)
+  M ESH                        A IRFOIL              2D             11,271           S TRUCTURE              M ACH N UMBER         (1000, 200)
+                                 P IPE               2D             16,641           S TRUCTURE             F LUID V ELOCITY       (1000, 200)
+                          NAVIER –S TOKES          2D+T IME         4,096          PAST V ELOCITY            F UTURE V ELOCITY     (1000, 200)
+  R EGULAR G RID
+                              DARCY                  2D             7,225         P OROUS M EDIUM             F LUID P RESSURE     (1000, 200)
+  U NSTRUCTURED           S HAPE -N ET C AR             3D          32,186          S TRUCTURE         V ELOCITY & P RESSURE        (789, 100)
+  M ESH                      A IRF RANS                 2D          32,000          S TRUCTURE         V ELOCITY & P RESSURE        (800, 200)
+
+
+                                                                             14
+                            Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+B.1. Benchmarks
+We extensively evaluate our model in eight benchmarks, whose information is summarized in Table 7. Note that these
+benchmarks involve the following three types of PDEs:
+
+   • Solid material (Dym et al., 1973): Elasticity and Plasticity.
+   • Navier-Stokes equations for fluid (McLean, 2012): Airfoil, Pipe, Navier-Stokes, Shape-Net Car and AirfRANS.
+   • Darcy’s law (Hubbert, 1956): Darcy.
+
+Here are the details of each benchmark.
+Elasticity This benchmark is to estimate the inner stress of the elasticity material based on the material structure, which is
+discretized in 972 points (Li et al., 2022). For each case, the input is a tensor in the shape of 972 × 2, which contains the 2D
+position of each discretized point. The output is the stress of each point, thus in the shape of 972 × 1. As for the experiment,
+1000 samples with different structures are generated for training and another 200 samples are used for test.
+Plasticity This benchmark is to predict the future deformation of the plasticity material under the impact from above by an
+arbitrary-shaped die (Li et al., 2022). For each case, the input is the shape of the die, which is discretized into the structured
+mesh and recorded as a tensor with shape 101 × 31. The output is the deformation of each mesh point in the future 20 time
+steps, that is a tensor in the shape of 20 × 101 × 31 × 4, which contains the deformation in four directions. Experimentally,
+900 samples with different die shapes are used for model training and 80 new samples are for test.
+Airfoil This task is to estimate the Mach number based on the airfoil shape, where the input shape is discretized into
+structured mesh with shape 221 × 51 and the output is the Mach number for each mesh point (Li et al., 2022). Here, all
+the shapes are deformed from the NACA-0012 case provided by the National Advisory Committee for Aeronautics. 1000
+samples in different airfoil designs are used for training and the other 200 samples are for testing.
+Pipe This benchmark is to estimate the horizontal fluid velocity based on the pipe structure (Li et al., 2022). Each case
+discretizes the pipe into structured mesh with size 129 × 129. Thus, for each case, the input tensor is in the shape of
+129 × 129 × 2, which contains the position of each discretized mesh point. The output is the velocity value for each point,
+thus in the shape of 129 × 129 × 1. 1000 samples with different pipe shapes are used for model training and 200 new
+samples are for test, which are generated by controlling the centerline of the pipe.
+Navier-Stokes This benchmark is to model the incompressible and viscous flow on a unit torus, where the fluid density
+is constant and viscosity is set as 10−5 (Li et al., 2021). The fluid field is discretized into 64 × 64 regular grid. The task
+is to predict the fluid in the next 10 steps based on the observations in the past 10 steps. 1000 fluids with different initial
+conditions are generated for training, and 200 new samples are used for test.
+Darcy This benchmark is to model the flow of fluid through a porous medium (Li et al., 2021). Experimentally, the process
+is discretized into a 421 × 421 regular grid. Then we downsample the data into 85 × 85 resolution for main experiments.
+The input of the model is the structure of the porous medium and the output is the fluid pressure for each grid. 1000 samples
+are used for training and 200 samples are generated for test, where different cases contain different medium structures.
+Shape-Net Car This benchmark focuses on the drag coefficient estimation for the driving car, which is essential for
+car design. Overall, 889 samples with different car shapes are generated to simulate the 72 km/h speed driving situation
+(Umetani & Bickel, 2018), where the car shapes are from the “car” category of ShapeNet (Chang et al., 2015). Concretely,
+they discretize the whole space into unstructured mesh with 32,186 mesh points and record the air around the car and the
+pressure over the surface. Here we follow the experiment setting in 3D-GeoCA (Deng et al., 2024), which takes 789 samples
+for training and the other 100 samples for testing. The input mesh of each sample is also preprocessed into the combination
+of mesh point position, signed distance function and normal vector. The model is trained to predict the velocity and pressure
+value for each point. Afterward, we can calculate the drag coefficient based on these estimated physics fields.
+AirfRANS This dataset contains the high-fidelity simulation data for Reynolds-Averaged Navier–Stokes equations (Bonnet
+et al., 2022), which is also used to assist airfoil design. Different from Airfoil (Li et al., 2022), this benchmark involves more
+diverse airfoil shapes under finer discretized meshes. Specifically, it adopts airfoils in the 4 and 5 digits series of the National
+Advisory Committee for Aeronautics, which have been widely used historically. Each case is discretized into 32,000 mesh
+
+                                                                15
+                           Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+points. By changing the airfoil shape, Reynolds number, and angle of attack, AirfRANS provides 1000 samples, where 800
+samples are used for training and 200 for the test set. Air velocity, pressure and viscosity are recorded for surrounding space
+and pressure is recorded for the surface. Note that both drag and lift coefficients can be calculated based on these physics
+quantities. However, as their original paper stated, air velocity is hard to estimate for airplanes, making all the deep models
+fail in drag coefficient estimation (Bonnet et al., 2022). Thus, in the main text, we focus on the lift coefficient estimation and
+the pressure quantity on the volume and surface, which is essential to the take-off and landing stages of airplanes.
+
+B.2. Metrics
+Since our experiment consists of standard benchmarks and practical design tasks, we also include several design-oriented
+metrics in addition to the relative L2 for physics fields.
+Relative L2 for physics fields Given the physics field u and the model predicted field u
+                                                                                       b , the relative L2 of model
+prediction can be calculated as follows:
+
+                                                                         b∥
+                                                                    ∥u − u
+                                                   Relative L2 =            .                                                (14)
+                                                                      ∥u∥
+
+
+Relative L2 for drag and lift coefficients For Shape-Net Car and AirfRANS, we also calculated the drag and lift
+coefficients based on the estimated physics fields. For unit density fluid, the coefficient (drag or lift) is defined as follows:
+                                        Z                                Z                    
+                                     2                            
+                              C= 2              p(ξ) n b(ξ) · bi(ξ) dξ +        τ (ξ) · bi(ξ)dξ ,                             (15)
+                                    v A     ∂Ω                              ∂Ω
+
+where v is the speed of the inlet flow, A is the reference area, ∂Ω is the object surface, p denotes the pressure function, n   b
+means the outward unit normal vector of the surface, bi is the direction of the inlet flow and τ denotes wall shear stress on
+the surface. τ can be calculated from the air velocity near the surface (McCormick, 1994), which is usually much smaller
+than the pressure item. Specifically, for the drag coefficient of Shape-Net Car, bi is set as (−1, 0, 0) and A is the area of the
+smallest rectangle enclosing the front of cars. As for the lift coefficient of AirfRANS, bi is set as (0, 0, −1). The relative L2
+is defined between the ground truth coefficient and the coefficient calculated from the predicted velocity and pressure field.
+Spearman’s rank correlations for drag and lift coefficients Given K samples in the test set with the ground truth
+coefficients C = {C 1 , · · · , C K } (drag or lift) and the model predicted coefficients C
+                                                                                          b = {C             b K }, the Spearman
+                                                                                                b1 , · · · , C
+correlation coefficient is defined as the Pearson correlation coefficient between the rank variables, that is:
+                                                                          
+                                                           cov R(C)R(C)  b
+                                                      ρ=                     ,                                               (16)
+                                                              σR(C) σR(C)
+                                                                       b
+
+
+where R is the ranking function, cov denotes the covariance and σ represents the standard deviation of the rank variables.
+Thus, this metric is highly correlated to the model guide for design optimization. A higher correlation value indicates that it
+is easier to find the best design following the model-predicted coefficients (Spearman, 1961).
+
+B.3. Implementations
+As shown in Table 8, all the baselines are trained and tested under the same training strategy. As for Transolver, the
+number of channels C is set as 256 for high-dimensional inputs: Navier-Stokes, Shape-Net Car and AirfRANS, and 128
+for the others. Further to balance efficiency, we set the number of slices M as 32 for C = 256 configuration and 64 for
+C = 128. These configurations can also align our model parameters and running efficiency with other Transformer operators.
+Especially, we configure Project() in Eq. (1) as a single Linear layer for unstructured meshes: Elasticity, ShapeNet Car and
+AirfRANS, a convolution layer with 3 × 3 kernel for others. Next, we will present the implementation of all the baselines.
+Typical neural operators All of these baselines have been widely examined in previous papers. Thus, for FNO and
+geo-FNO, we report their results following their official papers (Li et al., 2021; 2022). As for the other baselines, we follow
+the results in LSM (Wu et al., 2023). Note that all the other baselines expect geo-FNO cannot handle the unstructured mesh.
+Thus, their performances in Elasticity are evaluated by employing the special transformation in geo-FNO at the model
+
+                                                               16
+                             Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+Table 8. Training and model configurations of Transolver. Training configurations are directly from previous works without extra tuning
+(Bonnet et al., 2022; Hao et al., 2023; Deng et al., 2024). Here Lv and Ls represent the loss on volume and surface fields respectively. As
+for Darcy, we adopt an additional spatial gradient regularization term Lg following ONO (Xiao et al., 2024).
+
+                      T RAINING C ONFIGURATION (S HARED IN ALL BASELINES )                          M ODEL C ONFIGURATION
+B ENCHMARKS
+                         L OSS      E POCHS I NITIAL LR O PTIMIZER BATCH S IZE L AYERS L H EADS C HANNELS C S LICES M
+E LASTICITY                                                                     1                                   128            64
+P LASTICITY                                                                     8                                   128            64
+A IRFOIL         R ELATIVE                                    A DAM W           4                                   128            64
+                                       500        10−3                                        8         8
+P IPE                L2                                        (2019)           4                                   128            64
+NAVIER –S TOKES                                                                 2                                   256            32
+DARCY           LrL2 + 0.1Lg                                                    4                                   128            64
+S HAPE -N ET C AR Lv + 0.5Ls           200                     A DAM            1                                   256            32
+                                                  10−3                                        8         8
+A IRF RANS         Lv + Ls             400                     (2015)           1                                   256            32
+
+
+beginning and ending layer. However, we find that geo-FNO degenerates seriously in practical design tasks (Shape-Net Car
+and AirfRANS) even with comprehensively searched hyperparameters, that is number of layers in {2, 4, 6, 8}, number of
+channels in {128, 256, 512} and number of Fourier basis in {16, 32, 64}. This may come from that geo-FNO is based on
+the periodic boundary assumption, while these two unstructured-mesh benchmarks apparently present complex boundaries.
+Since other neural operators are based on geo-FNO for unstructured meshes, we do not test them in practical design tasks.
+
+Transformer-based models GNOT (Hao et al., 2023) reports the performance of itself and OFormer (Li et al., 2023c),
+Galerkin Transformer (Cao, 2021) in part of six standard benchmarks, which also adopts a comprehensive hyperparameter
+search for themselves and these two baselines. Thus, we report their results based on their official paper and results
+from GNOT. As for the other untested benchmarks, we search the hyperparameters as follows: number of layers in
+{2, 3, 4, 5, 6, 7, 8}, number of channels in {128, 256, 512}, number to heads in {1, 2, 4, 6, 8}. As for HT-Net (Liu et al.,
+2022) and FactFormer (Li et al., 2023d), since they employ the square window and axial decomposition respectively, they
+are inapplicable to Elasticity. Thus, we evaluate it under the aforementioned hyperparameter search on the other baselines.
+As for the ONO (Xiao et al., 2024) that is in submission, we adopted their official code provided in the OpenReview and
+rerun it under the same training and hyperparameter-search strategy as other baselines and also tried different linear attention
+designs (Katharopoulos et al., 2020a; Kitaev et al., 2020; Xiong et al., 2021; Cao, 2021; Choromanski et al., 2021a).
+Experimentally, we found that ONO (Xiao et al., 2024) and OFormer (Li et al., 2023c) come across the unstable training
+problem on Shape-Net Car and AirfRANS. This may come from that ONO adopts the Cholesky decomposition to the
+channel attention map to ensure feature orthogonality, which requires the channel attention to be positive semidefinite.
+However, in large-scale mesh scenarios, this assumption may not be satisfied, making the model cannot be successfully
+executed. As for OFormer, it utilizes the cross-attention mechanism with target mesh points as queries and learned features
+as keys and values. However, directly calculating the attention among massive mesh points (over 32,000) is hard to optimize,
+causing the training loss curve to keep jittering. Thus, we do not report their performance in practical design tasks.
+
+Geometric deep models We implement simple MLP, GraphSAGE (Hamilton et al., 2017), PointNet (Qi et al., 2017)
+and Graph U-Net (Gao & Ji, 2019) following the code base of AirfRANS (Bonnet et al., 2022). As for GNO (Li et al.,
+2020a) and 3D-GeoCA (Deng et al., 2024), we adopt the official code base of 3D-GeoCA. And we implement GINO based
+on its official code. Note that in the official paper, GINO is only trained to estimate the surface pressure of cars, which is
+not enough to calculate the drag coefficient. To ensure a comprehensive evaluation, we follow the experiment setting of
+3D-GeoCA, which is to predict the surface pressure and surrounding air velocity simultaneously.
+
+C. Full Ablations
+We include the complete ablations here as a supplement to Table 4 in the main text.
+
+Number of slices M As demonstrated in Table 9, increasing the number of slices M will generally boost the model
+performance. Also, it is notable that increasing M will also bring extra computation costs. Too many slice tokens may also
+lead the attention calculation to potential noise or distraction, which could bring performance fluctuation or drop, such as in
+M = 1024 cases of Elasticity and Navier-Stokes. In this paper, we set M as 64 for the models with 128 hidden channels
+and 32 for models with 256 hidden channels, which can accomplish a better balance between performance and efficiency.
+
+                                                                    17
+                            Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+
+Table 9. Full ablations on Physics-Attention. We experiment on three variants: changing the number of slices M and replacing the
+learnable slices with fixed regular squares in the shape of 4 × 4 (#Regular Squares). Efficiency is calculated on 1024 mesh points and
+batch size as 1. Since #Regular Squares cannot handle unstructured inputs, we omit its efficiency and performance on Elasticity.
+
+                         #M EMORY         #T IME                                        R ELATIVE L2
+      A BLATIONS
+                           (GB)        ( S / EPOCH )      E LASTICITY   P LASTICITY   A IRFOIL   P IPE   NAIVER -S TOKES     DARCY
+                   1        0.60            37.76           0.0148         0.0140     0.0084    0.0087        0.1511         0.0386
+                   8        0.60            37.82           0.0071         0.0028     0.0056    0.0040        0.1136         0.0096
+                  16        0.61            37.96           0.0067         0.0019     0.0057    0.0045        0.0958         0.0067
+                  32        0.62            38.00           0.0067         0.0015     0.0067    0.0042        0.0900         0.0063
+  N UMBER         64        0.64            38.18           0.0064         0.0012     0.0053    0.0033        0.0871         0.0059
+  OF S LICES      96        0.68            38.31           0.0061         0.0008     0.0054    0.0033        0.0802         0.0055
+                 128        0.69            42.24           0.0058         0.0009     0.0049    0.0034        0.0783         0.0054
+                 256        0.81            39.13           0.0054         0.0013     0.0043    0.0032        0.0856         0.0050
+                 512        1.01            39.75           0.0059         0.0012     0.0045    0.0040        0.0914         0.0056
+                1024        1.53            40.49           0.0068         0.0017     0.0048    0.0047        0.1003         0.0055
+  R EGULAR S QUARES           /               /                /           0.0022     0.0071    0.0049        0.1077         0.0088
+
+       Table 10. Comparison between Plain Transformer (Vaswani et al., 2017) and Transolver at different resolutions of Darcy.
+
+ N UMBER OF M ESH P OINTS   484    1,681   3,364   7,225    10,609    19,881    44,521   168,921
+     (R ESOLUTIONS )      (22×22) (41×41) (58×58) (85×85) (103×103) (141×141) (211×211) (411×411)
+    P LAIN T RANSFORMER           0.02017     0.0103         0.0073     0.0081       OOM         OOM          OOM           OOM
+        T RANSOLVER               0.02019     0.0089         0.0058     0.0059      0.0057      0.0062       0.0063        0.0060
+    R ELATIVE P ROMOTION           -0.1%          13.6%      20.5%      27.2%         /            /            /             /
+
+Learnable slices or regular squares In all benchmarks, using fixed regular squares will damage the model performance,
+even in the Navier-Stokes and Darcy which are originally discretized in the regular grid. This may result from the intricate
+and spatially deformed physics states in PDEs, further demonstrating the advantage of learning adaptive slices in Transolver.
+
+Comparison with full attention To highlight the advantages of Transolver, we also compare it with Plain Trans-
+former (Vaswani et al., 2017), which employs the full attention mechanism. Note that it is non-trivial to apply the plain
+Transformer to our benchmarks (1k-32k points). Even for the most powerful Large Language Model GPT-4 (Achiam et al.,
+2023), it can only handle up to 32k tokens, which is well-optimized and accelerated. When it comes to PDE-solving tasks,
+almost all of the previous Transformer-based models (Li et al., 2023c; Hao et al., 2023) utilize well-designed efficient
+attention for more than 1k mesh points instead of plain Transformer. Thus, the experiments of plain Transformer in over 1k
+tokens are with the help of the gradient-checkpointing technique (Chen et al., 2016), which can reduce the GPU memory but
+also significantly affect speed. Even so, we can only measure plain Transformer up to 7k tokens on one A100 40GB GPU.
+Concretely, we downsample the Darcy dataset from 168,921 tokens (411 × 411) to 484 tokens (22 × 22) and replace Physics-
+Attention by canonical attention with identical architecture elsewhere. Note that directly downsampling the ground-truth
+data is unreasonable in the PDE context, since some physical interactions can only be observed in high resolution. That is
+why both models’ performances drop seriously in 484 and 1,681 token settings. However, the relative promotions under
+different domain sizes are still referable. In Figure 8 of main text, we have demonstrated that Transolver performs stable
+in the range of 7,225 to 168,921 tokens. In the new experiments of Table 10, we can find that in the smallest resolution,
+Transolver performs similarly to plain Transformer, while the advantages of Transolver are getting more significant under
+larger mesh points, demonstrating the superiority of Physics-Attention design in handling large-scale meshes.
+
+D. Addition Visualizations
+In this section, we provide more visualizations for learned slices and showcases as a supplement to Figure 5 and Figure 7.
+
+D.1. Learned Slices
+Original mesh We visualize the learned slices on 5 benchmarks: Shape-Net Car (Figure 9), Airfoil (Figure 10), Pipe
+(Figure 12), Naiver-Stokes (Figure 14), and Darcy (Figure 16). These visualizations provide valuable insights into the
+
+                                                                      18
+                             Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+model’s ability to capture diverse patterns and perceive subtle properties of physical states, including front-back-side pressure
+of driving cars, complex flow characteristics around the airfoil, fluid dynamics in pipes, swirling patterns of complex fluid
+interactions, and fluid-structure interactions along the porous medium. Especially, the model also learns a periodic diagonal
+pattern in the Naiver-Stokes equation, which corresponds to the periodic external force in the Navier-Stokes benchmark (Li
+et al., 2021). These findings demonstrate model’s ability to learn underlying physical states behind complicated geometrics.
+
+Resampled mesh To demonstrate that our design in learning physical states is free from concrete discretization, we
+also apply Transolver in resampled meshes in Figures 11-17, where we only keep 50%-80% mesh points of the original
+input. Note that this design may break the continuous and elaborately designed structure of the original mesh. Surprisingly,
+we can find that even for these broken meshes, Transolver can still capture physical states precisely, further verifying its
+geometry-general capability and highlighting the benefits of learning physical states.
+
+
+
+
+Figure 9. Visualization of learned slices on the Shape-Net Car benchmark (number of slices M = 32). Note that this benchmark involves
+both volume and mesh geometrics and velocity-pressure joint modeling. For clarity, we only present the slice weights on the surface here.
+Thus, the sum of visualized weights could be smaller than 1.
+
+
+
+
+               Figure 10. Visualization of learned slices on the original Airfoil benchmark (number of slices M = 64).
+
+
+
+
+         Figure 11. Visualization of learned slices on the randomly resampled Airfoil benchmark (number of slices M = 64).
+
+
+
+                                                                  19
+                           Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+
+
+
+                Figure 12. Visualization of learned slices on the original Pipe benchmark (number of slices M = 64).
+
+
+
+
+          Figure 13. Visualization of learned slices on the randomly resampled Pipe benchmark (number of slices M = 64).
+
+
+
+
+           Figure 14. Visualization of learned slices on the original Navier-Stokes benchmark (number of slices M = 32).
+
+
+
+
+Figure 15. Visualization of learned slices on the randomly resampled Navier-Stokes benchmark (number of slices M = 32).
+
+
+
+
+               Figure 16. Visualization of learned slices on the original Darcy benchmark (number of slices M = 64).
+
+
+
+                                                                20
+                           Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+
+
+
+         Figure 17. Visualization of learned slices on the randomly resampled Darcy benchmark (number of slices M = 64).
+
+
+D.2. Showcases
+As shown in Figure 18, in comparison with the previous state-of-the-art models: LSM (Wu et al., 2023) and GNOT (Hao
+et al., 2023), Transolver excels in capturing the deformation of Plasticity, the shock wave of Airfoil, fluid in the Pipe end and
+the swirling parts of Navier-Stokes. Here, GNOT fails in predicting the future deformation of Plasticity.
+
+
+
+
+Figure 18. Showcase comparison with the previous best models: LSM and GNOT. Both prediction results and error maps are provided.
+
+
+E. Addition Experiments
+Here we provide more experiments to complete the results of the main text and investigate new experiment settings.
+
+E.1. Model Scalability
+In the main text, we have investigated the model scalability in Darcy regarding resolution, data and parameters. Here
+we provide the scalability experiments on more benchmarks. Since we only have the data generation code of the Darcy
+benchmark, we only test the parameter scalability for the other datasets. As shown in Figure 19, most of the benchmarks
+will benefit from a larger model size, especially for Elasticity (Relative L2: 0.0064 for 8 layers, 0.0047 for 40 layers) and
+Airfoil (Relative L2: 0.0053 for 8 layers and 0.0037 for 40 layers). These results highlight the scaling potential of Transolver.
+However, for Plasticity (Relative L2: 0.0012) and Pipe (Relative L2: 0.0033) whose performances are already close to
+saturation, increasing the model parameter will bring performance fluctuation. The slight performance drop may also come
+
+                                                               21
+                                                                     Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+                  [
+                             (a) Elasticity                   
+                                                              [
+                                                                        (b) Plasticity                      [
+                                                                                                                         (c) Airfoil                    [
+                                                                                                                                                                          (d) Pipe                    [
+                                                                                                                                                                                                                (e) Navier-Stokes                 [
+                                                                                                                                                                                                                                                                    (f) Darcy
+                                                                                                                                                                                                                                          
+
+
+
+
+                                                                                                                                                                                                                                           
+
+                                                                                                                                                                                                   
+Relative L2
+
+
+
+
+                                                                                                                                                                                                                                             
+
+
+                                                                                                                                                                                                   
+                                                                                                                                                                                                                                           
+
+
+
+
+                                                                                                                                                                                                                                           
+                                                                                                                                                                                                                                   
+
+                            Number of model Layers                   Number of model Layers                           Number of model Layers                        Number of model Layers                        Number of model Layers                      Number of model Layers
+
+
+
+Figure 19. Parameter scalability on six standard benchmarks, where we gradually increase the number of model layers from 8 to 40.
+
+
+from the stochasticity of optimization. Thus, a large dataset is expected to fully unlock the power of deep models in solving
+PDEs. Since we only focus on the model design in this paper, we would like to leave the data collection as future work.
+
+E.2. Adaptive Multiscale Modeling
+Since N mesh points are ascribed to M slices as shown in Eq. (1), it is easy to calculate that the expectation of the number
+                              N
+of mesh points per slice is M   . Thus, we can control the granularity of physical state modeling by adjusting M , where a
+larger M will derive more slices, leading to more fine-grained physical states. Further, in deep models, we can configure M
+as different values in different layers to conveniently achieve multiscale modeling.
+As shown in Figure 20, we further try the configuration that different layers are set with different numbers of slices. Since
+the calculation complexity of multiscale configuration is between M = 64 and M = 32, we also list the performance
+of these two official configurations for clarity in Table 11. Note that as we presented in Table 9, in general, increasing
+the number of slices M will boost the model performance. But, surprisingly, we find that in some cases, the multiscale
+configuration can perform comparably or even better than the M = 64 official configuration. This may come from that both
+Darcy and Airfoil exhibit clear multiscale properties, thereby benefiting more from the hierarchical features.
+
+Table 11. Comparison between official and multiscale configuration. Efficiency is calculated on 1024 mesh points and batch size as 1.
+
+                                                                             #M EM   #T IME                               R ELATIVE L2
+          D ESIGNS
+                                                                             (GB) ( S / EPOCH ) E LASTICITY P LASTICITY A IRFOIL P IPE                                                                                           NAIVER -S TOKES DARCY
+          O FFICIAL C ONFIG M = 32                                           0.62             38.00                            0.0067                          0.0015                       0.0067                0.0042                   0.0900                          0.0063
+          O FFICIAL C ONFIG M = 64                                           0.64             38.18                            0.0064                          0.0012                       0.0053                0.0033                   0.0871                          0.0059
+          M ULTISCALE C ONFIG                                                0.62             38.10                            0.0066                          0.0012                       0.0050                0.0037                   0.0891                          0.0056
+
+
+Different from the well-acknowledged multiscale deep models, such as Swin Transformer (Liu et al., 2021) or U-Net (Ron-
+neberger et al., 2015), our design in learning slices is not limited by the discretization. This means that we can set the number
+of slices M at will, regardless of the exact division restriction. This also makes our model free from inflexible padding
+operations. In this paper, we mainly experiment with the official configuration. We would like to leave the exploration of the
+multiscale architecture of Transolver as a future work.
+
+
+
+                                                                             Transolver Layers                                           Transolver Layers                                         Transolver Layers
+                                                                                  M=64                                                        M=32                                                      M=32
+
+                                                                                                   x4                                                               x4                                                      x4
+
+
+
+
+                                                                             Transolver Layers                                           Transolver Layers                                         Transolver Layers
+                                                                                  M=64                                                        M=32                                                      M=64
+
+                                                                                                   x4                                                               x4                                                      x4
+
+
+                                                                    (a) Official Configuration (M=64)                         (b) Official Configuration (M=32)                              (c) Multiscale Configuration
+
+
+Figure 20. Illustration of adaptive multiscale modeling in Transolver. In addition to the official configuration that all Transolver layers
+share the same number of slices, we also provide the multiscale configuration where the last 4 layers only use half slices w.r.t first 4 layers.
+
+                                                                                                                                               22
+                            Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+        Table 12. Settings of OOD generalization experiments on the AirfRANS. The range of Reynolds and angles are listed.
+
+                                            OOD R EYNOLDS                                                                OOD A NGLES
+   DATASET
+                                  R EYNOLDS R ANGE                          S AMPLES                      A NGLES R ANGE                  S AMPLES
+                                           6         6                                                               ◦      ◦
+   T RAINING SET                    [3 × 10 , 5 × 10 ]                             500                  [−2.5 , 12.5 ]                         800
+   T EST SET            [2 × 106 , 3 × 106 ] ∪ [5 × 106 , 6 × 106 ]                500           [−5◦ , −2.5◦ ] ∪ [12.5◦ , 15◦ ]               200
+
+
+E.3. OOD Generalization
+In Table 6, we have provided experiments of out-of-distribution Reynolds and angles of attacks. As a supplement, we include
+the detailed settings in Table 12, where the training and test sets contain completely different Reynolds or angles of attacks.
+We also include the complete results in Table 13. It is impressive that Transolver can still achieve the consistent best
+performance in the out-of-distribution settings. Specifically, the relative promotion of Transolver is more significant than
+the i.i.d. setting, further demonstrating Transolver’s generalizability advantage. This may come from our special design in
+learning physical states, which enables Transolver to capture more foundational physics information.
+Table 13. Performance comparison on out-of-distribution tasks of AirfRANS. Relative L2 of the surrounding (Volume) and surface (Surf)
+physics fields, the relative L2 of lift coefficient (CL ) is also recorded, along with Spearman’s rank correlations ρL .
+
+                                                            OOD R EYNOLDS                                                   OOD A NGLES
+ M ODEL
+                                                VOLUME ↓       S URF ↓          CD ↓       ρD ↑           VOLUME ↓          S URF ↓    CL ↓          ρL ↑
+ S IMPLE MLP                                      0.0669       0.1153         0.6205     0.9578               0.1309        0.3311     0.4128      0.9572
+ G RAPH SAGE (H AMILTON ET AL ., 2017)            0.0798       0.1254         0.4333     0.9707               0.1192        0.2359     0.2538      0.9894
+ P OINT N ET (Q I ET AL ., 2017)                  0.0838       0.1403         0.3836     0.9806               0.2021        0.4649     0.4425      0.9784
+ G RAPH U-N ET (G AO & J I , 2019)                0.0538       0.1168         0.4664     0.9645               0.0979        0.2391     0.3756      0.9816
+ M ESH G RAPH N ET (P FAFF ET AL ., 2021)         0.2789       0.2382         1.7718     0.7631               0.4902        1.1071     0.6525      0.8927
+ GNO (L I ET AL ., 2020 A )                       0.0833       0.1562         0.4408     0.9878               0.1626        0.2359     0.3038      0.9884
+ G ALERKIN (C AO , 2021)                          0.0330       0.0972         0.4615     0.9826               0.0577        0.2773     0.3814      0.9821
+ GNOT (H AO ET AL ., 2023)                        0.0305       0.0959         0.3268     0.9865               0.0471        0.3466     0.3497      0.9868
+ GINO (L I ET AL ., 2023 A )                      0.0839       0.1825         0.4180     0.9645               0.1589        0.2469     0.2583      0.9923
+ T RANSOLVER (O URS )                             0.0143       0.0364         0.2996     0.9896               0.0357        0.2275     0.1500      0.9950
+
+
+E.4. Apply to Lagrangian Settings
+In the main text, we follow the convention of previous neural operators (Li et al., 2021; Wu et al., 2023) and experiment with
+Eulerian datasets, where the geometry of input data is fixed. There is another branch of tasks, named Lagrangian settings,
+which simulates the dynamics system (e.g. fluid) by tracking a series of particles. To further verify the effectiveness of
+Transolver in handling ever-changing geometrics, we also experiment with a Lagrangian PDE-solving task.
+As for Lagrangian settings, the convention is to construct a graph at each timestep and utilize GNN-based models to capture
+local interactions among particles (Sanchez-Gonzalez et al., 2020). Although the capability to process irregular meshes also
+enables Transolver to receive the scattered particles as inputs, the essential graph information is missing. Thus, we did a
+preliminary experiment on the WaterDrop process (Sanchez-Gonzalez et al., 2020), whose task is to predict the future 994
+steps based on the past 6 steps for 2,000 particles. Concretely, we enhance the GNN message passing with an additional
+Transolver layer in parallel. Both models are trained with 1M iterations, which requires 2 days in one A100 40GB GPU.
+As shown in Table 14, Transolver can further boost the GNN performance by a sharp margin and generate a more accurate
+future, especially for the water splash process. This result verifies the benefits of Transolver in enhancing physics learning.
+
+Table 14. Performance comparison on the Lagrangian WaterDrop dataset. Position MSE of 2,000 predicted particles is recorded.
+
+  M ODEL                                           MSE ↓
+  GNN (S ANCHEZ -G ONZALEZ ET AL ., 2020) 0.0182
+  GNN + T RANSOLVER (O URS )              0.0069
+  R ELATIVE P ROMOTION                             62.1%
+                                                                       Initial State     Ground Truth (400th step)          GNN          GNN + Transolver
+
+
+
+
+                                                                      23
+                                                                Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+E.5. Standard Deviations
+We repeat all the experiments three times and provide standard deviations here. As shown in Table 15, Transolver surpasses
+the previous state-of-the-art models with high confidence. It is worth noticing that we compare Transolver with the second-
+best model on each benchmark. It is hard to outperform all the previous models consistently given that the previous models
+have shown ups and downs on different benchmarks, further verifying the effectiveness of our model.
+Especially for AirfRANS (Bonnet et al., 2022) that contains diverse conditions on airfoil shape, Reynolds number and angle
+of attack, according to their official paper, they “choose to only run 1000 simulations as one of the goals of this dataset is to
+be close to real-world settings, i.e. limited quantity of data.” Thus, this limited data setting will result in a relatively large
+deviation. Notably, even in this hard setting, Transolver still surpasses the second-best model with 95% confidence.
+
+Table 15. Standard deviations of Transolver on all experiments. For clarity, we also list the performance of the second-best model.
+Especially, for Shape-Net Car and AirfRANS, standard deviations on Spearman’s rank correlations of drag or lift coefficients are provided.
+
+                                                             P OINT C LOUD               S TRUCTURED M ESH                                               R EGULAR G RID                      U NSTRUCTURED M ESH
+M ODEL (×10−2 )                                              E LASTICITY P LASTICITY A IRFOIL                     P IPE                             NAVIER –S TOKES DARCY S HAPE -N ET C AR A IRF RANS
+                                                                 0.86±0.02           0.17±0.01 0.59±0.01 0.47±0.02                                     11.95±0.20         0.65±0.01          98.42±0.12          99.64±0.07
+S ECOND - BEST M ODEL
+                                                                 (GNOT)          (OF ORMER )         (LSM)       (GNOT)                                  (ONO)               (LSM)           (3D-G EO CA)       (G RAPH SAGE)
+
+T RANSOLVER                                                      0.64±0.02           0.12±0.01 0.53±0.01 0.33±0.02                                     9.00±0.13          0.57±0.01          99.35±0.10          99.78±0.04
+C ONFIDENCE I NTERVAL                                              99%                 99%       99%       99%                                           99%                99%                99%                 95%
+
+
+
+F. Full Efficiency Analysis
+As a supplement to Figure 6 in the main text, we also conduct experiments on different sizes of input meshes and record
+the model parameter, running time and the GPU memory of five Transformer-based methods, which are Transolver, ONO,
+GNOT, OFormer, Galerkin. From Figure 21 and Table 16, we can find that in comparison with other methods, Transolver
+presents the least running time growth, which benefits from our design of linear-complexity Physics-Attention. Especially in
+large-scale meshes, Transolver is nearly 5x times faster than method ONO with 23% the GPU memory usage.
+
+                                                                                                                                    
+                                                    ONO                                                                                                 ONO
+                                   
+                                   
+                                                    Galerkin                                                                                            Galerkin
+          Running Time (s/epoch)
+
+
+
+
+                                                                                                                                         
+                                                    GNOT                                                                                
+                                                                                                                                                        GNOT
+                                                                                                                  GPU Memory (GB)
+
+
+
+
+                                                    OFormer                                                                                             OFormer
+                                   
+                                   
+
+
+
+                                                    Transolver                                                                                        Transolver
+
+
+                                   
+                                   
+
+
+                                                                                                                                        
+
+
+
+                                       
+                                                                                                                                            
+                                   
+                                                                                                                                        
+
+
+
+
+                                             
+                                                        
+                                                                                                                         
+                                                                                                                                                                                      
+                                                                      Input Resolution                                                                                   Input Resolution
+
+Figure 21. The growth curves of Transformer-based models w.r.t. the size of input mesh, where the batch size is set as 1. We record the
+running time and the GPU memory under different mesh points N , which range from 210 to 215 .
+
+
+
+
+                                                                                                                 24
+                             Transolver: A Fast Transformer Solver for PDEs on General Geometries
+
+
+
+
+Table 16. Model efficiency comparison in Elasticity (Relative L2) and Shape-Net Car (ρD ), where we select five Transformer-based
+methods that can be applied to unstructured meshes. Efficiency is evaluated on inputs of different meshes during training. Running time is
+measured by the time to complete one epoch, which contains 103 iterations. “/” indicates the baseline will fail in this benchmark.
+        Input Mesh Size (N )           Parameter     GPU Memory         Running Time           Elasticity           Shape-Net Car
+          Model                N         (MB)             (GB)           (s / epoch)      (972 mesh points)     (32,186 mesh points)
+                              1024      0.9284            0.64             38.183
+                              2048      0.9284            0.69             38.678
+        Transolver            4096      0.9284            0.80             39.011               0.0064                  0.9935
+          (Ours)              8192      0.9284            1.02             39.048
+                             16384      0.9284            1.51             54.104
+                             32768      0.9284            2.36             98.552
+                              1024      5.2477            0.85              54.282
+                              2048      5.2477            1.07              55.939
+          GNOT                4096      5.2477            1.47              60.857              0.0086                  0.9833
+     (Hao et al., 2023)       8192      5.2477            2.33              67.170
+                             16384      5.2477            4.23             112.552
+                             32768      5.2477            7.46             209.923
+                              1024      1.1093            1.47              69.759
+                              2048      1.1093            1.75              76.245
+          ONO                 4096      1.1093            2.30             100.134              0.0118                     /
+    (Xiao et al., 2024)       8192      1.1093            3.47             149.598
+                             16384      1.1093            5.64             255.339
+                             32768      1.1093           10.09             462.459
+                              1024      0.8844            0.63              28.147
+                              2048      0.8844            0.69              30.983
+         OFormer              4096      0.8844            0.80              31.113              0.0183                     /
+     (Li et al., 2023c)       8192      0.8844            1.02              47.904
+                             16384      0.8844            1.67              91.671
+                             32768      0.8844            2.44             182.205
+                              1024      1.0414            0.62              26.507
+                              2048      1.0414            0.66              26.503
+  Galerkin Transformer        4096      1.0414            0.74              27.481              0.0240                  0.9764
+      (Cao, 2021)             8192      1.0414            0.91              37.098
+                             16384      1.0414            1.45              67.524
+                             32768      1.0414            2.05             129.872
+
+
+
+
+                                                                   25
+

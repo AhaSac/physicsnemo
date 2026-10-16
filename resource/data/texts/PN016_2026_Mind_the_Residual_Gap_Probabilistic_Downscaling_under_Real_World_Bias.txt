@@ -1,0 +1,1558 @@
+                                                          Mind the Residual Gap:
+                                             Probabilistic Downscaling under Real-World Bias
+
+
+                                                                Yujin Kim                                     Nidhi Soma
+                                                      Department of Computer Science                Department of Computer Science
+                                                            Cornell University                            Cornell University
+                                                            Ithaca, NY, 14853                              Ithaca, NY 14853
+arXiv:2606.30821v1 [cs.LG] 29 Jun 2026
+
+
+
+
+                                                          yk826@cornell.edu                             ns848@cornell.edu
+
+                                                                                       Sarah Dean
+                                                                             Department of Computer Science
+                                                                                   Cornell University
+                                                                                    Ithaca, NY 14853
+                                                                                 sdean@cornell.edu
+
+
+
+                                                                                         Abstract
+                                                     Probabilistic downscaling is the task of modeling the conditional distribution of
+                                                     high-resolution fields given coarse inputs, and is a central challenge to atmo-
+                                                     spheric science, climate modeling, and other multiscale physical systems. A widely
+                                                     used paradigm decomposes the problem into a deterministic mean predictor fol-
+                                                     lowed by a stochastic residual generator. While effective in idealized settings,
+                                                     this mean–residual approach frequently produces biased and under-dispersive en-
+                                                     sembles in real-world applications. Is this merely generic predictive uncertainty
+                                                     miscalibration? We show that the root cause is more fundamental: residual target
+                                                     misspecification, the residual distribution induced during training differs system-
+                                                     atically from the one required at test time due to downscaling bias. To close this
+                                                     gap, we introduce ReMatch (Residual Distribution Matching). ReMatch aligns
+                                                     the training residual distribution toward the test-time regime via optimal transport
+                                                     in a low-dimensional PCA space. This preserves the statistical benefits of the
+                                                     mean–residual framework while reducing the train–test mismatch in the residual
+                                                     targets seen by the stochastic generator. On a controlled synthetic benchmark with
+                                                     varying bias levels and a real-world HRRR–ERA5 wind field downscaling task,
+                                                     ReMatch substantially reduces under-dispersion, improves calibration (SSR and
+                                                     CRPS), and outperforms strong baselines, including the standard mean–residual
+                                                     model and its variants, as well as state-of-the-art super-resolution models. Our
+                                                     code is available at https://github.com/sdean-group/ReMatch.git
+
+
+                                         1    Introduction
+                                         Probabilistic downscaling seeks to model the conditional distribution of high-resolution fields given
+                                         coarse-resolution inputs. This problem is a common challenge in atmospheric science, climate mod-
+                                         eling, and other multiscale physical systems. Fine-scale dynamics are essential for downstream tasks
+                                         such as hazard assessment, local forecasting, trajectory planning, and uncertainty-aware decision
+                                         making, but directly simulating them is often computationally expensive. Downscaling is inher-
+                                         ently an ill-posed inverse problem due to unresolved subgrid variability, even in idealized settings
+                                         where the low-resolution input is obtained by simple downsampling of the high-resolution field.
+                                         In real-world applications, however, the challenge is substantially greater. Systematic biases and
+                                         mismatches between coarse- and fine-resolution data sources—collectively referred to as downscaling
+
+                                         Preprint.
+bias—introduce additional, often domain- or source-dependent discrepancies [31]. These biases
+distort the low-to-high resolution relationship far beyond simple interpolation, rendering the required
+high-resolution correction both stochastic and systematically more difficult to infer.
+A widely adopted strategy for such tasks is the two-stage mean–residual decomposition: a determin-
+istic regressor first predicts a coarse approximation of the target, after which a stochastic generative
+model produces a residual correction that provides fine-scale detail and probabilistic spread. This
+design has been successfully applied across probabilistic downscaling [32, 14, 38], climate fore-
+casting [50, 34], speech synthesis [6], and medical imaging [53]. In atmospheric downscaling,
+CorrDiff [32] is a prominent representative: it trains a regression model on variables such as tempera-
+ture, wind, and radar reflectivity, then employs a conditional diffusion model to generate stochastic
+residual corrections. However, CorrDiff and subsequent work consistently report that the resulting
+ensembles are under-dispersive, with ensemble spread significantly smaller than the ensemble mean
+error [32, 14].
+In this paper, we argue that this under-dispersion is not merely a generic diffusion calibration. Rather,
+it stems from a fundamental issue that we term residual target misspecification. In the mean–residual
+framework, the residual is not an intrinsic stochastic component of the high-resolution field; it is an
+induced correction target defined relative to the upstream mean predictor µϕ (x). When the low- and
+high-resolution fields exhibit significant downscaling bias (as is typical in real-world cross-source
+or cross-resolution settings), the mean predictor overfits training-specific biases and artifacts. As a
+result, the residual distribution observed during training becomes systematically different from the
+correction distribution required at test time. We formalize this train–test mismatch in the residual
+target itself and show—both theoretically and empirically—that its severity increases directly with
+the strength of low-resolution (LR) – high-resolution (HR) bias.
+To address this, we propose ReMatch (Residual distribution Matching). Using a calibration set
+as a proxy for the test regime, ReMatch explicitly aligns the training residual distribution with the
+test-time residual distribution via optimal transport [46]. This preserves the statistical benefits of
+the mean–residual decomposition while ensuring that the stochastic residual generator is trained on
+residual targets whose distribution is more closely matched to those encountered at inference.
+Our main contribution is threefold: (i) a rigorous explanation of why mean—residual pipelines are
+prone to under-dispersion in biased downscaling settings, (ii) ReMatch, a practical solution that
+benefits both accuracy and ensemble calibration, and (iii) a comprehensive empirical evaluation
+on a synthetic benchmark [8] with systematically varied LR—HR bias and a real-world wind field
+downscaling task using HRRR [13] and ERA5 [18]. Across these settings, ReMatch consistently
+outperforms strong baselines—including the standard mean—residual pipeline, its classifier-free
+guidance variants [19], uncertainty-conditioned residual diffusion, and state-of-the-art deterministic
+super-resolution models [28, 49]—confirming that residual target misspecification is the primary
+cause of under-dispersion in biased downscaling.
+
+
+2     Background and Setup
+
+2.1   Probabilistic Downscaling
+
+We consider probabilistic downscaling of high-resolution geophysical fields y ∈ Rcout ×H×W from
+low-resolution inputs x ∈ Rcin ×h×w , where H > h and W > w. Here, cin and cout denote the
+numbers of input and output channels, respectively, such as velocity, temperature or other physical
+variables, while (h, w) and (H, W ) denote the low- and high-resolution spatial grid sizes. The task is
+to model the conditional distribution of y given x.
+In many physical downscaling problems, this mapping is fundamentally non-deterministic. A useful
+abstraction is to assume that the low-resolution observation is obtained from the high-resolution state
+through an effective degradation process x = D(y, s), where D may include not only resolution
+reduction, but also regridding, projection, source mismatch, simulator bias, and other systematic
+discrepancies, and s denotes latent source- or pipeline-dependent factors. For example, an ERA5-
+to-HRRR wind downscaling task combines differences in spatial resolution, numerical model for-
+mulation, data assimilation, pressure-level definition, and grid projection within the same effective
+degradation process D. In idealized super-resolution benchmarks, D is often close to a simple
+downsampling operator, whereas in real-world settings it may reflect substantial bias and cross-source
+
+
+                                                   2
+mismatch. In either case, D is many-to-one, so the inverse problem is ill-posed. Hence the natural
+learning target is not a unique deterministic inverse, but the conditional distribution y ∼ p(y | x).
+This probabilistic viewpoint is important not only because the inverse problem is many-to-one, but
+also because downstream applications often require uncertainty-aware predictions. In multiscale
+physical systems, unresolved fine-scale variability can affect forecasting, decision making, and mo-
+tion planning of agents moving through the predicted field. Successful downscaling should therefore
+model both a central prediction and the spread of physically plausible high-resolution realizations.
+
+2.2   Mean–Residual Decomposition
+
+We study a class of pipelines in which an upstream mean predictor
+                                          µϕ (x) ∈ Rcout ×H×W
+first produces a deterministic approximation of the target, and a residual generator then models the
+remaining correction [32, 26, 50, 34, 6, 27, 25]. The target is decomposed as
+                               y = µϕ (x) + rϕ ,            rϕ := y − µϕ (x).
+A residual generator
+                                             qθ (r | x, µϕ (x))
+then produces stochastic corrections
+                                          r̂ ∼ qθ (r | x, µϕ (x)),
+leading to k number of ensemble predictions
+                                ŷ (i) = µϕ (x) + r̂(i) ,      i = 1, . . . , k.
+
+CorrDiff [32] is a prominent example of this design in atmospheric downscaling: it first predicts a
+deterministic high-resolution field and then applies a diffusion model to generate a residual correction.
+This decomposition is motivated by the idea that the residual distribution is statistically easier to
+model than the full target distribution, since the upstream mean predictor removes a substantial
+fraction of the large-scale variance.
+Crucially, once µϕ is fixed, the residual stage is trained on a predictor-induced target rather than
+an intrinsic component of the data distribution. This distinction is central to our analysis: the
+residual target can change when the reliability of µϕ changes across domains, even if the underlying
+downscaling task remains the same.
+
+2.3   Domains and Splits
+
+For training and test splits, let (X, Y ) ∼ Pd , d ∈ {tr, te}, denote the joint input–target distribution.
+Although the two splits are assumed to be i.i.d. samples from the same population, the fitted upstream
+predictor is not symmetric with respect to them: it is optimized on the training split and evaluated on
+held-out test samples. For a fixed µϕ , each split therefore induces its own empirical residual random
+variable
+                         Rdϕ (Xd , Yd ) := Yd − µϕ (Xd ),       (Xd , Yd ) ∼ Pd .
+                                                                   ϕ        ϕ
+As a result, its errors, and therefore the induced residuals Rtr     and Rte  , can have systematically
+different distributions. This train–test residual mismatch is the object we analyze in the next section.
+
+3     Residual Target Misspecification
+We formalize the induced shift in the residual distribution as residual target misspecification. Unlike
+an intrinsic stochastic component of the high-resolution field, the residual target is defined dependent
+to an upstream mean predictor µϕ . In real-world downscaling, the effective degradation process
+may combine resolution reduction, regridding, source mismatch, and model bias, so µϕ may learn a
+training-domain LR–HR correspondence rather than a globally valid one. When this learned relation
+changes in reliability or structure across test regimes, the induced residual target also shifts. We refer
+to this predictor-induced shift as residual target misspecification.
+
+
+                                                      3
+Table 1: Train–test distribution shift comparison between the predictor-defined residual distribution
+and the upstream mean predictor output. Mean and standard deviation are computed from the
+samplewise RMS magnitude over all channels and spatial locations.
+        Variable      Meantr Meante Stdtr Stdte W2 Norm. W2                      JS     KS
+          Rϕ (X, Y )         0.68        1.93         0.10        0.45    1.25         0.94         0.99     0.99
+          µϕ (X)            15.40        15.37        7.54        7.09    0.39         0.02         0.02     0.03
+
+
+3.1    Residual Distribution Shift Induced by Mean-Error Gap
+
+For each domain d ∈ {tr, te}, define the expected squared residual magnitude
+                  Md (ϕ) := E(X,Y )∼Pd ∥Y − µϕ (X)∥22 = ER∼Rϕ ∥R∥22 .
+                                                                         
+                                                                                        d
+
+This quantity measures the typical scale of the correction that the residual generator must model on
+domain d.
+Proposition 1 (Residual magnitude gap implies residual distribution shift). For a fixed mean predictor
+µϕ , the 2-Wasserstein distance between the induced residual distributions satisfy
+                                   ϕ    ϕ
+                                               p             p
+                             W2 (Rtr , Rte )≥    Mtr (ϕ) − Mte (ϕ) .
+
+Proof. For any domain d, W2 (Rdϕ , δ0 ) = Md (ϕ) where δ0 is the Dirac measure at the origin. The
+                                          p
+claim then follows from the reverse triangle inequality for W2 .
+
+Although the lower bound in Proposition 1 is not always tight, it establishes a simple measurable
+certificate of residual distribution shift: a residual-energy gap necessarily implies a distributional gap.
+
+3.2    Why Misspecification is Amplified in Residual Space
+
+Even under an i.i.d. train–test split, µϕ is optimized on the training samples and therefore tends to
+achieve lower empirical residual energy on the training split than on held-out samples. In practice,
+the most common direction is Mtr (ϕ) < Mte (ϕ). In biased downscaling settings, this gap can easily
+be amplified, leaving small residuals during training but requiring larger corrections at test time.
+Residualization can also make small mismatches in the GT and mean prediction more visible. To see
+                                                  ϕ    ϕ
+this, suppose the train and test residuals are Rtr  , Rte . Then their difference can be decomposed as
+  ϕ      ϕ
+Rte − Rtr = (Yte − Ytr ) − (µϕ (Xte ) − µϕ (Xtr )) . Thus, residual-space mismatch depends not only
+on the shift in the target field, but also on how the mean predictor shifts across domains.
+
+3.3    Empirical Characterization
+
+We empirically verify that residual target misspecification is concentrated in the residual space. Using
+the mean–residual model [32] trained on the real-world wind-field downscaling benchmark described
+in Section 5.2, we compare the train and test distributions of the mean predictor output and the
+corresponding residual target. For each field sample, we compute its samplewise RMS magnitude,
+specifically, the normalized ℓ2 norm over all channels and spatial locations. We report the mean and
+standard deviation of these samplewise magnitude distributions, followed by train–test discrepancy
+metrics: W2 , normalized W2 1 , Jensen–Shannon (JS) divergence, and Kolmogorov–Smirnov (KS)
+statistic.
+Table 1 shows that the train–test shift is much more pronounced in the residual space than in the
+mean-prediction space. The residual distribution has large discrepancies in normalized W2 , JS
+divergence, and KS statistic, whereas the mean predictor output changes only mildly across domains.
+This supports our claim that the predictor-induced residual target can shift sharply even when the
+upstream mean output remains relatively stable.
+   1 Because the residual and mean predictor output have vastly different scales, raw Wasserstein distances can be misleading.
+
+We therefore additionally report a normalized Wasserstein distance, defined as W2 divided by the average RMS scale of the
+two distributions.
+
+
+                                                              4
+4     ReMatch: Residual Distribution Matching
+We introduce Residual Distribution Matching (ReMatch), a probabilistic downscaling framework
+that combines deterministic mean prediction, residual target distribution alignment, and conditional
+diffusion-based residual generation. Its core idea is to preserve the useful mean prior provided by a
+deterministic high-resolution mean predictor while explicitly adapting the training residual targets
+toward a regime that better matches the correction statistics required at test time.
+ReMatch uses a held-out calibration split as an observable proxy for the test-time target residual
+distribution. Accordingly, we extend the domain notation to d ∈ {tr, cal, te}, which denote the
+training, calibration, and test splits, respectively. The training split is used to fit the upstream mean
+predictor, and the calibration split is used for residual distribution matching. The residual generator is
+trained on both training and calibration split, while the test split is reserved for final evaluation.
+
+4.1   Stage 1: High-Resolution Mean Field Estimation
+
+Let (x, y) ∼ Ptr denote a training input–target pair. We train an upstream mean predictor using the
+pointwise regression objective
+                 µϕ (x) ∈ Rcout ×H×W , Lreg (ϕ) = E(x,y)∼Ptr ∥y − µϕ (x)∥pp .
+                                                                                  
+
+This stage produces a structured deterministic approximation of the target field that serves as a strong
+prior for subsequent stochastic refinement. For each training sample, it induces a residual
+                                       rϕ (x, y) = y − µϕ (x).
+
+4.2   Stage 2: Residual Target Alignment via Transport
+                                 ϕ     ϕ
+We address the domain shift Rtr    ̸= Rte by transporting the training residual distribution toward the
+calibration residual distribution, which serves as a proxy for the test-time correction regime. This is
+naturally formulated using optimal transport, which provides a framework for distribution matching
+by transporting mass from a source distribution to a target distribution [45, 37].
+At a high level, ReMatch replaces each training residual with an OT-weighted combination of
+calibration residuals. The transport cost combines residual similarity with low-resolution conditioning
+consistency, preventing residuals from being transported to calibration samples with incompatible LR
+inputs. This shifts the training residual distribution toward the calibration regime while preserving
+compatibility among the LR input, pseudo-mean, and transported residual. However, applying
+optimal transport directly in pixel space is computationally expensive and statistically unstable in high-
+dimensional residual fields [7, 3]. To make transport over high-dimensional residual fields tractable
+and less sensitive to grid-scale noise, we compute the transport cost in compact PCA representations [1,
+51, 30]. We fit separate PCA bases to the concatenated training and calibration residuals and to
+the corresponding low-resolution inputs. Let zitr , zjcal denote residual PCA representations, and let
+ℓtr   cal
+ i , ℓj denote LR-conditioning PCA representations. We define transport cost
+
+                              cij = α∥zitr − zjcal ∥22 + λcond ∥ℓtr    cal 2
+                                                                 i − ℓj ∥2 .
+Here, cij is the cost of matching training sample i to calibration sample j, with α and λcond controlling
+the residual and LR-conditioning terms. The low-resolution conditioning term in the cost function is
+crucial, as it constrains transport to occur between samples with similar large-scale inputs, thereby
+reducing the risk of generating incompatible pseudo-means. We solve an optimal transport problem
+using the cost cij and obtain a transport plan π. The transported residual is then reconstructed as
+                                      cal
+                             P
+                               j πij zj
+                       z̃i = P            ,   r̃i = UK z̃i + r̄,      µ̃i = yi − r̃i ,
+                                  j πij
+where πij is the transport weight from training sample i to calibration sample j. Additional imple-
+mentation details are provided in Appendix A.3.
+
+4.3   Stage 3: Residual Generation with Diffusion
+
+In the final stage, we train a conditional diffusion model qθ (r | x, µ) to generate stochastic residual
+corrections. The model is trained on the union of (i) the transported training samples {(xi , µ̃i , r̃i )}ni=1
+                                                                                                            tr
+                                                                ncal
+and (ii) the original calibration samples {(xj , µϕ (xj ), rj )}j=1 }.
+
+
+                                                      5
+This design preserves the computational advantages of the mean–residual decomposition while
+explicitly correcting the train–test mismatch in the residual distribution. Algorithm A.2 provides an
+overview of the three-stage ReMatch training pipeline.
+Implementation Note. ReMatch is modular: the mean predictor and stochastic residual generator
+can be instantiated with different architectures; implementation details are for are provided in
+Appendix A.6.
+
+
+5     Experiments and Results
+
+We evaluate ReMatch on a controlled synthetic benchmark and a real-world atmospheric downscaling
+task. The synthetic experiment validates the mechanism of bias-induced residual target misspecifi-
+cation by systematically varying the LR–HR bias level. The real-world experiment tests ReMatch
+under realistic ERA5-to-HRRR wind-field distribution shifts. We evaluate downscaling fidelity
+and probabilistic calibration, and further assess downstream impact through a particle-advection
+experiment, where ensemble trajectories reveal how calibration affects predicted motion through the
+flow field.
+Baselines and Variants. We use two versions of ReMatch: ReMatchU with a UNet mean predictor
+and ReMatchS with a SwinIR [28] mean predictor. We compare ReMatch against deterministic
+baselines, including UNet [41], Conv-FNO [49], and SwinIR [28], and probabilistic CorrDiff-based
+baselines. The latter include the original CorrDiff [32], a reduced-capacity mean-predictor variant
+(CorrDiffm ), classifier-free guidance on residual diffusion (CFG [19]), and uncertainty-conditioned
+variants (UCq and UCµ ).
+Except for SwinLR and Conv-FNO, all regression models are UNet-based [41], and all diffusion
+models use an EDM-style residual diffusion formulation [21] with a UNet-based score network. We
+implement conditioning by channel-wise concatenation. Details of each baseline and implementation
+are provided in Appendix A.6.
+Evaluation Metrics. We report RMSE, Spread–Skill Ratio (SSR), and Continuous Ranked Probabil-
+ity Score (CRPS) as primary metrics. RMSE measures reconstruction accuracy, while SSR and CRPS
+evaluate probabilistic quality; SSR is particularly useful for diagnosing ensemble under-dispersion.
+We report LPIPS [52] as an auxiliary perceptual metric, following prior use in atmospheric-field
+prediction [50, 20]. We also report ACC [33], computed between predicted and ground-truth (GT)
+deviations from the train set GT mean for each channel and time.
+Metrics in Table 2 are computed using 600 random test samples. Visual metrics are normalized
+channelwise with quantile extrema, and stochastic-model LPIPS is averaged over ensembles.
+
+5.1     Bias-Controlled Synthetic Benchmark
+
+To validate our theoretical analysis, we conduct a controlled experiment on the BLASTNet dataset [8].
+We artificially inject structured downscaling bias of increasing severity into the low-resolution
+inputs while keeping the high-resolution targets fixed (details and bias generation procedure in
+Appendix A.4). We use CorrDiff as a baseline method and ReMatchU as our proposed method. In all
+cases, 12 ensemble predictions are generated to calculate spreads and RMSE.
+Dataset. We use the BLASTNet Momentum128 3D super-resolution dataset [8] as a controlled
+testbed. The original dataset provides clean paired low- and high-resolution fields with 4 channels. We
+use the 8× super-resolution setting, with 16 × 16 low-resolution inputs and 128 × 128 high-resolution
+targets. We define four bias levels (Level 0 to 3), where Level 0 uses the original clean interpolated
+low-resolution field and Levels 1–3 introduce progressively stronger structured mismatch by mixing
+2D fields along the z axis with Gaussian weights (full procedure in Appendix A.4). Figure 2 illustrates
+how the input changes across the four bias levels under same HR target.
+
+5.1.1    Results
+Does residual misspecification explain under-dispersion? Figure 1 shows the RMSE–SSR scatter
+across increasing LR–HR bias levels. As the bias level increases, the baseline exhibits a clear
+degradation: RMSE increases while SSR decreases. This trend indicates that stronger LR–HR mis-
+
+
+                                                  6
+match induces a more difficult residual correction regime and leads to increasingly under-dispersive
+ensembles.
+Does ReMatch mitigate residual target misspecification? ReMatch improves RMSE in all biased
+settings, with the exception of Level 0, where the LR input is not biased. It also consistently improves
+SSR, and the improvement becomes more pronounced at higher bias levels. These results support
+our central hypothesis: when paired low- and high-resolution data contain structured bias, the mean–
+residual decomposition can induce residual target misspecification, and residual distribution matching
+can mitigate this effect. Channel-wise RMSE and SSR results are provided in Appendix A.4.
+                                                                                  Level 0 Input Level 0 ReMatch Level 0 CorrDiff
+
+
+         0.55
+                                              level0_CorrDiff                     Level 1 Input Level 1 ReMatch Level 1 CorrDiff
+         0.50                                 level0_ReMatch
+                                              level1_CorrDiff           Truth 1
+         0.45                                 level1_ReMatch
+   SSR
+
+
+
+
+         0.40                                 level2_CorrDiff                     Level 2 Input Level 2 ReMatch Level 2 CorrDiff
+                                              level2_ReMatch
+         0.35                                 level3_CorrDiff
+                                              level3_ReMatch
+         0.30
+                                                                                  Level 3 Input Level 3 ReMatch Level 3 CorrDiff
+                0.05   0.10     0.15   0.20
+                           RMSE
+
+Figure 1: Performance under increasing LR in-                       Figure 2: Qualitative comparison across
+put bias. ReMatch consistently improves SSR and                     LR input bias levels. Rows correspond
+reduces RMSE in biased settings, with the perfor-                   to LR bias levels. Columns show the GT
+mance gap becoming more pronounced as the bias                      HR field, LR input, ReMatch and CorrDiff
+level increases.(SSR→ 1, RMSE↓)                                     prediction.
+
+5.2      Real-World Wind Field Downscaling Benchmark
+
+Our main experiment evaluates ReMatch on a real-world atmospheric downscaling task with realistic
+distribution shift. Deterministic baselines (UNet, ConvFNO, and SwinIR) produce a single prediction,
+whereas stochastic methods (CDM, CorrDiffm , CorrDiff, CFG, UCµ , UCq , ReMatchU , and ReMatchS )
+generate 12 ensemble members. Further details on each model are provided in Appendix A.6.
+Dataset. We use ERA5 [18] as the coarse-resolution input and HRRR [13] as the high-resolution
+target over the northeast CONUS region. The input contains u- and v-wind fields at five stratospheric
+pressure levels, giving 10 channels in total and 4 temporal channels for sinusoidal embeddings of
+sample day and month on a 21×21 grid. The target consists of the same 10 wind-component channels
+on a 168 × 168 grid. The dataset contains hourly fields from 2018 to 2021. We use 2018–2020 for
+training and 2021 for testing; for methods requiring calibration data, we hold out 2020 as a calibration
+set. Further details are in Appendix A.5.
+
+5.2.1      Results
+What does realistic LR–HR mismatch look like? The first column of Fig. 3 illustrates LR–HR
+mismatch: even for the same atmospheric scene, the LR input and the corresponding HR target differ
+substantially. In the appendix, Fig. 7 shows more examples where RMSE can quantify this mismatch,
+and Table 3 shows that the amount of bias realistically depends on channel. The cross-source
+mismatch makes real-world downscaling more challenging than idealized super-resolution.
+Do the proposed methods improve downscaling performance? Figure 3 shows that UNet remains
+biased in overall scale. In contrast, mean–residual methods using UNet as the mean predictor,
+including CorrDiff, CFG, UC, and ReMatchU , produce predictions that are closer to the HR target in
+both spatial structure and magnitude, suggesting that residual generation helps correct errors in the
+deterministic mean estimate. A similar trend is observed for ReMatchS , which uses SwinIR as the
+mean predictor. Overall, ReMatchU and ReMatchS produce visually competitive reconstructions while
+better recovering the large-scale magnitude and small-scale spatial patterns of the HR field. Table 2
+shows that ReMatch performs strongly across both deterministic and probabilistic metrics. ReMatchS
+and ReMatchU rank highly on the main metrics of interest showing that the proposed residual
+distribution matching improves both reconstruction accuracy and stochastic calibration. ReMatchU
+
+
+                                                                7
+Table 2: Quantitative comparison on HRRR-ERA5 pressure-level super-resolution over all
+channels.
+  Metric                    UNet        CDM           CorrDiffm         CorrDiff        ConvFNO           SwinIR            CFG      UCµ           UCq       ReMatchU         ReMatchS
+  RMSE ↓                    1.8517     1.8570              1.8351        1.8342              1.9213       1.7642            1.8309   1.8584       1.8551       1.8102             1.7194
+  SSR → 1                      –       0.6419              0.7701        0.3241                 –            –              0.3418   0.8745       0.5950       0.6347             0.150
+  CRPS/MAE ↓                1.5420     1.1908              1.1531        1.2859              1.6046       1.4538            1.2740   1.1545       1.1946       1.1567             1.0976
+  LPIPS ↓                   0.0737     0.0943              0.0790        0.0904              0.0715       0.0641            0.0793   0.0871       0.0842       0.0841             0.0715
+  ACC → 1                   0.8980     0.8973              0.8999        0.8991              0.8957       0.9016            0.8994   0.8926       0.8952       0.9017             0.9051
+
+
+                                   Notes: For deterministic models, CRPS is replaced with MAE and SSR is omitted.
+                                        Best results are shown in bold, and second-best results are underlined.
+
+
+achieves the best LPIPS, consistent with the qualitative improvements in Figure 3. ReMatch also
+remains competitive on ACC, indicating that its gains extend beyond pointwise accuracy. Overall,
+these results show that ReMatch improves the accuracy–calibration tradeoff in real-world wind-field
+downscaling.
+Is making the residual target more generic sufficient? If train–test residual target shift is the core
+problem, one possible strategy is to make the residual target itself less specialized to the training
+domain. However, our results show that this is not sufficient: while CorrDiffm and CDM improve
+SSR relative to CorrDiff, they do so at the cost of reduced accuracy and fidelity.
+How do CorrDiff variants compare? CFG and uncertainty-conditioned CorrDiff (UC) provide two
+alternative strategies for improving residual generation. CFG is commonly used to sharpen diffusion
+samples, but in this setting it does not improve calibration because it does not directly address residual
+target misspecification. Uncertainty conditioning improves SSR by providing the residual generator
+with additional information about the reliability of the mean predictor, but it depends on the quality
+of the learned uncertainty estimate and requires an additional training stage.
+How much does the deterministic mean predictor matter? Among deterministic baselines,
+SwinIR achieves the strongest performance, showing that a stronger mean predictor can improve
+reconstruction accuracy. However, purely deterministic estimators, including UNet, ConvFNO, and
+SwinIR cannot quantify uncertainty. This limits their use in downstream tasks where calibrated
+ensemble spread is essential. ReMatchS , which adds residual generation on top of the SwinIR mean
+predictor, further improves both RMSE and CRPS/MAE, suggesting that ReMatch can benefit from
+stronger deterministic backbones while still providing calibrated stochastic predictions.
+Does ensemble calibration matter for downstream tasks? Predicted physical fields are often
+used as environments for downstream decision making and agent motion planning. To examine how
+residual calibration may affect such downstream use, we advect particles through 48 consecutive
+hourly wind fields. Figure 4 compares trajectories from the HR ground-truth field, CorrDiff ensembles,
+and ReMatchU ensembles. CorrDiff trajectories deviate from the ground-truth path as the particle
+moves away from the initial position, whereas ReMatchU remains better centered around the truth
+while preserving ensemble spread.
+
+
+                 Input                                 UNet                        CDM                           CorrDiff                     ConvFNO                   SwinIR
+                                                                                                                                                                                           7
+41°N                                  41°N
+                                                                                                                                                                                           6
+40°N                                  40°N
+                                                                                                                                                                                           5
+39°N                                  39°N
+38°N                                  38°N                                                                                                                                                 4
+37°N                                  37°N                                                                                                                                                 3
+                                                                                                                                                                                           2
+       82°W   80°W   78°W   76°W             82°W   80°W     78°W   76°W 82°W   80°W        78°W   76°W 82°W   80°W     78°W   76°W 82°W   80°W    78°W   76°W 82°W   80°W   78°W   76°W
+                 Truth                                     CFG                         UC                             UCq                   ReMatchU                   ReMatchS
+                                                                                                                                                                                           7
+41°N                                  41°N
+                                                                                                                                                                                           6
+40°N                                  40°N
+                                                                                                                                                                                           5
+39°N                                  39°N
+                                                                                                                                                                                           4
+38°N                                  38°N
+                                                                                                                                                                                           3
+37°N                                  37°N
+                                                                                                                                                                                           2
+       82°W   80°W   78°W   76°W             82°W   80°W     78°W   76°W 82°W   80°W        78°W   76°W 82°W   80°W     78°W   76°W 82°W   80°W    78°W   76°W 82°W   80°W   78°W   76°W
+
+Figure 3: Qualitative comparison of downscaled 50 hPa v-wind fields on 2021-06-05 10:00:00.
+The top-left panel shows the upsampled ERA5 input, and the bottom-left panel shows the correspond-
+ing HRRR GT. Deterministic baselines produce a single prediction, whereas diffusion-based methods
+generate 12 ensemble members; here we show the 7th ensemble member for each stochastic method.
+
+
+                                                                                                    8
+While this example alone does not establish
+a general downstream advantage, it suggests
+that better-calibrated spread can improve the
+usefulness of ensemble forecasts for down-
+stream uncertainty-aware tasks.
+
+
+
+
+6   Discussion                                     Figure 4: Particle trajectory comparison using en-
+                                                   semble wind-field predictions over 48 consecutive
+                                                   hourly fields. The red line denotes the trajectory
+Role of calibration data. ReMatch relies on a advected by the HR ground-truth field, orange lines
+held-out calibration set because residual target denote CorrDiff ensemble trajectories, and blue lines
+adaptation is only meaningful when the cali- denote ReMatchU ensemble trajectories.
+bration residuals reflect the correction regime
+expected at test time. This is a weaker and more practical assumption than requiring access to
+test labels, but it is still an important one: ReMatch is not intended to solve arbitrary distribution
+shift without representative held-out data. In our experiments, we use a train–calibration–test split
+of approximately 2:1:1, which provides enough calibration samples to estimate a stable residual
+distribution while leaving sufficient data for fitting the mean predictor and residual generator. The
+optimal calibration size is likely task-dependent. A larger calibration set can better represent the
+test-time residual regime and improve transport stability, but it also reduces the amount of data
+available for training the mean predictor if the total dataset size is fixed. Studying this tradeoff
+more systematically is an important direction for future work, especially in settings where labeled
+high-resolution calibration data are expensive.
+Residual target misspecification is broader than a mean-error gap. Our theoretical analysis uses
+the residual-energy gap Mtr (ϕ) ̸= Mte (ϕ) as a simple certificate of residual distribution shift, but
+this gap is not the only form that misspecification can take. Even when train and test residuals have
+similar overall magnitude, they may differ in spatial structure, tail behavior, extremes, or conditional
+dependence on the input. Thus, residual target misspecification should be understood more generally
+as a predictor-induced target shift: once the upstream mean predictor is fixed, the residual generator is
+trained on a correction target whose statistics depend on the reliability and structure of that predictor.
+The mean-error gap is therefore one measurable manifestation of a broader mismatch between the
+residual distribution seen during training and the residual distribution required at inference.
+Limitations and future directions. ReMatch performs residual distribution matching in a low-
+dimensional PCA space, which makes optimal transport more tractable than pixel-space matching.
+However, because PCA is a linear global representation, it may not fully preserve localized extremes,
+nonlinear structures, or rare high-frequency residual modes. Future work could replace PCA with
+learned or physics-aware latent representations that better capture dynamically important corrections.
+This direction is aligned with the broader use of optimal transport for distribution alignment and
+domain adaptation [10], as well as Wasserstein-based objectives for learning latent generative repre-
+sentations [44, 23]. Scalability is another limitation: our current implementation computes transport
+over the full training and calibration sets, which may become infeasible for much larger datasets.
+This could be addressed with stochastic optimization methods for large-scale OT [16], regularized
+OT solvers [11], or learned neural transport maps for out-of-sample residual adaptation [24].
+Conclusion We studied probabilistic downscaling under real-world bias through the lens of residual
+target misspecification, where a fixed mean predictor induces residual targets whose training distribu-
+tion differs from the correction regime required at test time. We introduced ReMatch, which adapts
+training residuals toward a calibration residual regime using optimal transport while preserving the
+deterministic mean predictor as a useful prior. Across controlled bias experiments, real-world ERA5-
+to-HRRR wind downscaling, and a downstream particle-advection example, ReMatch improves the
+accuracy–calibration tradeoff over strong baselines.
+More broadly, our results suggest that in residual generative pipelines, calibration failures should
+not be viewed only as deficiencies of the stochastic sampler; they can originate from the target
+construction itself. Designing reliable probabilistic downscaling systems therefore requires matching
+not only model outputs, but also the predictor-induced targets on which generative models are trained.
+
+
+                                                    9
+Acknowledgements
+We thank Preston Culbertson for helpful discussions on diffusion underdispersion in residual gen-
+erative downscaling. This work was supported in part by the NVIDIA Academic Grant Program.
+This work was partly funded by NSF CCF 2312774, NSF OAC-2311521, NSF IIS-2442137, NSF
+IIS2505098, a gift to the LinkedIn-Cornell Bowers CIS Strategic Partnership, and an AI2050 Early
+Career Fellowship program at Schmidt Science.
+
+References
+ [1] Eirikur Agustsson, Alexander Sage, Radu Timofte, and Luc Van Gool. Optimal transport maps for
+     distribution preserving operations on latent spaces of generative models. arXiv preprint arXiv:1711.01970,
+     2017.
+ [2] Anastasios N Angelopoulos, Amit Pal Kohli, Stephen Bates, Michael Jordan, Jitendra Malik, Thayer
+     Alshaabi, Srigokul Upadhyayula, and Yaniv Romano. Image-to-image regression with distribution-free
+     uncertainty quantification and applications in imaging. In International Conference on Machine Learning,
+     pages 717–730. PMLR, 2022.
+ [3] Yogesh Balaji, Rama Chellappa, and Soheil Feizi. Robust optimal transport with applications in generative
+     modeling and domain adaptation. Advances in Neural Information Processing Systems, 33:12934–12944,
+     2020.
+ [4] Shai Ben-David, John Blitzer, Koby Crammer, Alex Kulesza, Fernando Pereira, and Jennifer Wortman
+     Vaughan. A theory of learning from different domains. Machine learning, 79(1):151–175, 2010.
+ [5] Nicolas Bonneel, Julien Rabin, Gabriel Peyré, and Hanspeter Pfister. Sliced and radon wasserstein
+     barycenters of measures. Journal of Mathematical Imaging and Vision, 51(1):22–45, 2015.
+ [6] Zehua Chen, Yihan Wu, Yichong Leng, Jiawei Chen, Haohe Liu, Xu Tan, Yang Cui, Ke Wang, Lei He,
+     Sheng Zhao, et al. Resgrad: Residual denoising diffusion probabilistic models for text to speech. arXiv
+     preprint arXiv:2212.14518, 2022.
+ [7] Jaemoo Choi, Jaewoong Choi, and Myungjoo Kang. Generative modeling through the semi-dual formu-
+     lation of unbalanced optimal transport. Advances in Neural Information Processing Systems, 36:42433–
+     42455, 2023.
+ [8] Wai Tong Chung, Bassem Akoush, Pushan Sharma, Alex Tamkin, Ki Sung Jung, Jacqueline Chen, Jack
+     Guo, Davy Brouzet, Mohsen Talei, Bruno Savard, et al. Turbulence in focus: Benchmarking scaling
+     behavior of 3d volumetric super-resolution with blastnet 2.0 data. Advances in Neural Information
+     Processing Systems, 36:77430–77484, 2023.
+ [9] Nicolas Courty, Rémi Flamary, Amaury Habrard, and Alain Rakotomamonjy. Joint distribution optimal
+     transportation for domain adaptation. In Advances in Neural Information Processing Systems, volume 30,
+     2017.
+[10] Nicolas Courty, Rémi Flamary, Devis Tuia, and Alain Rakotomamonjy. Optimal transport for domain
+     adaptation. IEEE Transactions on Pattern Analysis and Machine Intelligence, 39(9):1853–1865, 2017.
+[11] Marco Cuturi. Sinkhorn distances: Lightspeed computation of optimal transport. Advances in neural
+     information processing systems, 26, 2013.
+[12] Ishan Deshpande, Yuan-Ting Hu, Ruoyu Sun, Ayis Pyrros, Nasir Siddiqui, Sanmi Koyejo, Zhizhen Zhao,
+     David Forsyth, and Alexander G Schwing. Max-sliced wasserstein distance and its use for gans. In
+     Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 10648–10656,
+     2019.
+[13] David C Dowell, Curtis R Alexander, Eric P James, Stephen S Weygandt, Stanley G Benjamin, Geoffrey S
+     Manikin, Benjamin T Blake, John M Brown, Joseph B Olson, Ming Hu, et al. The high-resolution rapid
+     refresh (hrrr): An hourly updating convection-allowing forecast model. part i: Motivation and system
+     description. Weather and Forecasting, 37(8):1371–1395, 2022.
+[14] Stathi Fotiadis, Noah D Brenowitz, Tomas Geffner, Yair Cohen, Michael Pritchard, Arash Vahdat, and
+     Morteza Mardani. Adaptive flow matching for resolving small-scale physics. In Forty-second International
+     Conference on Machine Learning, 2025.
+[15] Nicolas Fournier and Arnaud Guillin. On the rate of convergence in wasserstein distance of the empirical
+     measure. Probability Theory and Related Fields, 162(3–4):707–738, 2015.
+
+
+                                                     10
+[16] Aude Genevay, Marco Cuturi, Gabriel Peyré, and Francis Bach. Stochastic optimization for large-scale
+     optimal transport. Advances in neural information processing systems, 29, 2016.
+
+[17] Junchao Gong, Lei Bai, Peng Ye, Wanghan Xu, Na Liu, Jianhua Dai, Xiaokang Yang, and Wanli
+     Ouyang. Cascast: Skillful high-resolution precipitation nowcasting via cascaded modelling. arXiv
+     preprint arXiv:2402.04290, 2024.
+
+[18] Hans Hersbach, Bill Bell, Paul Berrisford, Shoji Hirahara, András Horányi, Joaquín Muñoz-Sabater, Julien
+     Nicolas, Carole Peubey, Raluca Radu, Dinand Schepers, et al. The era5 global reanalysis. Quarterly
+     journal of the royal meteorological society, 146(730):1999–2049, 2020.
+
+[19] Jonathan Ho and Tim Salimans. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598,
+     2022.
+
+[20] Jose Angelo Hokson, Shinjiro Kanae, and Yusuke Hiraga. Predicting tropical cyclone rainfall through
+     perceptual-based identification of similar atmospheric fields. Weather and Climate Extremes, page 100896,
+     2026.
+
+[21] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based
+     generative models. Advances in neural information processing systems, 35:26565–26577, 2022.
+
+[22] Alex Kendall and Yarin Gal. What uncertainties do we need in bayesian deep learning for computer vision?
+     Advances in neural information processing systems, 30, 2017.
+
+[23] Soheil Kolouri, Phillip E. Pope, Charles E. Martin, and Gustavo K. Rohde. Sliced-wasserstein autoencoder:
+     An embarrassingly simple generative model. In International Conference on Learning Representations,
+     2019.
+
+[24] Alexander Korotin, Daniil Selikhanovych, and Evgeny Burnaev. Neural optimal transport. arXiv preprint
+     arXiv:2201.12220, 2022.
+
+[25] Chih-Yu Lai, Yu-Chien Ning, and Duane S Boning. Rdit: Residual-based diffusion implicit models for
+     probabilistic time series forecasting. arXiv preprint arXiv:2509.02341, 2025.
+
+[26] Guowen Li, Yang Liu, Shilei Cao, Mengxuan Chen, Xintong Liu, Xuehe Wang, Juepeng Zheng, Yuxiang
+     Li, Zhiyu Ye, Haoyuan Liang, et al. Rescast: Enhancing global medium-range precipitation forecasting
+     with residual diffusion model.
+
+[27] Qi Li, Zhenyu Zhang, Lei Yao, Zhaoxia Li, Tianyi Zhong, and Yong Zhang. Diffusion-based decoupled
+     deterministic and uncertain framework for probabilistic multivariate time series forecasting. In The
+     Thirteenth International Conference on Learning Representations, 2025.
+
+[28] Jingyun Liang, Jiezhang Cao, Guolei Sun, Kai Zhang, Luc Van Gool, and Radu Timofte. Swinir: Image
+     restoration using swin transformer. In Proceedings of the IEEE/CVF international conference on computer
+     vision, pages 1833–1844, 2021.
+
+[29] Tianyi Lin, Chenyou Fan, Nhat Ho, Marco Cuturi, and Michael I. Jordan. Projection robust wasserstein
+     distance and riemannian optimization. In Advances in Neural Information Processing Systems, volume 33,
+     pages 9383–9397, 2020.
+
+[30] Huidong Liu, Yang Guo, Na Lei, Zhixin Shu, Shing-Tung Yau, Dimitris Samaras, and Xianfeng Gu. Latent
+     space optimal transport for generative models. arXiv preprint arXiv:1809.05964, 2018.
+
+[31] Douglas Maraun and Martin Widmann. Statistical downscaling and bias correction for climate research.
+     Cambridge University Press, 2018.
+
+[32] Morteza Mardani, Noah Brenowitz, Yair Cohen, Jaideep Pathak, Chieh-Yu Chen, Cheng-Chin Liu, Arash
+     Vahdat, Mohammad Amin Nabian, Tao Ge, Akshay Subramaniam, et al. Residual corrective diffusion
+     modeling for km-scale atmospheric downscaling. Communications Earth & Environment, 6(1):124, 2025.
+
+[33] Congyi Nai, Xi Chen, Shangshang Yang, Ziniu Xiao, and Baoxiang Pan. Boosting weather forecast via
+     generative superensemble. npj Climate and Atmospheric Science, 8(1):377, 2025.
+
+[34] Thao Nguyen, Jiaqi Ma, Fahad Shahbaz Khan, Souhaib Ben Taieb, and Salman Khan. Raindiff: End-to-end
+     precipitation nowcasting via token-wise attention diffusion. arXiv preprint arXiv:2510.14962, 2025.
+
+[35] Sinno Jialin Pan and Qiang Yang. A survey on transfer learning. IEEE Transactions on Knowledge and
+     Data Engineering, 22(10):1345–1359, 2010.
+
+
+                                                     11
+[36] François-Pierre Paty and Marco Cuturi. Subspace robust wasserstein distances. In Proceedings of the 36th
+     International Conference on Machine Learning, volume 97 of Proceedings of Machine Learning Research,
+     pages 5072–5081. PMLR, 2019.
+
+[37] Gabriel Peyré and Marco Cuturi. Computational optimal transport: With applications to data science.
+     Now Foundations and Trends, 2019.
+
+[38] Neelesh Rampal, Sanaa Hobeichi, Peter B Gibson, Jorge Baño-Medina, Gab Abramowitz, Tom Beucler,
+     Jose González-Abad, William Chapman, Paula Harder, and José Manuel Gutiérrez. Enhancing regional
+     climate downscaling through advances in machine learning. Artificial Intelligence for the Earth Systems,
+     3(2):230066, 2024.
+
+[39] Ievgen Redko, Nicolas Courty, Rémi Flamary, and Devis Tuia. Optimal transport for multi-source domain
+     adaptation under target shift. In Proceedings of the Twenty-Second International Conference on Artificial
+     Intelligence and Statistics, volume 89 of Proceedings of Machine Learning Research, pages 849–858.
+     PMLR, 2019.
+[40] Hidetoshi Shimodaira. Improving predictive inference under covariate shift by weighting the log-likelihood
+     function. Journal of Statistical Planning and Inference, 90(2):227–244, 2000.
+
+[41] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben
+     Poole. Score-based generative modeling through stochastic differential equations. arXiv preprint
+     arXiv:2011.13456, 2020.
+
+[42] Maximilian Springenberg, Noelia Otero, Yuxin Xue, and Jackie Ma. Diffscale: Continuous downscaling
+     and bias correction of subseasonal wind speed forecasts using diffusion models. Journal of Advances in
+     Modeling Earth Systems, 18(3):e2025MS005282, 2026.
+
+[43] Masashi Sugiyama and Motoaki Kawanabe. Machine Learning in Non-Stationary Environments: Introduc-
+     tion to Covariate Shift Adaptation. MIT Press, 2012.
+[44] Ilya Tolstikhin, Olivier Bousquet, Sylvain Gelly, and Bernhard Schölkopf. Wasserstein auto-encoders. In
+     International Conference on Learning Representations, 2018.
+
+[45] Cédric Villani et al. Optimal transport: old and new, volume 338. Springer, 2009.
+[46] Zhong Yi Wan, Ricardo Baptista, Anudhyan Boral, Yi-Fan Chen, John Anderson, Fei Sha, and Leonardo
+     Zepeda-Núñez. Debias coarsely, sample conditionally: Statistical downscaling through optimal transport
+     and probabilistic diffusion models. Advances in Neural Information Processing Systems, 36:47749–47763,
+     2023.
+
+[47] Jianyuan Wang, Minghao Chen, Nikita Karaev, Andrea Vedaldi, Christian Rupprecht, and David Novotny.
+     Vggt: Visual geometry grounded transformer. In Proceedings of the Computer Vision and Pattern
+     Recognition Conference, pages 5294–5306, 2025.
+
+[48] Jonathan Weed and Francis Bach. Sharp asymptotic and finite-sample rates of convergence of empirical
+     measures in wasserstein distance. In Bernoulli, volume 25, pages 2620–2648, 2019.
+
+[49] Gege Wen, Zongyi Li, Kamyar Azizzadenesheli, Anima Anandkumar, and Sally M Benson. U-fno—an
+     enhanced fourier neural operator-based deep-learning model for multiphase flow. Advances in Water
+     Resources, 163:104180, 2022.
+
+[50] Demin Yu, Xutao Li, Yunming Ye, Baoquan Zhang, Chuyao Luo, Kuai Dai, Rui Wang, and Xunlai Chen.
+     Diffcast: A unified framework via residual diffusion for precipitation nowcasting. In Proceedings of the
+     IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 27758–27767, 2024.
+
+[51] Yubai Yuan, Babak Shahbaba, Norbert Fortin, Keiland Cooper, Qing Nie, and Annie Qu. Optimal
+     transport for latent integration with an application to heterogeneous neuronal activity data. arXiv preprint
+     arXiv:2407.00099, 2024.
+
+[52] Richard Zhang, Phillip Isola, Alexei A Efros, Eli Shechtman, and Oliver Wang. The unreasonable
+     effectiveness of deep features as a perceptual metric. In Proceedings of the IEEE conference on computer
+     vision and pattern recognition, pages 586–595, 2018.
+
+[53] Zhenkai Zhang, Markus Hiller, Krista A Ehinger, and Tom Drummond. Pixel-level residual diffusion
+     transformer: Scalable 3d ct volume generation. In The Fourteenth International Conference on Learning
+     Representations.
+
+
+
+                                                       12
+A     Appendix
+A.1    Related Work
+Statistical and deep learning downscaling. Statistical downscaling models high-resolution fields from
+coarse inputs using learned relationships between resolutions [31]. Classical approaches such as bias correction
+and quantile mapping are effective for marginal statistics, but often struggle to preserve spatial coherence and
+multivariate dependencies. Deep neural networks have improved deterministic downscaling accuracy through
+convolutional, transformer-based, and operator-learning architectures, including SwinIR [28] and U-FNO [49].
+However, deterministic predictors produce only a single estimate and therefore cannot represent the spread of
+physically plausible high-resolution states. This has motivated probabilistic downscaling methods based on
+modern generative models [38], including flow matching [14] and diffusion-based approaches [46, 42], which
+aim to generate calibrated ensembles for uncertainty-aware downstream applications.
+
+Diffusion-based mean–residual downscaling. Diffusion models have recently become a strong frame-
+work for probabilistic atmospheric downscaling because they can model complex high-dimensional conditional
+distributions. CorrDiff [32] is a representative mean–residual approach: a deterministic regression model first
+predicts a high-resolution mean field, and a conditional diffusion model then generates stochastic residual
+corrections. Similar residual or two-stage formulations appear in precipitation nowcasting and forecasting
+models such as DiffCast [50], RainDiff [34], ResCast [26], and CasCast [17]. While this decomposition reduces
+the variance that the diffusion model must learn, prior work reports persistent under-dispersion in generated
+ensembles [32, 14]. Our work studies this failure mode directly and argues that it arises from predictor-induced
+residual target misspecification, rather than only from limitations of the stochastic sampler.
+
+Residual generative pipelines beyond atmospheric downscaling. Mean–residual decompositions
+have also been adopted outside geophysical downscaling. In speech synthesis, ResGrad [6] uses residual
+diffusion to refine a deterministic mel-spectrogram prediction, while residual diffusion models have also been
+used for medical imaging [53] and probabilistic time-series forecasting [25]. These methods share the same
+structural assumption: a deterministic predictor provides a useful prior, and a stochastic model learns the
+remaining correction. ReMatch focuses on a failure mode that can arise in such pipelines: the residual target
+learned by the stochastic generator remains dependent on the reliability of the upstream predictor, even when
+inherent input–target bias is present.
+
+Distribution matching and domain adaptation. Our approach is related to domain adaptation, where
+source and target distributions are aligned to improve transfer under distribution shift [4, 35]. Classical covariate-
+shift and importance-weighting methods reweight source samples to match the target input distribution under
+the assumption that the conditional target remains unchanged [40, 43], while OT-based domain adaptation
+aligns source and target feature-label distributions through a learned transport plan [10, 9, 39]. In downscaling,
+prior work uses OT to debias the coarse input before conditional diffusion sampling [46]. ReMatch differs in
+that it does not primarily debias the input distribution. Instead, it aligns the predictor-induced residual target
+distribution that the stochastic generator is trained to model.
+
+Distribution matching with projected transport. Optimal transport provides a principled framework
+for comparing and aligning probability distributions [45, 37]. Entropic regularization improves the computational
+scalability of empirical OT [11]. However, estimating Wasserstein distances in high-dimensional spaces is
+statistically challenging, with convergence rates that deteriorate with dimension [15, 48]. A common remedy
+is to compare distributions through lower-dimensional projections or compact representations, as in sliced
+Wasserstein distances [5], max-sliced and subspace-robust variants [12, 36, 29], and latent-space transport or
+regularization methods [44, 23]. ReMatch follows this projection-based perspective by computing transport
+costs in a latent representation of residuals and conditioning inputs, rather than directly in the full residual field.
+This provides a tractable way to match residual correction targets, while suggesting that richer physics-aware
+representations or scalable projected distribution-matching objectives could further improve residual alignment
+in future work.
+
+
+
+
+                                                         13
+A.2    Algorithm Overview
+
+Algorithm 1 ReMatch training pipeline
+                                 n                            n
+ 1: Input: Dtr = {(xi , yi )}i=1
+                              tr
+                                 , Dcal = {(xj , yj )}j=1
+                                                       cal
+
+
+ 2: Stage 1. Mean training:
+ 3:    ϕ⋆ ← arg minϕ Lreg (ϕ; Dtr )
+ 4: Stage 2. Residual target alignment:
+ 5:    Compute residuals ritr = yi − µϕ⋆ (xi ) and rjcal = yj − µϕ⋆ (xj )
+                                   ⊤ tr              ⊤ cal                 ⊤                 ⊤
+ 6:    Project onto PCA: zitr = UK    ri , zjcal = UK  rj , ℓtr                   cal
+                                                                    i = V xi , ℓj = V xj
+                              tr     cal 2          tr       cal 2
+ 7:    Define cost cij = α∥zi − zj ∥2 + λcond ∥ℓi − ℓj ∥2
+ 8:    Compute sparse transport   planP π
+       Transport: z̃itr = j πij zjcal / j πij , r̃i = UK z̃itr , µ̃i = yi − r̃i
+                         P
+ 9:
+10:    Define residual-learning dataset Dres = {(xi , µ̃i , r̃i )}ni=1
+                                                                    tr
+                                                                       ∪ {(xj , µϕ⋆ (xj ), rjcal )}nj=1
+                                                                                                     cal
+                                                                                                         .
+11: Stage 3. Residual learning:
+12:    θ⋆ ← arg minθ Lres (θ; Dres )
+13: Return: µϕ⋆ , qθ⋆
+
+
+
+A.3    Residual Distribution Matching via Optimal Transport
+Directly computing optimal transport over full residual fields is computationally expensive and can be overly
+sensitive to grid-scale noise. We therefore compute the transport cost in compact PCA representations of
+the residual targets and low-resolution conditioning inputs [1, 51, 30]. The PCA bases are fitted using the
+concatenated training and calibration samples, and each field is projected onto the leading components before
+transport.
+For PCA truncation, we choose the number of modes so that the reconstruction fidelity exceeds 99% for all
+channels. For the BlastNet dataset [8], we use 200 modes for the high-resolution residual field and 70 modes for
+the low-resolution conditioning field. For the HRRR dataset [13], we use 100 residual modes and for ERA5 [18],
+we use 30 modes. BlastNet requires more modes because it contains a wider variety of spatial patterns induced
+by varying PDE coefficients and flow conditions.
+For a residual sample rϕ , let
+                                                 ⊤
+                                            z = UK (rϕ − r̄) ∈ RK
+denote its residual PCA representation, where UK is the residual PCA basis and r̄ is the residual mean used for
+centering. Similarly, for a low-resolution input x, let
+
+                                         ℓ = VK⊤cond (x − x̄) ∈ RKcond
+denote its conditioning representation, where VKcond is the PCA basis for the low-resolution input. Let
+                                                                          n
+                                     {zitr , ℓtr ntr
+                                              i }i=1    and   {zjcal , ℓcal
+                                                                        j }j=1
+                                                                            cal
+
+
+denote the resulting low-dimensional representations for the training and calibration sets, respectively.
+We compute transport separately for each output channel. For each channel, we define the pairwise cost between
+training sample i and calibration sample j as
+                                                        2                         2
+                                 cij = α zitr − zjcal       + λcond ℓtr   cal
+                                                                     i − ℓj           .
+                                                        2                         2
+
+The first term encourages residual similarity, while the second term preserves consistency with the low-resolution
+conditioning input. This prevents the transported residual from being matched to a calibration residual whose
+associated low-resolution field is incompatible with the source input. In all experiments, we set α = 1.0 and
+λcond = 1.0.
+To make the transport computation scalable, we construct a sparse k-nearest-neighbor graph in the augmented
+PCA feature space and solve a balanced entropic Sinkhorn problem only over the resulting candidate pairs [11].
+Specifically, we use k = 32, entropic regularization 0.1, and 1500 Sinkhorn iterations. The sparse transport plan
+π is computed with uniform source and target marginals. When the number of training and calibration samples
+differs, the target marginal simply assigns a larger mass to each calibration sample.
+Because a sparse k-nearest-neighbor graph can leave some calibration samples with too few incoming source
+candidates, we augment the graph before Sinkhorn normalization. In particular, we enforce a minimum target
+
+
+                                                         14
+in-degree proportional to the source-to-target sample ratio by adding nearest reverse-neighbor edges for under-
+covered calibration samples. This improves feasibility of the balanced transport constraints while keeping the
+sparse graph size fixed.
+After computing the sparse plan, we construct transported residual coefficients using a weighted top-m selection
+rather than averaging over all k neighbors. For each training sample, we select the top m = 3 calibration
+candidates according to the transport weights, with a capacity constraint limiting how often each calibration
+sample can be reused. This reduces collapse onto a small subset of calibration residuals while avoiding overly
+diffuse barycentric averages. The selected weights are renormalized within the top-m set.
+For each training sample i, the transported residual representation is therefore computed as
+                                                       X
+                                               z̃itr =    π̃ij zjcal ,
+                                                     j∈Ti
+
+where Ti denotes the selected top-m calibration candidates and π̃ij denotes the corresponding normalized
+transport weight. We then reconstruct the transported residual in pixel space as
+                                               r̃i = UK z̃itr + r̄.
+
+Finally, we define the corresponding pseudo-mean by enforcing exact consistency with the original high-
+resolution target:
+                                              µ̃i := yi − r̃i .
+This yields adapted pseudo training samples
+                                                (xi , µ̃i , r̃i )
+that preserve the mean–residual decomposition
+                                                 yi = µ̃i + r̃i
+by construction. Thus, ReMatch shifts the residual target distribution toward the calibration residual regime
+while maintaining sample-wise consistency among the input, pseudo-mean, residual, and ground-truth target.
+
+A.4    Synthetic Bias-Controlled Benchmark Details
+We use the BLASTNet Momentum128 3D super-resolution dataset [8] as a controlled synthetic benchmark. The
+dataset provides clean paired low- and high-resolution turbulent flow fields, where the low-resolution inputs
+are generated from the corresponding high-resolution DNS fields through filtering and downsampling. Each
+high-resolution sample is a three-dimensional field of size 128 × 128 × 128, with corresponding low-resolution
+fields provided at multiple downsampling scales. Both the input and target fields contain four physical channels:
+density RHO and the three velocity components UX, UY, and UZ. We use clusters 4, 11, 14, and 17, and take the
+
+
+
+
+                                                                                          : weights 𝑤
+                                                                                   $ : Interpolated LR field
+                                                                                   LR
+                                                                                    % = ! ∑"#$! 𝑤# LR
+                                                                                   LR              $#
+                                                                                         "
+                                                                                      : weighted averaged LR field
+
+
+
+
+                                                                                  Level 0
+                                                                                   ) , 𝐇𝐑)
+                                                                                 (𝐋𝐑
+
+
+
+                                                                                  Level 1
+                                                                                   ) , 𝐇𝐑)
+                                                                                 (𝐋𝐑
+
+
+
+                                                                                  Level 2
+                                                                                   ) , 𝐇𝐑)
+                                                                                 (𝐋𝐑
+
+
+
+                                                                                  Level 3
+                                                                                   ) , 𝐇𝐑)
+                                                                                 (𝐋𝐑
+
+
+
+
+Figure 5: Synthetic LR bias levels used in the BlastNet benchmark. Level 0 uses the original
+interpolated LR input. Levels 1–3 introduce progressively stronger structured mismatch by mixing
+slices along the z-axis with Gaussian weights.
+
+
+                                                       15
+8× downsampled inputs (spatial resolution 16 × 16). Since our implementation operates on 2D inputs, we
+extract slices along the z-axis. This also enables controlled bias injection along the depth direction.
+We define four bias levels. Level 0 uses the original interpolated low-resolution field (clean interpolation).
+For levels 1–3, we replace each low-resolution slice with a weighted mixture of slices along the z-axis using
+Gaussian weights
+                                                                   
+                                                       1  z − c 2
+                                      w(z) = exp −                    ,
+                                                       2     σ
+where the center c and bandwidth σ are chosen to produce progressively stronger structured mismatch: local
+mixture (σ = 2) for level 1, broad averaging for level 2, and sharp distant centering (σ = 1) for level 3.
+Figure 5 illustrates the four bias levels and the corresponding weighting patterns. The baseline method [32] is
+trained using the entire training set of 406 samples. For ReMatch, we partition this training set into a training
+subset (n = 270) and a calibration set (n = 136). The test set contains 52 samples.
+
+A.4.1          Controlled Synthetic Study of Bias-induced Residual Misspecification
+Figure 6 shows channel-wise RMSE and SSR across four bias levels. Across all channels, ReMatch yields
+increasingly larger SSR improvements as the bias level increases, with only minor RMSE degradation or, in
+some cases, RMSE improvement.
+
+                      Channel-wise RMSE                                Channel-wise SSR ratio
+       0.200                                                0.7
+       0.175
+                                                            0.6                                      level0_baseline
+       0.150                                                                                         level0_ReMatch
+                                                                                                     level1_baseline
+       0.125
+                                                SSR ratio
+
+
+
+
+                                                            0.5                                      level1_ReMatch
+RMSE
+
+
+
+
+                                                                                                     level2_baseline
+       0.100                                                                                         level2_ReMatch
+                                                            0.4                                      level3_baseline
+       0.075                                                                                         level3_ReMatch
+       0.050                                                0.3
+       0.025
+               O
+
+
+
+                       UX
+
+
+
+                                  UY
+
+
+
+                                           UZ
+
+
+
+                                                                  O
+
+
+
+                                                                         UX
+
+
+
+                                                                                    UY
+
+
+
+                                                                                                UZ
+           RH
+
+
+
+
+                                                              RH
+
+
+
+
+                            Channel                                           Channel
+
+                    Figure 6: Channel-wise RMSE and SSR ratio over different bias levels.
+
+
+A.5       ERA5-HRRR Dataset Details
+We use the u- and v-components of wind at five lower-stratospheric pressure levels: 50, 75, 100, 125, and 150
+hPa. The experiments are conducted over a 500 km × 500 km region in the northeastern CONUS, defined by
+lat ∈ [36.0795, 41.8914]◦ and lon ∈ [−82.5501, −75.2087]◦ .
+
+ERA5 [18] We downloaded 25 × 25 km scale ERA5 reanalysis data for every hour from 2018-2021. We
+note that ERA5 only had 70 hPa instead of 75 hPa pressure level data, but we consider them as the same channel
+since it does not detract from our setting of input/output mismatch. To create the low-resolution input for our
+experiments, we used bilinear interpolation to upsample data to the 3 × 3 km resolution that HRRR uses. We
+used 2018-2020 as our train set and 2021 as our test set. For methods that need a calibration set (UC, ReMatch),
+we used 2018-2019 as the train set, 2020 as the calibration set, and 2021 as the test set.
+
+HRRR [13] We used 3 × 3 km scale HRRR pressure data for every hour from 2018-2021 using lead times
+and forecasts of up to 6 hours to fill gaps.
+To create the combined dataset, we also added four sinusoidal-embedding temporal input channels for the day
+and month. Fig. 7 indicates the main challenge of the real-world downscaling task with atmospheric data. There
+is an inherent mismatch between the LR and HR data over the same region since they come from two different
+sources. Table 3 shows higher bias levels for lower pressure levels, especially in the v-wind channel. We
+hypothesize this is due to lower pressure levels (bigger hPa) being closer to the jet stream (250 hPa) which has
+strong wind magnitudes that could cause more sensor inaccuracies.
+
+
+                                                                  16
+Figure 7: Downscaling bias in ERA5 and HRRR has a positive relationship with RMSE. We
+show three samples of upsampled ERA5 data and HRRR 100hPa u-wind from our 2018-2020 training
+set. The left sample with high RMSE shows a clear mismatch in the center while the right sample
+with low RMSE generally looks the same, indicating that RMSE is a good estimator of input/output
+mismatch.
+
+
+                        Table 3: Channel-wise statistics of downscaling bias.
+       Channel       50u 50v 75u 75v 100u 100v 125u 125v                                  150u     150v
+       Mean         1.99     2.59    2.77    3.52     2.68     4.27     3.08     5.19     3.62     6.19
+       Std. Dev.    0.81     1.39    1.18    1.93     1.08     2.21     1.27     2.56     1.55     2.30
+
+
+
+A.6   Implementation Details
+ReMatch is not tied to a specific architecture. It only assumes a deterministic mean predictor followed by a
+stochastic residual generator, so the mean predictor can be instantiated with any suitable pointwise estimator
+and the residual stage with any stochastic or ensemble-based generative model. In our experiments, we use
+U-Net regression and SwinIR [28] as deterministic mean predictors, trained with ℓ2 and ℓ1 losses, respectively.
+For stochastic residual prediction, we use EDM-style diffusion preconditioning and sampling [21] with a U-
+Net-based score network [41]. The low-resolution input x and mean field µ, either transported pseudo-mean
+from training set µ̃i or mean predictor output in calibration set µϕ (xj ), are concatenated channel-wise as the
+conditioning input. Other stochastic residual generators can be used in the same framework.
+Unless otherwise noted, all UNet-based regression and diffusion models are trained under the same implemen-
+tation settings to ensure a fair comparison. We use data-parallel training on four NVIDIA A100 GPUs with
+a per-GPU batch size of 32 for experiments, in which training takes about 8-10 hours. All regression UNets
+and diffusion models are trained for 8M processed samples, following the training-duration convention used
+in the CorrDiff implementation at https://github.com/NVIDIA/physicsnemo/blob/main/examples/
+weather/corrdiff/README.md.
+For the CorrDiff diffusion backbone, we instantiate EDMPrecondSuperResolution with a SongUNetPosEmbd
+denoising network. The mini model-size preset controls the capacity of the underlying U-Net through three
+parameters: model_channels, channel_mult, and attn_resolutions. Specifically, model_channels=64
+sets the base channel width; channel_mult=[1, 2, 2] defines a three-level encoder–decoder hierarchy with
+feature widths 64, 128, 128; and attn_resolutions=[16] inserts self-attention blocks at the 16 × 16 feature-
+map resolution. All other architectural choices follow the default PhysicsNeMo CorrDiff settings.
+
+CorrDiff [32] A two-stage mean–residual baseline consisting of a regression mean predictor followed by a dif-
+fusion model for stochastic residual prediction. We also evaluate CorrDiffm , which uses a reduced-capacity mean
+predictor to mitigate residual target distribution shift. We set model_channels=16, channel_mult=[1, 2], and
+attn_resolutions=[4] and 3M total processed samples.
+
+UNet [41] A deterministic regression baseline to map the LR input directly to the HR output.
+
+Conditional Diffusion Model (CDM) A diffusion model conditioned on the LR input without an upstream
+mean predictor.
+
+CFG [42] Classifier-free guidance applied only to the residual diffusion model in CorrDiff to sharpen
+residual samples and mitigate small-scale underdispersion. We implement classifier-free guidance (CFG) on
+top of the CorrDiff architecture as a baseline. CFG allows conditional sampling without training an additional
+classifier. During training for diffusion, we zero out the conditioning on the LR input 10% of the time so
+the model learns both conditional and unconditional inputs. During inference, we use 18 denoising steps in
+the stochastic sampler with a cosine guidance weighting schedule from w = 0 to 8. Comparing this to fixed
+
+
+                                                      17
+weights from 0 to 8, we found that scheduling increasing guidance helped maintain RMSE skill while improving
+spread. The sample at each time step is then a linear combination of the conditional and unconditional output:
+J(xt |∅]) + w[J(xt |ylr ) − J(xt |∅)] This encourages the model to learn features induced specifically by the
+conditioning.
+
+UC [22] A CorrDiff variant that conditions the residual diffusion model on an uncertainty estimate of the
+regression mean, predicted by a lightweight UNet. We consider two variants: UCµ , which conditions on the
+predicted MAE, and UCq , which conditions on the predicted lower and upper error quantiles, q5 and q95 . To
+construct these baselines, we first train a deterministic mean predictor on the 2018–2019 training set. We then
+train a separate uncertainty estimator on the 2020 calibration set to predict either the MAE or the q5 /q95 error
+quantiles of the mean predictor. The uncertainty estimator uses the same UNet to the regression mean and is
+trained for 8M samples. Using the calibration set as a proxy for the test regime allows the uncertainty network to
+learn held-out error statistics, rather than relying on training-time errors that may be overconfident.
+
+       • UCµ : The network predicts a scalar RMSE value of the residuals between the ground truth and the
+         mean predictor. Uses L2 loss.
+       • UCq : The network predicts scalar quantile values for Q5 and Q95. Uses Pinball loss.
+
+After training the mean predictor and uncertainty estimator sequentially, we train the residual diffusion model
+conditioned on the LR input, the predicted mean, and an uncertainty measure. During diffusion training, we use
+the ground-truth uncertainty measure computed from the mean-prediction error, while at test time we replace
+it with the output of the uncertainty estimator. This choice stabilizes diffusion training by providing accurate
+uncertainty conditioning during optimization, while preserving a fully predictive pipeline at inference. The
+residual diffusion model is trained on the combined 2018–2020 data, including both the training and calibration
+splits.
+
+SwinIR [28] A deterministic transformer-based super-resolution baseline, which directly maps the LR input
+to the HR field. We implement a SwinIR-based super-resolution baseline following the network configuration
+used in the original SwinIR model at https://github.com/JingyunLiang/SwinIR. For the network architecture, we
+use the main SwinIR configuration from the original paper: the embedding dimension is set to 180, the model
+contains six Residual Swin Transformer Blocks (RSTBs), and each RSTB contains six Swin Transformer layers.
+The number of attention heads is set to 6 in each RSTB, the MLP ratio is set to 2, and the residual connection
+inside each RSTB uses a single 3×3 convolution. We also use the standard multi-step PixelShuffle reconstruction
+head with an intermediate feature dimension of 64. The only modification from the original SwinIR parameter
+setting is the window size. While the original model uses a window size of 8 for super-resolution, we set the
+window size to 7 so that the self-attention windows exactly divide the low-resolution input size of 21 × 21. The
+model is trained using a ℓ1 loss between the predicted and ground-truth high-resolution fields. We train the
+SwinIR baseline for 100k processed samples, at which point the validation loss is observed to have converged.
+
+Conv-FNO [49] A deterministic neural-operator baseline, which combines Fourier neural operator lay-
+ers with convolutional blocks for direct LR-to-HR super-resolution. We implement an FNO-based super-
+resolution baseline using a 2D FNO model from NVIDIA’s PhysicsNeMo at https://github.com/NVIDIA/
+physicsnemo/blob/main/physicsnemo/models/fno/fno.py and modifying the architecture and pa-
+rameters according to the BlastNet Conv-FNO model at https://github.com/blastnet/blastnet2_
+sr_benchmark/blob/ae2a3a6b1c1c8fb9dcf478aa47ee254159c42f1b/models/convfno.py#L12, that
+modified a 3D FNO model to be used for super-resolution.
+Our main modifications were replacing FNO’s decoder with an Upsampler block and adding a ResidualBlock to
+the spectral layers in FNO2DEncoder. We use 34 features, 34 latent channels, 32 spectral and residual layers,
+kernel size of 3, 2 modes, a padding of 6, and a 8x upscaling factor. These parameters were chosen to match the
+implementation in BlastNet to remain similar to an established super-resolution baseline. The model was trained
+using MSE loss between the predicted and ground-truth high-resolution fields. We train the Conv-FNO baseline
+for 8 million processed samples, similar to the CorrDiff regression capacity.
+
+
+
+
+                                                       18
+A.7           Additional Analysis on Real-World Wind Field Downscaling Task
+A.7.1            Method Comparisons
+We provide additional qualitative examples of downscaling results for all baseline models and the proposed
+method.
+                 Input                               UNet                        CDM                           CorrDiff                   ConvFNO                    SwinIR
+                                                                                                                                                                                        14
+41°N                                41°N
+40°N                                40°N                                                                                                                                                12
+39°N                                39°N                                                                                                                                                10
+38°N                                38°N
+                                                                                                                                                                                        8
+37°N                                37°N
+                                                                                                                                                                                        6
+       82°W   80°W    78°W   76°W          82°W   80°W     78°W   76°W 82°W   80°W        78°W   76°W 82°W   80°W     78°W   76°W 82°W   80°W   78°W   76°W 82°W   80°W   78°W   76°W
+                 Truth                                   CFG                         UC                             UCq                   ReMatchU                  ReMatchS
+                                                                                                                                                                                        14
+41°N                                41°N
+40°N                                40°N                                                                                                                                                12
+39°N                                39°N                                                                                                                                                10
+38°N                                38°N
+                                                                                                                                                                                        8
+37°N                                37°N
+                                                                                                                                                                                        6
+       82°W   80°W    78°W   76°W          82°W   80°W     78°W   76°W 82°W   80°W        78°W   76°W 82°W   80°W     78°W   76°W 82°W   80°W   78°W   76°W 82°W   80°W   78°W   76°W
+
+                     (a) Qualitative comparison of downscaled 125 hPa u-wind fields on 2021-07-20 00:00:00.
+                 Input                               UNet                            CDM                       CorrDiff                    ConvFNO                    SwinIR
+41°N                                41°N                                                                                                                                                8
+40°N                                40°N
+                                                                                                                                                                                        6
+39°N                                39°N
+38°N                                38°N
+                                                                                                                                                                                        4
+37°N                                37°N
+       82°W   80°W    78°W   76°W          82°W   80°W     78°W   76°W 82°W   80°W        78°W   76°W 82°W   80°W     78°W   76°W 82°W   80°W   78°W   76°W 82°W   80°W   78°W   76°W
+                 Truth                                   CFG                         UC                             UCq                    ReMatchU                  ReMatchS
+                                                                                                                                                                                        8
+41°N                                41°N
+40°N                                40°N
+                                                                                                                                                                                        6
+39°N                                39°N
+38°N                                38°N                                                                                                                                                4
+37°N                                37°N
+       82°W   80°W    78°W   76°W          82°W   80°W     78°W   76°W 82°W   80°W        78°W   76°W 82°W   80°W     78°W   76°W 82°W   80°W   78°W   76°W 82°W   80°W   78°W   76°W
+
+                     (b) Qualitative comparison of downscaled 75 hPa v-wind fields on 2021-09-14 01:00:00.
+                 Input                               UNet                            CDM                       CorrDiff                    ConvFNO                    SwinIR
+                                                                                                                                                                                        8
+41°N                                41°N
+40°N                                40°N                                                                                                                                                6
+39°N                                39°N
+38°N                                38°N                                                                                                                                                4
+37°N                                37°N
+                                                                                                                                                                                        2
+       82°W   80°W    78°W   76°W          82°W   80°W     78°W   76°W 82°W   80°W        78°W   76°W 82°W   80°W     78°W   76°W 82°W   80°W   78°W   76°W 82°W   80°W   78°W   76°W
+                 Truth                                   CFG                         UC                             UCq                    ReMatchU                  ReMatchS
+                                                                                                                                                                                        8
+41°N                                41°N
+40°N                                40°N                                                                                                                                                6
+39°N                                39°N
+38°N                                38°N                                                                                                                                                4
+37°N                                37°N                                                                                                                                                2
+       82°W   80°W    78°W   76°W          82°W   80°W     78°W   76°W 82°W   80°W        78°W   76°W 82°W   80°W     78°W   76°W 82°W   80°W   78°W   76°W 82°W   80°W   78°W   76°W
+
+                     (c) Qualitative comparison of downscaled 125 hPa u-wind fields on 2021-07-06 19:00:00.
+                 Input                               UNet                        CDM                           CorrDiff                   ConvFNO                    SwinIR
+41°N                                41°N                                                                                                                                                30
+40°N                                40°N
+                                                                                                                                                                                        25
+39°N                                39°N
+38°N                                38°N                                                                                                                                                20
+37°N                                37°N
+       82°W   80°W    78°W   76°W          82°W   80°W     78°W   76°W 82°W   80°W        78°W   76°W 82°W   80°W     78°W   76°W 82°W   80°W   78°W   76°W 82°W   80°W   78°W   76°W   15
+
+                 Truth                                   CFG                         UC                             UCq                   ReMatchU                  ReMatchS
+                                                                                                                                                                                        30
+41°N                                41°N
+40°N                                40°N                                                                                                                                                25
+39°N                                39°N
+38°N                                38°N                                                                                                                                                20
+37°N                                37°N
+                                                                                                                                                                                        15
+       82°W   80°W    78°W   76°W          82°W   80°W     78°W   76°W 82°W   80°W        78°W   76°W 82°W   80°W     78°W   76°W 82°W   80°W   78°W   76°W 82°W   80°W   78°W   76°W
+
+                     (d) Qualitative comparison of downscaled 150 hPa u-wind fields on 2021-10-19 7:00:00.
+Figure 8: Qualitative comparison of all baseline and proposed methods across randomly selected
+channels and dates.
+
+
+
+
+                                                                                                 19
+A.8        Ensemble Samples Comparison
+We further analyze individual ensemble samples. Figure 3 shows downscaling results for the 50 hPa v-wind
+field on 2021-09-05 at 10:00:00. In Figure 9, we show all 12 ensemble samples of the final predictions,
+µϕ (x) + rθ (x, µϕ ), together with their predicted residuals rθ (x, µϕ ).
+
+           CorrDiff ens 0        CorrDiff ens 1           CorrDiff ens 2         CorrDiff ens 3       CorrDiff ens 4        CorrDiff ens 5    3
+41°N
+                                                                                                                                              2
+40°N
+39°N                                                                                                                                          1
+38°N                                                                                                                                          0
+37°N                                                                                                                                              1
+       82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W      82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W
+           CorrDiff ens 6        CorrDiff ens 7           CorrDiff ens 8         CorrDiff ens 9       CorrDiff ens 10       CorrDiff ens 11
+                                                                                                                                              3
+41°N
+                                                                                                                                              2
+40°N
+39°N                                                                                                                                          1
+38°N                                                                                                                                          0
+37°N                                                                                                                                              1
+       82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W      82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W
+
+                                              (a) CorrDiff all prediction ensemble samples.
+           ReMatch ens 0         ReMatch ens 1            ReMatch ens 2          ReMatch ens 3        ReMatch ens 4         ReMatch ens 5     3
+41°N
+                                                                                                                                              2
+40°N
+39°N                                                                                                                                          1
+38°N                                                                                                                                          0
+37°N                                                                                                                                              1
+       82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W      82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W
+           ReMatch ens 6         ReMatch ens 7            ReMatch ens 8          ReMatch ens 9        ReMatch ens 10        ReMatch ens 11
+                                                                                                                                              3
+41°N
+                                                                                                                                              2
+40°N
+39°N                                                                                                                                          1
+38°N                                                                                                                                          0
+37°N                                                                                                                                              1
+       82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W      82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W
+
+                                             (b) ReMatchU all prediction ensemble samples.
+           CorrDiff ens 0        CorrDiff ens 1           CorrDiff ens 2         CorrDiff ens 3       CorrDiff ens 4        CorrDiff ens 5
+41°N                                                                                                                                          2
+40°N
+39°N                                                                                                                                          0
+38°N
+37°N                                                                                                                                              2
+       82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W      82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W
+           CorrDiff ens 6        CorrDiff ens 7           CorrDiff ens 8         CorrDiff ens 9       CorrDiff ens 10       CorrDiff ens 11
+41°N                                                                                                                                          2
+40°N
+39°N                                                                                                                                          0
+38°N
+37°N                                                                                                                                              2
+       82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W      82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W
+
+                                                  (c) CorrDiff all residual ensemble samples.
+           ReMatch ens 0         ReMatch ens 1            ReMatch ens 2          ReMatch ens 3        ReMatch ens 4         ReMatch ens 5
+41°N                                                                                                                                          2
+40°N
+39°N                                                                                                                                          0
+38°N
+37°N                                                                                                                                              2
+       82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W      82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W
+           ReMatch ens 6         ReMatch ens 7            ReMatch ens 8          ReMatch ens 9        ReMatch ens 10        ReMatch ens 11
+41°N                                                                                                                                          2
+40°N
+39°N                                                                                                                                          0
+38°N
+37°N                                                                                                                                              2
+       82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W      82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W   82°W 80°W 78°W 76°W
+
+                                                  (d) ReMatchU all residual ensemble samples.
+                                           Figure 9: Ensemble predictions from Fig. 3.
+
+Consistent with prior observations [32, 14] and our quantitative results, CorrDiff produces underdispersed
+predictions with a low SSR. This behavior is visible in Figure 9: CorrDiff ensemble samples remain highly
+
+
+                                                                            20
+similar across members, as shown in Figure 9a, and their residual magnitudes are relatively small, as shown
+in Figure 9c, compared with ReMatch residuals in Figure 9d. This suggests that CorrDiff fails to generate
+sufficiently corrective residuals under residual misspecification. Given the error-prone mean prediction shown
+by the UNet result in Figure 3, the residual model should correct large-scale mean errors rather than merely add
+high-frequency details. However, CorrDiff largely fails to do so, whereas ReMatch produces more diverse and
+corrective residuals.
+
+A.9    ACC Score analysis
+
+
+
+                                                                                          0.98
+                                                                                   bias
+                                  4.0
+                                                                                          0.97
+                                  3.9
+                                                                                          0.96
+                                  3.8
+                                                                                          0.95
+
+
+
+
+                                                                                             Monthly ACC score
+                   Monthly Bias
+
+
+
+
+                                  3.7
+                                                                                          0.94
+                                  3.6
+                                                                                          0.93
+                                  3.5
+                                                                                          0.92
+                                  3.4
+                                                                                          0.91
+                                  3.3
+                                                                                   acc 0.90
+                                        2   4         6         8         10        12
+
+Figure 10: Comparison of ReMatchU ACC and input/output bias per month. ACC score per
+month calculated for 2021 and average bias (RMSE) per month calculated over 2018-2021.
+
+With the ACC Score calculated across 2021, we can compare how spatially similar ReMatchU anomalies and
+HRRR anomalies are with the estimated climatological mean from 2018-2020 HRRR data. Anomalies are when
+the atmospheric variable deviates from the expected historical value at a certain time and location. We note that
+having a longer range of years to estimate the climatological mean would likely lead to more accurate estimates
+of anomalies. Fig. 10 shows a monthly breakdown of downscaling bias and captures how our model adapts to
+the bias gap between ERA5 and HRRR. In winter months the bias is higher, but our model maintains high ACC
+scores, so ReMatchU is able to capture anomaly structure.
+
+A.10    Kinetic Energy Analysis
+Figure 11 compares the 1D kinetic energy spectra of the ground-truth HRRR field, the ERA5 input, CorrDiff
+predictions, and ReMatch predictions. This diagnostic measures how kinetic energy is distributed across spatial
+scales: low wavenumbers correspond to large-scale structure, whereas high wavenumbers correspond to finer-
+scale variability. A successful downscaling model should therefore not only reduce pointwise error, but also
+recover the target spectrum over the relevant range of wavenumbers.
+To compute this quantity, we form the horizontal kinetic energy from the wind components and evaluate its
+one-dimensional Fourier spectrum. For each sample, we compute the Fourier coefficients of the horizontal wind
+components u and v, and form
+                                              1                    
+                                     E(k) ∝      |û(k)|2 + |v̂(k)|2 .
+                                              2
+We average over the remaining spatial dimension and over samples. For stochastic methods, the spectrum is
+computed separately for each ensemble member and then averaged across ensemble members.
+The figure shows that ERA5 overestimates kinetic energy at all wavenumbers relative to HRRR, indicating a
+scale-dependent bias. ReMatch removes a substantially larger fraction of this excess power and tracks the HRRR
+spectrum more closely over a broad range of wavenumbers. The gap between CorrDiff and ReMatch is most
+visible at higher wavenumbers, where CorrDiff preserves more of the excessive energy inherited from ERA5,
+whereas ReMatch remains closer to the HRRR target.
+
+
+                                                       21
+                         Kinetic Energy power spectra - 50hPa                                        Kinetic Energy power spectra - 75hPa                                        Kinetic Energy power spectra - 100hPa
+                                                       rematch_prediction                                                          rematch_prediction                      104                                 rematch_prediction
+                                                       corrdiff_prediction                                                         corrdiff_prediction                                                         corrdiff_prediction
+                  103                                  HRRR                                                                        HRRR                                                                        HRRR
+                                                       ERA5                                    103                                 ERA5                                    103                                 ERA5
+
+
+                  102                                                                          102
+Power Spectrum
+
+
+
+
+                                                                             Power Spectrum
+
+
+
+
+                                                                                                                                                         Power Spectrum
+                                                                                                                                                                           102
+
+
+                  101                                                                          101                                                                         101
+
+
+                  100                                                                          100                                                                         100
+
+
+                 10 1                                                                         10 1                                                                        10 1
+                                   10 2                         10 1                                           10 2                         10 1                                           10 2                         10 1
+                                    Frequency (1/km)                                                            Frequency (1/km)                                                            Frequency (1/km)
+                        Kinetic Energy power spectra - 125hPa                                        Kinetic Energy power spectra - 150hPa
+                  104                                  rematch_prediction                                                          rematch_prediction
+                                                       corrdiff_prediction                     104                                 corrdiff_prediction
+                                                       HRRR                                                                        HRRR
+                                                       ERA5                                                                        ERA5
+                  103                                                                          103
+Power Spectrum
+
+
+
+
+                                                                             Power Spectrum
+
+                  102                                                                          102
+
+
+                  101                                                                          101
+
+
+                  100                                                                          100
+
+
+                 10 1                                                                         10 1
+                                   10 2                         10 1                                           10 2                         10 1
+                                    Frequency (1/km)                                                            Frequency (1/km)
+
+
+                                     Figure 11: Power spectra for kinetic energy in all pressure levels
+
+
+This pattern differs from surface-level wind fields shown in [32], where HRRR often contains much stronger
+high-frequency variability due to land–sea contrast, topography, and other surface effects. At pressure levels, the
+flow is smoother, so even the HRRR target has relatively weak high-frequency energy. In this regime, the main
+issue is therefore not only missing fine-scale structure, but a broader mismatch in scale-dependent energy.
+
+A.11                    Uncertainty Conditioned Experiments
+Previous work on image regression [2, 22] often learns pixelwise epistemic or aleatoric uncertainty jointly with
+the regression predictor. In our setting, we adapt this idea to the mean–residual CorrDiff architecture by training
+an auxiliary model to predict uncertainty about the upstream mean and using that quantity as an additional
+conditioning signal for residual diffusion. Empirically, however, dense pixelwise uncertainty maps did not learn
+meaningful or predictive structure, whereas low-dimensional scalar summaries of the regression error—such as
+RMSE, Q5 , Q90 , and Q95 —were much easier to predict and matched the ground-truth values more reliably on
+the test set (Fig. 12). We explored two other spatially focused methods called Moran’s I (a local indicator of
+spatial autocorrelation) and VGGT [47] inspired confidence maps. While the trained networks provided more
+meaningful feature maps 13, they ultimately did not perform as well as conditioning to diffusion.
+We interpret this through the lens of residual target misspecification. Under downscaling bias, the regression error
+Y − µϕ (X) is itself a predictor-defined correction target whose distribution shifts across regimes. Learning a full
+pixelwise uncertainty field therefore amounts to inferring a high-dimensional summary of a misspecified residual
+target from limited observable information, which is substantially more difficult than predicting a coarse scalar
+descriptor of its magnitude. This explains why scalar uncertainty signals can still provide useful information
+to the diffusion model, as reflected in the UC baselines, while dense pixelwise uncertainty prediction remains
+unreliable. More broadly, these results suggest that uncertainty prediction alone is not sufficient to resolve
+residual misspecification: compressing the error into low-dimensional summaries may help, but recovering its
+full spatial structure requires a more direct treatment of the shifted residual target itself.
+
+
+
+
+                                                                                                                 22
+Figure 12: Comparison of scalar and pixelwise uncertainty estimators. Both networks predict
+Q5 and Q95 of the residuals per channel on the test set. The top plot is a scalar prediction while the
+bottom plot displays a pixelwise prediction at 2021-01-02 11:00:00 at 50 hPa u-wind field.
+
+
+
+
+Figure 13: Comparison of VGGT inspired (left) and Moran’s I (right) pixelwise uncertainty
+networks. Both samples are also from 2021-01-02 11:00:00 at 50 hPa u-wind field. The Moran’s I
+uncertainty focuses more on "interest points" while the VGGT inspired confidence is more spatially
+aware. However, the VGGT inspired confidence has systematic artifacts.
+
+
+
+
+                                                 23
+

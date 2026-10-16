@@ -1,0 +1,1177 @@
+                                                                          PAINT: Parallel-in-time Neural Twins
+                                                                          for Dynamical System Reconstruction
+
+
+                                                     Andreas Radler * 1 Vincent Seyfried * 2 3 Johannes Brandstetter 1 4 Thomas Lichtenegger 2 3 4
+
+
+                                                                  Abstract                                              True        PAINT       Autoregressive
+arXiv:2510.16004v2 [cs.AI] 3 Feb 2026
+
+
+
+
+                                               Neural surrogates have shown great potential in
+                                               simulating dynamical systems, while offering real-
+                                               time capabilities. We envision Neural Twins as a
+                                               progression of neural surrogates, aiming to create
+                                               digital replicas of real systems. A neural twin
+                                               consumes measurements at test time to update its
+                                               state, thereby enabling context-specific decision-                0                                t−h                    t    t+n
+                                               making. We argue, that a critical property of neu-
+                                               ral twins is their ability to remain on-trajectory,              Figure 1. Conceptual depiction of trajectories from the ground
+                                               i.e., to stay close to the true system state over                truth (blue), our parallel-in-time method PAINT (green) and a naive
+                                               time. We introduce Parallel-in-time Neural Twins                 autoregressive model (orange). Dashed lines represent sampled
+                                               (PAINT), an architecture-agnostic family of meth-                trajectories from the probability distribution (solid lines) given by
+                                                                                                                the respective model.
+                                               ods for modeling dynamical systems from mea-                     The models ingest real world measurements (not depicted) at test
+                                               surements. PAINT trains a generative neural net-                 time to reconstruct the true trajectory. Autoregressive models pre-
+                                               work to model the distribution of states in paral-               dict the probability of the next state given an autoregressive state
+                                               lel over time. At test time, states are predicted                additional to real world measurements. They typically depend on
+                                               from measurements in a sliding window fashion.                   an initial state and are prone to drift off due to over-reliance on
+                                                                                                                their autoregressive state (see Section 3.4). In contrast, parallel-
+                                               Our theoretical analysis shows that PAINT is on-                 in-time models are “on-trajectory” and do not depend on an initial
+                                               trajectory, whereas autoregressive models gener-                 state. They take a window of measurements and predict a distri-
+                                               ally are not. Empirically, we evaluate our method                bution of subtrajectories which can be sampled and used for state
+                                               on a challenging two-dimensional turbulent fluid                 and uncertainty estimation.
+                                               dynamics problem. The results demonstrate that
+                                               PAINT stays on-trajectory and predicts system
+                                               states from sparse measurements with high fi-                    1. Introduction
+                                               delity. These findings underscore PAINT’s po-                    Modern artificial intelligence is increasingly integrated into
+                                               tential for developing neural twins that stay on-                the modeling, monitoring, and control of complex dynami-
+                                               trajectory, enabling more accurate state estimation              cal systems. A key development in this domain are digital
+                                               and decision-making. 1                                           twins (Grieves, 2014): virtual models that run alongside a
+                                                                                                                physical system, using live sensor data to update its predic-
+                                                                                                                tions. Unlike standard simulations, a digital twin contin-
+                                                                                                                uously adjusts its internal state to match the real system’s
+                                           1                                                                    behavior, thereby enabling better monitoring and automated
+                                             LIT AI Lab, Institute for Machine Learning, JKU Linz, Aus-
+                                        tria 2 Department of Particulate Flow Modelling, JKU Linz, Aus-         decision-making.
+                                        tria 3 Christian Doppler Laboratory for Data-Assisted Simulations
+                                        of Complex Flows, Linz, Austria 4 Emmi AI GmbH, Linz, Aus-              Neural surrogates are neural network based predictive mod-
+                                        tria. Correspondence to: Andreas Radler <radler@ml.jku.at>,             els which emulate expensive, high-fidelity simulations and
+                                        Johannes Brandstetter <brandstetter@ml.jku.at>.                         offer fast predictions while maintaining reasonable accuracy.
+                                                                                                                Recent works have already demonstrated remarkable results
+                                           1
+                                           Code is available at https://github.com/                             on computational fluid dynamics (CFD) (Li et al., 2022;
+                                        ParticulateFlow/PAINT-Parallel_in_time_                                 Alkin et al., 2024a; Wu et al., 2024; Alkin et al., 2025), as
+                                        Neural_Twins                                                            well as on particle based systems as surrogate models for
+
+                                                                                                            1
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+discrete element methods (Alkin et al., 2024c).                              measurements.
+However, transforming neural surrogates into neural twins
+is a challenging endeavor. The current generation of neural                • We empirically demonstrate the effectiveness of our
+surrogates can neither ingest nor adapt to real-time measure-                method on a challenging 2D turbulent fluid dynamics
+ments during inference. Therefore, we asked the question:                    problem.
+How to design neural surrogates that adapt at test time
+using real-time measurements?
+                                                                        2. Background and related work
+We do not claim to solve this problem entirely. However,
+                                                                        Notation. Vectors and matrices are denoted in bold, e.g.,
+we present insights and a new approach that advances the
+                                                                        x ∈ Rn and A ∈ Rm×n . General sequences such as
+discussion. We introduce Parallel-in-time Neural Twins
+                                                                        [k, . . . , t] are denoted in brackets as [k, t]. We may also
+(PAINT), a family of methods for reconstructing dynami-
+                                                                        use brackets as subscripts over sequences, e.g., x[k,t] =
+cal systems from measurements. At the core of PAINT is
+                                                                        [xk , . . . , xt ]. True or ground-truth probability distributions
+training a generative neural network to model the joint con-
+                                                                        are denoted p(·), while the probability of a random variable
+ditional probability of system states given the measurements.
+                                                                        X taking a specific value x is written as p(X = x) or, in
+At inference, it reconstructs a sequence of states from mea-
+                                                                        shorthand, as p(x). Functions or distributions parameterized
+surements using a sliding-window approach. This makes
+                                                                        by neural networks use subscripts θ for their parameters,
+our method interpretable and avoids any dependence on
+                                                                        e.g., fθ or pθ (·).
+an initial condition, which constitutes an easily overlooked
+component in autoregressive models.
+                                                                        2.1. Scalable probabilitic neural surrogates
+Mathematically, we show that PAINT enables accurate state
+estimation from measurements due to being on-trajectory,                Scalable neural surrogates. A surrogate model, or simply
+i.e., staying close to the true trajectory even in presence of          a surrogate (Forrester et al., 2008), is a simplified compu-
+prediction errors. We also show that autoregressive models              tational model designed to approximate a more intricate,
+may possess this property under certain conditions, but not             computationally intensive system, such as a high-fidelity
+in general. Our analysis also sheds light on a phenomenon               simulation or a physical experiment. Modern neural sur-
+we call over-reliance on the autoregressive state. It de-               rogates based on deep neural networks rely heavily on the
+scribes the problem of an autoregressive model over-relying             transformer architecture (Vaswani et al., 2017). They have
+on an off-trajectory state, whereas an ideal model would                been successfully scaled from a few thousand (Li et al.,
+recognize such drift and reduce the state’s influence on the            2022; Wu et al., 2024; Alkin et al., 2024b) to millions of
+prediction.                                                             input dimensions (Alkin et al., 2025). Often these architec-
+                                                                        tures are combined with convolutional layers (LeCun et al.,
+Empirically, we implement FlowPAINT, an instance of                     1989; Kipf, 2016) as learned encoders and decoders (Kohl
+PAINT based on Flow Matching. FlowPAINT is evaluated                    et al., 2023; Alkin et al., 2025).
+on a dataset of state-of-the-art large eddy simulations with
+varying Reynolds numbers in 2D. This dataset is especially              Generative modeling of PDEs. Over the past years, a pow-
+challenging due to the chaotic dynamics of the turbulent                erful group of related generative modeling frameworks were
+fluid. The results confirm the generalization capabilities of           introduced around the works of Diffusion (Sohl-Dickstein
+our method.                                                             et al., 2015; Ho et al., 2020), Flow Matching (Liu et al.,
+                                                                        2022; Lipman et al., 2022) and stochastic interpolants (Al-
+We show – theoretically and empirically – how to design                 bergo & Vanden-Eijnden, 2022; Albergo et al., 2023a; Gao
+neural twins which stay on-trajectory for arbitrary many                et al., 2024). These frameworks have set new state-of-the-art
+timesteps. Our main contributions are summarized as fol-                results when modeling PDEs (Sestak et al., 2025; Kohl et al.,
+lows:                                                                   2023). Additionally diffusion models seem to possess bene-
+                                                                        ficial properties for modeling high frequencies (Lippe et al.,
+   • To the best of our knowledge, we are the first to train an         2023), leading to more accurate and physically plausible
+     on-trajectory neural twin on a high-dimensional fluid-             solutions.
+     dynamics problem. Our method is interpretable, has
+     an inherent measure of uncertainty and makes no prior              2.2. Reconstruction and control of dynamical systems
+     assumptions about the initial state.
+                                                                        Bayesian inference. Updating model states by incorpo-
+   • Mathematically, we show that our method is on-                     rating measurement data is known as bayesian inference
+     trajectory, i.e., stays close to the true trajectory for ar-       (Särkkä & Svensson, 2023). Bayesian inference meth-
+     bitrarily long rollouts. Our analysis also sheds light on          ods can be broadly categorized into (1) Filtering: p(xt |
+     pitfalls when using autoregressive models with sparse              m[0,t] ), (2) Prediction: p(xt+n | m[0,t] ), and (3) Smooth-
+
+                                                                    2
+                         PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+ing: p(xt | m[0,T ] ), where x ∈ Rdx , m ∈ Rdm , t ∈ [0, T ]
+and n ∈ N. Classical approaches to bayesian inference
+take simplifying assumptions and usually arrive at analyt-
+ical solutions. These approaches date back to the seminal                                                                      (4) Control
+                                                                                                 Dynamical
+works on Wiener and Kalman filters (Wiener, 1949; Kalman,                                         System
+1960). However, neither classical approaches nor hybrid
+approaches using neural networks (Krishnan et al., 2015;
+                                                                                (1) Inform                        (3) Measurements
+Karl et al., 2016; Kim et al., 2025) have been successfully
+trained on tens of thousands or more input dimensions. They
+are therefore impractical for our use case.
+                                                                          Simulation
+Reconstructing flows from sparse measurements. Prior                                                                   Neural Twin
+                                                                            dataset               (2) Train
+art has explored flow reconstruction from sparse measure-
+ments. These measurements are usually assumed to come
+from Particle Tracking Velocimetry (PTV), probes in the               Figure 2. Interaction between a real-world dynamical system, the
+walls or at informative locations.                                    simulations dataset and a neural twin. The training phase is de-
+PAINT differentiates and/or generalizes most prior works              picted in blue, the inference (test) phase in red and nodes involved
+by (1) learning a distribution of states instead of point esti-       in both phases in black. Dashed lines indicate optional steps. The
+                                                                      workflow is structured in three phases: (1) The dynamical systems
+mates (Dang et al., 2024; Chaurasia & Chakraborty, 2024;              informs the design of the simulations and a diverse training dataset
+Hosseini & Shiri, 2024; Toscano et al., 2024) or (2) be-              is generated. (2) The generated dataset is used for training the neu-
+ing scalable and end-to-end trainable (Sun & Wang, 2020).             ral twin. (3) During inference, the neural twin integrates real-time
+or (3) using temporal additionally to spatial information             measurement data to remain on-trajectory. (4) The state estimation
+(Güemes et al., 2022; Cuéllar et al., 2024; Oommen et al.,          of the neural twin can optionally be used for decision-making.
+2025; Kim et al., 2021; Hemant Parikh et al., 2025).
+Some works (Li et al., 2024; Du et al., 2024; Amorós-Trepat
+et al., 2026) used diffusion posterior sampling (Jalal et al.,        equations of highly complex, second-order nonlinear PDEs
+2021; Chung et al., 2022) to reconstruct flow fields from             with no known general analytical solution. Therefore, they
+measurements based on a prior diffusion model. However,               are typically solved numerically.
+the quality of the reconstruction still falls short of condi-         Precision–computation tradeoff. Numerical solutions of
+tional diffusion models (Gupta et al., 2024).                         the Navier–Stokes equations involve a tradeoff between ac-
+Control of dynamical systems. Instead of reconstruct-                 curacy and computational cost. Direct numerical simulation
+ing the dynamical system from measurements, prior work                (DNS) resolves the full flow field but is prohibitively expen-
+controlled the dynamical system directly from the measure-            sive for most practical flows. Large-eddy simulation (LES)
+ments using reinforcement learning (Ozan et al., 2025; Lage-          resolves only the largest, energy-containing scales, while
+mann et al., 2025). While these are promising directions,             Reynolds-averaged Navier–Stokes (RANS) approaches pro-
+the lack of interpretability is a major obstacle for a broader        vide only mean flow fields under strong modeling assump-
+adoption and a limitation regarding applicability.                    tions (Davidson, 2015; Fröhlich, 2006). LES represents a
+                                                                      compromise between fidelity and computational cost within
+2.3. Computational Fluid Dynamics                                     this spectrum of methods and was therefore used for the
+                                                                      experiments in this paper.
+The dynamical system we will use in our experiments (see
+Section 4.1) is a 2D fluid dynamical system in the turbulent
+regime. Therefore, we give a brief introduction to computa-
+                                                                      3. Method
+tional fluid dynamics.                                                3.1. A neural twin framework for dynamical systems
+Incompressible Navier-Stokes. The fluid mechanics prob-               We envision neural twins in a four-step process, depicted in
+lem under the continuum assumption is governed by the                 Figure 2. First, design knowledge of the dynamical system is
+Navier–Stokes equations in their incompressible form as               used to create the simulations. This ensures that the simula-
+                                                                      tions reflect physical constraints and key behaviors. Second,
+   ∂u
+      + u · ∇u = −∇p + µ∆u + fe ,            ∇·u=0         (1)        a diverse training dataset is generated by exploring a broad
+   ∂t
+                                                                      spectrum of trajectories. This dataset is used for training
+where u denotes the velocity, p denotes the pressure, µ de-           a neural twin. Third, at test time the neural twin dynami-
+notes the viscosity and fe denotes any kind of external body          cally incorporates real-time measurement data, allowing it
+forces. These equations are complemented by appropriate               to stay aligned with actual system trajectories and support
+boundary and initial conditions. This constitutes a system of         real-time decision-making. Fourth, via the state estimation
+
+                                                                  3
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+of the neural twin, one can optionally control the dynam-                  2005) and key observations made in (Hess et al., 2023). We
+ical system, e.g. via rule-based methods. The approach                     assume a fully differentiable neural network, which learns
+combines domain expertise with adaptive learning, enabling                 the probability distribution pθ (xt ||xt−1 , m[0,t] ). To sample
+both accuracy and agility in complex environments.                         from this probability distribution xt ∼ pθ (xt ||xt−1 , m[0,t] )
+                                                                           we rewrite the neural network to a deterministic function
+3.2. Parallel-in-time Neural Twins                                         with a stochastic input ηt :
+Problem description. Consider a transient dynamical                                    xt = fθ (xt−1 , m[0,t] , ηt )         ηt ∼ p(η)           (5)
+system where the state space is a compact subset X ⊂
+Rdx , dx ∈ N and xt ∈ X denotes the system state at time t.                The Jacobian is then defined as Jt := ∂fθ /∂xt . In contrast
+We assume a dm ∈ N dimensional compact measurement                         to Orrell (2005), this is a discrete random ordinary differen-
+space M ∈ Rdm . At each timestep t ∈ N the system                          tial equation (RODE), i.e., an ODE with a random input at
+provides a measurement mt from the emission model pe ,                     each timestep.
+where mt ∼ pe (mt | xt ).                                                  To show the model drift from small perturbations, we fix
+PAINT. The goal of our generative model pθ is to sample                    a path of the RODE by fixing η[0,t] . For simplicity, we
+trajectories from p(x[0,t] ) | m[0,t] ). At the core of our                then write Fθt (xt ) = fθ (xt−1 , m[0,t] , ηt ) where we absorb
+method is joint modeling of this distribution. In contrast,                the measurement m[0,t] and the stochastic input ηt into the
+autoregressive models factorize this distribution which may                function, such that xt = Fθt (xt−1 ). Hence for the genera-
+lead to drifting (see Section 3.3).                                        tion of a state xt from a previous state xk it follows from
+As the number of timesteps may become very large, PAINT                    function composition:
+models the joint probability over a window (see Figure 1)                                                                      [k+1,t]
+of width h and may optionally predict n timesteps into the                      xt = Fθt ◦ Fθt−1 ◦ ... ◦ Fθk+1 (xk ) = Fθ                (xk )   (6)
+future:
+                                                                           The first-order Taylor approximation of a small input pertur-
+                 pθ (x[t−h,t+n] | m[t−h,t] ).                    (2)       bation at timestep k < t is:
+In this setup, future measurements can inform past states                                                                    t
+                                                                             [k+1,t]                  [k+1,t]
+                                                                                                                             Y
+to obtain temporal consistency. Furthermore, there is no                   Fθ          (xk + ϵ) = Fθ            (xk ) + ϵ           Ji (xi−1 ) + o(ϵ2 )
+reliance on the existence or an assumption about an initial                                                                 i=k+1
+condition.                                                                                                                                       (7)
+PAINT is agnostic to the generative modeling framework
+and the neural network architecture. Common building                       This means, a deviation at timestep k induces a deviation
+blocks may be transformers, MLPs or CNNs (LeCun et al.,                    multiplied by the Jacobian product series at timestep t. This
+1989).                                                                     has also been experimentally explored by Hess et al. (2023),
+                                                                           who include visualizations of the Jacobian product series
+3.3. Theoretical Considerations                                            for chaotic dynamical systems.
+
+Autoregressive models factorize the joint distribution as                  On-trajectory. In the following we will formalize the
+a product of conditionals. Assuming the system is Marko-                   notion of a model being “on-trajectory”. For this, we rely on
+vian and conditioned on a sequence of variables m[0,t] , we                Assumption 3.1, which states that the predictive relevance
+obtain:                                                                    of past measurements decays within a finite window h.
+                                          t
+                                          Y                                Assumption 3.1. Temporal decay of measurement infor-
+p(x[0,t] | m[0,t] ) = p(x0 | m[0,t] ) ·         p(xi | xi−1 , m[0,t] ),    mation: For the given dynamical system, there is a finite
+                                          i=1                              window size h ∈ N, such that almost all information from
+                                                                 (3)       past measurements comes from measurements within this
+                                                                           window. Formally, for all ϵ > 0 and all t ∈ N there exists a
+where the autoregressive model learns the conditional prob-
+                                                                           h ≪ t such that ||p(xt | m[t−h,t] ) − p(xt | m[0,t] )|| < ϵ.
+ability pθ (xt | xt−1 , m[0,t] ). However, in practice, due to
+finite compute but potentially arbitrarily long sequences,                 Next, we proceed with our definition of on-trajectory.
+a shorter measurement window of size h ∈ N is used as
+follows                                                                    Definition 3.2. On-trajectory: Assuming unbounded
+                                                                           model size, compute and data, a model is on-trajectory
+                pθ (xt | x[t−k,t−1] , m[t−h,t] )                 (4)       if the modeled distribution is arbitrarily close to the true
+                                                                           distribution. Formally, for all ϵ > 0 and all t ∈ N, x ∈ X
+Autoregressive model drift. Our analysis is leaned on                      there is model, data and compute such that: ||pθ (Xt = x |
+the analysis of error growth of dynamical systems (Orrell,                 m[0,t] ) − p(Xt = x | m[0,t] )|| < ϵ.
+
+                                                                       4
+                         PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+Parallel-in-time models are on-trajectory under Assump-              FOAM in OpenFOAM 8 (OpenCFD, 2009), with subgrid
+tion 3.1 . We derive this in Appendix A.1. Intuitively, for          scales modeled by the Smagorinsky LES model (Pope, 2001;
+each ϵ we can choose the window h large enough to guaran-            Fröhlich, 2006). Simulations are performed on a structured
+tee arbitrary closeness. In contrast, autoregressive models          mesh, and for training purposes, a subregion is extracted
+are in general not on-trajectory. As a constructed coun-             and interpolated onto a regular 128 x 128 grid. Since the
+terexample, consider an underlying chaotic system where              state-space represents 2D velocities, we will write ut in-
+the model learns to ignore the measurements (for further             stead of xt with ut ∈ Rd1 ×d2 . Appendix B.1 provides
+discussion, see Hess et al. (2023) and Appendix A.2).                the train/val/test splits across Reynolds numbers as well as
+                                                                     further details about the dataset.
+3.4. Over-reliance on the autoregressive state                       Physical coherence. Due to the chaotic and rapidly diverg-
+The analysis in Section 3.3 highlights a fundamental prob-           ing nature of turbulent flows, comparing a single predicted
+lem we call over-reliance on the autoregressive state. In-           frame or a short sequence to the ground truth is not mean-
+tuitively, it states that for a naive autoregressive model the       ingful. Research in turbulence instead focuses on the flow’s
+autoregressive state plays an ambiguous role: If the state is        inherently reproducible statistical properties (Pope, 2001;
+on-trajectory, it helps the model as it provides useful infor-       Davidson, 2015). Given a possibly infinitely long trajectory
+mation for the next state. If the state is off-trajectory, the       u[0,t] , we follow a common notation in fluid dynamics and
+model may still make use of it for prediction and drift off          decompose u[0,t] into a time-averaged mean component
+                                                                                        Pt
+further.                                                             u := limt→∞ 1t i=1 ui and a turbulent fluctuation com-
+                                                                     ponent u′[0,t] , such that u[0,t] = u + u′[0,t] . The variance
+Measurement informativeness and uncertainty model-                                                                Pt
+ing. In principle, the only way for the model to correct             over time is denoted as u′2 := limt→∞ 1t i=1 (ui − u)2 .
+an off-trajectory autoregressive state is with informative           Further, we define E(k) as the mean kinetic energy spec-
+measurements (this excludes edge cases, e.g., where the              trum. While these metrics are defined over an infinite-time,
+model converges to a global steady state). Ideally, a model          in practice they are computed over a large, finite horizon.
+would detect when the autoregressive state drifts off and            Probe constella-
+decrease its influence on the prediction. This can theo-             tions. The model
+retically be achieved by a model which models the state              is trained using
+uncertainty explicitly. However reliable uncertainty model-          25 random probe
+ing for high-dimensional state spaces and long trajectories          points that are re-
+is a challenging open research problem.                              sampled for each
+                                                                                                    (a) Grid.        (b) Vertical.
+Training paradigm. Over-reliance on autoregressive state             data point and ev-
+is also influenced by the training strategy. Autoregressive          ery iteration. At               Figure 3. Probe positions.
+models are usually trained with teacher-forcing, where the           inference, we investigate the two fixed probe point constella-
+ground-truth previous state xt is used to predict the next           tions depicted in Figure 3. Grid: A 10×10 grid of 100 probe
+state xt+1 . As these states are highly correlated, the model        points evenly spaced across the domain (see Figure 3a). Ver-
+might learn to over-rely on xt and under-rely on mt+1 .              tical: A linear arrangement of 25 probe points positioned
+This could potentially be mitigated by training techniques           at the 3/4 axial location of the domain (see Figures 3b). In
+such as generalized teacher forcing (Hess et al., 2023) or           both configurations, an additional probe point is placed at
+unrolled training (Kohl et al., 2023).                               the center of the inlet of the jet to capture the inlet velocity.
+
+Connection to Jacobian. How much information is taken                4.2. Models
+from the autoregressive state is indicated by Jt (xt ). To
+avoid autoregressive error accumulation, the Jacobian prod-          PAINT via data-coupled Flow Matching. PAINT is
+uct series should ideally have a small norm. Notice that             agnostic to the generative modeling paradigm, as long as it
+parallel-in-time models predict x[t−h,t] = fθ (m[k,t] , η)           allows for conditional generation. We therefore implement
+without any recurrence. Consequently the Jacobians are               FlowPAINT as a concrete instantiation of PAINT using a
+all zero-matrices.                                                   common Flow Matching implementation (Lipman et al.,
+                                                                     2024). Additionally, the unmasking of non-measurement
+                                                                     points in the domain is modeled as data-coupled distribution
+4. Experiments
+                                                                     matching (Albergo et al., 2023b). Notably, the masking ratio
+4.1. Dataset and evaluation                                          of our method is very high (25 of 16K pixels are unmasked).
+                                                                     In early experiments we observed that the gradient signal
+Turbulent single jet dataset. We generate a CFD dataset              was too weak for the vicinity of the probes. Therefore,
+using the incompressible, pressure-based solver pimple-              we introduce spatial weighting to the Flow Matching loss,
+
+                                                                 5
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+Figure 4. Ground truth vs. predicted states at different timesteps for Re = 2100 using the vertical probe constellation. The prediction
+labeled PAINT corresponds to FlowPAINT 16/8. Unlike the autoregressive U-Net, PAINT does not accumulate errors over time, whereas
+the U-Net exhibits a pronounced temporal drift. All values are normalized by the mean inlet velocity.
+
+
+which puts higher weight on pixels in the neighborhood of             Probe conditioning and future prediction. Across the
+the probe points.                                                     experimented models, different measurement histories h
+PAINT is also agnostic to the neural network architecture,            and future predictions n are possible (also see Equations 2
+we therefore use a Diffusion Transformer (DiT) (Peebles               and 4). We add the postfix h + 1/n to distinguish between
+& Xie, 2023) with convolutional layers for patching and               these hyperparameters. E.g. “FlowPAINT 16/8” learns the
+unpatching. Further experimental details can be found in              probability p(x[t−15,t+8] | m[t−15,t] ) of 16 measurement
+Appendix B.2.                                                         timesteps and predicting 8 timesteps steps into the future.
+                                                                      Similarly for autoregressive models, “Autoregressive 16/0”
+Autoregressive Baselines. PAINT is fundamentally differ-
+                                                                      denotes the UNet architecture from Kohl et al. (2023) which
+ent to autoregressive models, because it predicts a sequence
+                                                                      learns p(xt | x[t−2,t−1] , m[t−16,t] ). Our main results are
+of consecutive timesteps at once. In contrast, an autore-
+                                                                      reported in the 16/0 setting for the best comparability. More
+gressive model predicts the sequence by regressing on its
+                                                                      settings are reported in the ablations setting in Appendix
+own previous output. Therefore the comparison to an au-
+                                                                      B.3 and Table 5.
+toregressive model, is inherently difficult. In this work we
+tested 2 baselines. First, we compare PAINT to the same
+DiT architecture. However, this setting did not lead to stable        4.3. Results
+rollouts (for further details see Appendix B.2).                      The quantitative results are reported in Table 1. FlowPAINT
+To provide a more insightful baseline, we compare PAINT               outperforms the autoregressive UNet across all metrics,
+to an established autoregressive UNet baseline from Kohl              probe constellations and Reynolds numbers in the test set.
+et al. (2023). The UNet uses convolutional and linear atten-          Further results and ablations can be found in Appendix B.3
+tion (Shen et al., 2021) blocks. We follow their proposed             and Table 5.
+paradigm and condition on two past autoregressive states
+and on the probe values by concatenating the mask and                 Recovery of the physical flow characteristics. We ob-
+probe values to the channels. The model sizes were se-                serve the models ability to reconstruct physical plausible
+lected to closely match the number of parameters, with                states from different constellations of probe points (see Fig-
+FlowPAINT comprising 19.8M parameters and the autore-                 ures 5 and 16). The model’s ability to reproduce the correct
+gressive UNet 20.6M. To promote a fair comparison, the                physical statistics seems to depend directly on the number
+optimization hyperparameters and batch sizes were care-               and position of the sample points (as can be seen when
+fully chosen. These and other architectural decisions are             comparing Figure 5 with Figures 13a, 14a and 15a).
+explained in further detail in Appendix B.2.                          FlowPAINT models maintain stable error, while autore-
+
+
+                                                                  6
+                           PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+Table 1. Results for physical coherence of FlowPAINT (ours) and the autoregressive UNet baseline (AR UNet). The MAE, MSE and
+RMSE are taken between the ground truth and the predicted quantity. u and u′2 denote the mean and variance over time. E(k) is the
+predicted kinetic energy spectra. MSE(u[0,t] ) is the mean squared error between the predicted and the ground-truth trajectory as a whole.
+All values are taken along 900 timesteps in the test trajectories. The values after ± are standard deviations from averaging over 10 seeds.
+Generally, the higher Reynolds number seems to be more difficult for both models.
+
+       Model             Cond.       Re     Probes      MAE(u) ↓          MAE(u′2 ) ↓       MSE([u[0,t] ]) ↓    RMSE(E(k)) ↓
+                                                           ×10−3             ×10−5              ×10−5                 ×10−6
+                         16/8                             1.2 ± 1.6        9.9 ± 21.7           8.1 ± 3.6               6.9
+       FlowPAINT
+                         16/0      2100     grid          1.3 ± 2.6        8.7 ± 15.1          10.8 ± 3.9               6.3
+       Autoreg.          16/0                            8.2 ± 13.7      93.0 ± 103.2        155.0 ± 50.1              66.3
+                         16/8                             2.2 ± 3.1       30.2 ± 38.4         49.0 ± 21.0              20.1
+       FlowPAINT
+                         16/0      2100     vertical      3.0 ± 3.2       30.0 ± 41.6         68.2 ± 25.3              20.5
+       Autoreg.          16/0                            7.4 ± 12.5      87.6 ± 96.1         156.2 ± 50.9              62.4
+                         16/8                             0.9 ± 1.3         2.2 ± 5.5           2.0 ± 1.0               2.0
+       FlowPAINT
+                         16/0      1100     grid          1.2 ± 2.8        6.2 ± 10.7           4.6 ± 1.6               4.6
+       Autoreg.          16/0                             3.7 ± 6.3       16.0 ± 24.1          29.9 ± 8.8              12.3
+                         16/8                             1.1 ± 1.6        6.3 ± 11.1           8.9 ± 3.4               3.7
+       FlowPAINT
+                         16/0      1100     vertical      3.0 ± 5.8        8.2 ± 15.8          24.2 ± 6.5               9.9
+       Autoreg.          16/0                             3.7 ± 6.1       15.9 ± 23.9          29.5 ± 8.8              12.3
+
+
+                                                                         A related conclusion can be drawn by comparing the MSE
+                                                                         of the two autoregressive baselines (Autoreg. 1/0 and 16/0)
+                                                                         over rollout (see Figure 6), where both models exhibit very
+                                                                         similar error trajectories. This suggests that the additional
+                                                                         information provided by the longer measurement history
+                                                                         in Autoreg 16/0 is not effectively used, indicating that the
+                                                                         model overly relies on its autoregressive state.
+                                                                         Measure of uncertainty. One can obtain a measure for
+                                                                         uncertainty by sampling several times and computing the
+                                                                         variance. In Figure 12 it is visible that the model is most
+                                                                         certain around the probe positions and most uncertain to the
+                                                                         left and the right.
+Figure 5. Mean velocity u (top row) and variance u′2 (bottom row)
+of the reconstructed Re = 2100 test trajectory using FlowPAINT           Stability through future predictions. Comparing Flow-
+16/8 and the vertical probe constellation compared with the ground       PAINT 16/0 with the FlowPAINT 16/8 variant highlights
+truth. All values are normalized by the mean inlet velocity.
+                                                                         the benefit of incorporating future-state predictions. This
+                                                                         holds even if we use the same number of predicted frames
+                                                                         per batch (see Appendix B.3 for more details).
+gressive UNet drifts. The autoregressive approach exhibits
+                                                                         Varying the number of measurement points. We depict
+a drift in MSE when rolled out (compare Figures 4, 6 and
+                                                                         the MSE with varying probe measurements points in the grid
+11). Notably, Figure 4 depicts a degradation of the autore-
+                                                                         setting in Figure 10. Although FlowPAINT was trained with
+gressive model’s state over time, which has been analyzed
+                                                                         25 randomly resampled probe points for each datapoint,
+in prior work (Kohl et al., 2023). Importantly, the autore-
+                                                                         the best performance is obtained with around 100 probe
+gressive model benefits from a known, correct initial state,
+                                                                         points. The autoregressive UNet’s MSE stays approximately
+which is often unknown in practice.
+                                                                         the same, even if the number of measurement points are
+Over-reliance on autoregressive state. By analyzing the                  increased.
+gradients of the loss with respect to the model input, one can
+estimate how predictions depend on different conditioning                4.4. Limitations
+signals. For the autoregressive baseline (Autoreg. 1/0), the
+results indicate that the model primarily relies on the autore-          Sampling a sequence vs. a single state. PAINT may be
+gressive states while largely ignoring the less-informative              used for sampling sequences or individual timesteps. Sam-
+measurements (see Figure 7). This provides strong indica-                pling a connected, temporally smooth sequence, x[t−h,t] ∼
+tion of an over-reliance on the autoregressive components.               p(x[t−h,t]) | m[t−h,t] ) aids result interpretation (see Figure
+
+                                                                     7
+                           PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+                        (a) Grid probe constellation.                                (b) Vertical probe constellation.
+Figure 6. MSE over time of ground-truth vs. predicted trajectories for the Re = 2100 test trajectory and different probe point
+constellations, comparing the autoregressive baselines with FlowPAINT. Notably, the autoregressive approach yields nearly identical error
+profiles for both probe constellations, failing to leverage the additional information provided by the more dense probe placements. The
+autoregressive model indicates over-reliance on the autoregressive state.
+
+
+                                                                           ference than the autoregressive baseline. It was trained on
+                                                                           12 A100 (64 GB VRAM) for 30 hours, whereas the UNet
+                                                                           was trained on a single H100 (80GB VRAM) for 24 hours.
+                                                                           Notably, the UNet takes about 66 milliseconds and Flow-
+                                                                           PAINT around 6.6 seconds for 20 denoising steps. Further
+                                                                           details can be found in Appendix B.2.
+
+                                                                           5. Conclusion
+                                                                           In this work, we introduced Parallel-in-time Neural Twins
+Figure 7. Relative input sensitivity of the loss with respect to           (PAINT), a novel data-driven framework designed to bridge
+different input channel groups, measured using mean squared
+gradient norms with respect to the model input. Gradients are              the gap between static neural surrogates and adaptive digital
+aggregated over spatial and batch dimensions and grouped by input          replicas for real-time reconstruction of dynamical systems.
+type, as the conditioning for the autoregressive model (Autoreg.           PAINT employs a generative neural network to model the
+1/0) is provided via the channel dimension. The gradients are              joint conditional probability of system states, enabling it
+normalized to obtain relative contributions for each conditioning          to provably stay on-trajectory without reliance on initial
+signal, and the running mean (dashed line) and standard deviation
+(shaded area) of these quantities are visualized. Over the course          conditions. One of our key findings is the problem of over-
+of the training, sensitivity with respect to the measurement inputs        reliance on autoregressive state in standard autoregressive
+decreases, while sensitivity to the autoregressive states increases.       models. Our insights on this issue are supported by both
+This could suggest, that the model increasingly relies on the more         theoretical analysis and experimental results.
+informative autoregressive context relative to the measurements.
+                                                                           The practical effectiveness of our approach was demon-
+                                                                           strated through the application of FlowPAINT to 2D turbu-
+21). Sampling individual timesteps xt ∼ p(xt | m[t−h,t] ),                 lent fluid dynamics, underscoring the potential of PAINT
+may be used for real-time state estimation in a sliding win-               for complex, real-world systems. Taken together, this pa-
+dow context, albeit without the same temporal smoothness.                  per marks a significant advancement in the design of in-
+                                                                           terpretable and widely applicable neural twins for intricate
+Discontinuities. A fundamental limitation of parallel-in-
+                                                                           dynamical systems, paving the way for more accurate and
+time models is the inherently discontinuous temporal nature
+                                                                           adaptable modeling techniques.
+of the predicted trajectory. This lack of temporal smoothness
+makes generated trajectories less interpretable and compli-                Limitations and future work A major limitation of our
+cates the analysis of temporal properties. However, this                   method are the higher computational costs. Future work
+limitation is acceptable in scenarios where the primary ob-                could explore more efficient architectures or alternative
+jective is to obtain an estimate of the system’s current or                training paradigms, such as subsampling timesteps, to im-
+near-future state. In our experiments, we also observe that                prove scalability. Regarding the observed over-reliance on
+for reasonably small time steps, the induced discontinuities               the autoregressive state, we provide theoretical insights and
+relative to an autoregressive baseline are modest (see Figure              empirically validate behavior in our experiments. However,
+23 in the Appendix B.3).                                                   these findings are specific to the considered data, task, and
+                                                                           model and may not directly generalize to other settings.
+Compute at training and inference. FlowPAINT needs
+                                                                           Another limitation is the sliding window approach, which
+substantially more training resources and is slower at in-
+
+                                                                       8
+                         PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+prevents truly continuous generations. This could poten-              Amorós-Trepat, M., Medrano-Navarro, L., Liu, Q., Guas-
+tially be mitigated by stitching techniques (Wei et al., 2019).        toni, L., and Thuerey, N. Guiding diffusion models to
+                                                                       reconstruct flow fields from sparse data. Physics of Fluids,
+Acknowledgements                                                       38(1), 2026.
+
+The ELLIS Unit Linz, the LIT AI Lab, the Institute for                Chaurasia, N. K. and Chakraborty, S. Reconstruction of
+Machine Learning, are supported by the Federal State Up-                the turbulent flow field with sparse measurements using
+per Austria. We thank the projects FWF AIRI FG 9-N                      physics-informed neural network. Physics of Fluids, 36
+(10.55776/FG9), AI4GreenHeatingGrids (FFG- 899943),                     (8), 2024.
+Stars4Waters (HORIZON-CL6-2021-CLIMATE-01-01),
+FWF Bilateral Artificial Intelligence (10.55776/COE12).               Chung, H., Kim, J., Mccann, M. T., Klasky, M. L., and Ye,
+We thank the European High Performance Computing initia-                J. C. Diffusion posterior sampling for general noisy in-
+tive for providing computational resources (EHPC-DEV-                   verse problems. arXiv preprint arXiv:2209.14687, 2022.
+2024D06-055, EHPC-DEV-2024D08-061, EHPC-DEV-
+                                                                      Cuéllar, A., Güemes, A., Ianiro, A., Flores, Ó., Vinuesa, R.,
+2025D08-108). We thank NXAI GmbH, Audi AG, Sili-
+                                                                        and Discetti, S. Three-dimensional generative adversarial
+con Austria Labs (SAL), Merck Healthcare KGaA, GLS
+                                                                        networks for turbulent flow estimation from wall mea-
+(Univ. Waterloo), TÜV Holding GmbH, Software Compe-
+                                                                        surements. Journal of Fluid Mechanics, 991:A1, 2024.
+tence Center Hagenberg GmbH, dSPACE GmbH, TRUMPF
+SE + Co. KG.
+                                                                      Cybenko, G. Approximation by superpositions of a sig-
+                                                                        moidal function. Mathematics of control, signals and
+References                                                              systems, 2(4):303–314, 1989.
+Albergo, M. S. and Vanden-Eijnden, E. Building normal-
+                                                                      Dang, H. V., Choi, J. B., and Nguyen, P. C. Flronet: Deep op-
+  izing flows with stochastic interpolants. arXiv preprint
+                                                                        erator learning for high-fidelity fluid flow field reconstruc-
+  arXiv:2209.15571, 2022.
+                                                                        tion from sparse sensor measurements. arXiv preprint
+Albergo, M. S., Boffi, N. M., and Vanden-Eijnden, E.                    arXiv:2412.08009, 2024.
+  Stochastic interpolants: A unifying framework for flows
+                                                                      Dao, T. FlashAttention-2: Faster attention with better paral-
+  and diffusions. arXiv preprint arXiv:2303.08797, 2023a.
+                                                                        lelism and work partitioning. In International Conference
+Albergo, M. S., Goldstein, M., Boffi, N. M., Ranganath, R.,             on Learning Representations (ICLR), 2024.
+  and Vanden-Eijnden, E. Stochastic interpolants with data-
+  dependent couplings. arXiv preprint arXiv:2310.03725,               Dao, T., Fu, D. Y., Ermon, S., Rudra, A., and Ré, C. FlashAt-
+  2023b.                                                                tention: Fast and memory-efficient exact attention with
+                                                                        IO-awareness. In Advances in Neural Information Pro-
+Alkin, B., Fürst, A., Schmid, S., Gruber, L., Holzleitner,             cessing Systems (NeurIPS), 2022.
+  M., and Brandstetter, J. Universal physics transformers.
+  CoRR, 2024a.                                                        Davidson, P. Turbulence: an introduction for scientists and
+                                                                        engineers. Oxford university press, 2015.
+Alkin, B., Fürst, A., Schmid, S., Gruber, L., Holzleitner, M.,
+  and Brandstetter, J. Universal physics transformers: A              Du, P., Parikh, M. H., Fan, X., Liu, X.-Y., and Wang, J.-X.
+  framework for efficiently scaling neural operators. Ad-               Confild: Conditional neural field latent diffusion model
+  vances in Neural Information Processing Systems, 37:                  generating spatiotemporal turbulence. arXiv preprint
+  25152–25194, 2024b.                                                   arXiv:2403.05940, 2024.
+
+Alkin, B., Kronlachner, T., Papa, S., Pirker, S., Lichteneg-          Forrester, A., Sobester, A., and Keane, A. Engineering
+  ger, T., and Brandstetter, J. Neuraldem–real-time sim-                design via surrogate modelling: a practical guide. John
+  ulation of industrial particulate flows. arXiv preprint               Wiley & Sons, 2008.
+  arXiv:2411.09678, 2024c.
+                                                                      Fröhlich, J. Large Eddy Simulation turbulenter Strömungen:
+Alkin, B., Bleeker, M., Kurle, R., Kronlachner, T., Sonnleit-           Mit 145 Abbildungen und 14 Tabellen. Springer, 2006.
+  ner, R., Dorfer, M., and Brandstetter, J. Ab-upt: Scaling
+  neural cfd surrogates for high-fidelity automotive aero-            Gao, R., Hoogeboom, E., Heek, J., Bortoli, V. D., Murphy,
+  dynamics simulations via anchored-branched universal                  K. P., and Salimans, T. Diffusion meets flow matching:
+  physics transformers. arXiv preprint arXiv:2502.09692,                Two sides of the same coin. 2024. URL https://
+  2025.                                                                 diffusionflow.github.io/.
+
+                                                                  9
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+Grieves, M. Digital twin: manufacturing excellence through              Kohl, G., Chen, L.-W., and Thuerey, N. Benchmarking
+  virtual factory replication. White paper, 1(2014):1–7,                  autoregressive conditional diffusion models for turbulent
+  2014.                                                                   flow simulation. arXiv preprint arXiv:2309.01745, 2023.
+
+Güemes, A., Vila, C. S., and Discetti, S.          Super-              Krishnan, R. G., Shalit, U., and Sontag, D. Deep kalman
+  resolution gans of randomly-seeded fields. arXiv preprint               filters. arXiv preprint arXiv:1511.05121, 2015.
+  arXiv:2202.11701, 2022.
+                                                                        Lagemann, C., Mokbel, S., Gondrum, M., Rüttgers, M.,
+Gupta, S., Jalal, A., Parulekar, A., Price, E., and Xun, Z. Dif-          Callaham, J., Paehler, L., Ahnert, S., Zolman, N., Lage-
+  fusion posterior sampling is computationally intractable.               mann, K., Adams, N., et al. Hydrogym: A reinforcement
+  arXiv preprint arXiv:2402.12727, 2024.                                  learning platform for fluid dynamics. arXiv preprint
+                                                                          arXiv:2512.17534, 2025.
+Hemant Parikh, M., Fan, X., and Wang, J.-X. Conditional
+  flow matching for generative modeling of near-wall tur-               LeCun, Y., Boser, B., Denker, J. S., Henderson, D., Howard,
+  bulence with quantified uncertainty. arXiv e-prints, pp.                R. E., Hubbard, W., and Jackel, L. D. Backpropaga-
+  arXiv–2504, 2025.                                                       tion applied to handwritten zip code recognition. Neural
+                                                                          computation, 1(4):541–551, 1989.
+Hess, F., Monfared, Z., Brenner, M., and Durstewitz, D.
+  Generalized teacher forcing for learning chaotic dynam-               Li, Z., Meidani, K., and Farimani, A. B. Transformer for
+  ics. arXiv preprint arXiv:2306.04406, 2023.                             partial differential equations’ operator learning. arXiv
+                                                                          preprint arXiv:2205.13671, 2022.
+Ho, J., Jain, A., and Abbeel, P. Denoising diffusion proba-
+  bilistic models. Advances in neural information process-              Li, Z., Han, W., Zhang, Y., Fu, Q., Li, J., Qin, L., Dong, R.,
+                                                                          Sun, H., Deng, Y., and Yang, L. Learning spatiotemporal
+  ing systems, 33:6840–6851, 2020.
+                                                                          dynamics with a pretrained generative model. Nature
+Hosseini, M. Y. and Shiri, Y. Flow field reconstruction                   Machine Intelligence, 6(12):1566–1579, 2024.
+  from sparse sensor measurements with physics-informed
+                                                                        Lipman, Y., Chen, R. T., Ben-Hamu, H., Nickel, M., and
+  neural networks. Physics of Fluids, 36(7), 2024.
+                                                                          Le, M. Flow matching for generative modeling. arXiv
+Jalal, A., Arvinte, M., Daras, G., Price, E., Dimakis, A. G.,             preprint arXiv:2210.02747, 2022.
+   and Tamir, J. Robust compressed sensing mri with deep
+                                                                        Lipman, Y., Havasi, M., Holderrieth, P., Shaul, N., Le, M.,
+   generative priors. Advances in neural information pro-
+                                                                          Karrer, B., Chen, R. T. Q., Lopez-Paz, D., Ben-Hamu, H.,
+   cessing systems, 34:14938–14954, 2021.                                 and Gat, I. Flow matching guide and code, 2024. URL
+                                                                          https://arxiv.org/abs/2412.06264.
+Kalman, R. E. A new approach to linear filtering and pre-
+  diction problems. 1960.                                               Lippe, P., Veeling, B., Perdikaris, P., Turner, R., and Brand-
+                                                                          stetter, J. Pde-refiner: Achieving accurate long rollouts
+Karl, M., Soelch, M., Bayer, J., and Van der Smagt, P.
+                                                                          with neural pde solvers. Advances in Neural Information
+  Deep variational bayes filters: Unsupervised learning
+                                                                          Processing Systems, 36:67398–67433, 2023.
+  of state space models from raw data. arXiv preprint
+  arXiv:1605.06432, 2016.                                               Liu, X., Gong, C., and Liu, Q. Flow straight and fast:
+                                                                          Learning to generate and transfer data with rectified flow.
+Kim, H., Kim, J., Won, S., and Lee, C. Unsupervised deep                  arXiv preprint arXiv:2209.03003, 2022.
+  learning for super-resolution reconstruction of turbulence.
+  Journal of Fluid Mechanics, 910:A29, 2021.                            Loshchilov, I., Hutter, F., et al. Fixing weight decay regular-
+                                                                          ization in adam. arXiv preprint arXiv:1711.05101, 5(5):
+Kim, S., Petrunin, I., and Shin, H.-S. A review of bayes                  5, 2017.
+  filters with machine learning techniques and their applica-
+  tions. Information Fusion, 114:102707, 2025. ISSN 1566-               May, R. M. Simple mathematical models with very compli-
+  2535. doi: https://doi.org/10.1016/j.inffus.2024.102707.               cated dynamics. Nature, 261(5560):459–467, 1976.
+  URL          https://www.sciencedirect.com/
+  science/article/pii/S1566253524004858.                                Oommen, V., Khodakarami, S., Bora, A., Wang, Z., and
+                                                                          Karniadakis, G. E. Learning turbulent flows with gener-
+Kipf, T. Semi-supervised classification with graph con-                   ative models: Super-resolution, forecasting, and sparse
+  volutional networks. arXiv preprint arXiv:1609.02907,                   flow reconstruction. arXiv preprint arXiv:2509.08752,
+  2016.                                                                   2025.
+
+                                                                   10
+                        PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+OpenCFD, O. The open source cfd toolbox. User Guide,                Wei, L., Zhong, Z., Lang, C., and Yi, Z. A survey on
+ OpenCFD Ltd, 770, 2009.                                             image and video stitching. Virtual Reality & Intelligent
+                                                                     Hardware, 1(1):55–83, 2019.
+Orrell, D. Estimating error growth and shadow behavior in
+  nonlinear dynamical systems. International Journal of             Wiener, N. The linear filter for a single time series. In Ex-
+  Bifurcation and Chaos, 15(10):3265–3280, 2005.                     trapolation, Interpolation, and Smoothing of Stationary
+                                                                     Time Series, pp. 81–103. The MIT Press, 1949.
+Ozan, D. E., Nóvoa, A., and Magri, L. Data-assimilated
+  model-based reinforcement learning for partially ob-              Wu, H., Luo, H., Wang, H., Wang, J., and Long, M. Tran-
+  served chaotic flows. In International Conference on               solver: A fast transformer solver for pdes on general
+  Computational Science, pp. 65–72. Springer, 2025.                  geometries. arXiv preprint arXiv:2402.02366, 2024.
+Paszke, A., Gross, S., Chintala, S., Chanan, G., Yang, E.,
+  DeVito, Z., Lin, Z., Desmaison, A., Antiga, L., and Lerer,
+  A. Automatic differentiation in pytorch. In NIPS-W,
+  2017.
+Peebles, W. and Xie, S. Scalable diffusion models with
+  transformers. In Proceedings of the IEEE/CVF interna-
+  tional conference on computer vision, pp. 4195–4205,
+  2023.
+Pope, S. B. Turbulent flows. Measurement Science and
+  Technology, 12(11):2020–2021, 2001.
+Särkkä, S. and Svensson, L. Bayesian filtering and smooth-
+   ing, volume 17. Cambridge university press, 2023.
+Sestak, F., Toshev, A., Fürst, A., Klambauer, G., Mayr, A.,
+  and Brandstetter, J. Lam-slide: Latent space modeling
+  of spatial dynamical systems via linked entities. arXiv
+  preprint arXiv:2502.12128, 2025.
+Shen, Z., Zhang, M., Zhao, H., Yi, S., and Li, H. Efficient
+  attention: Attention with linear complexities. In Proceed-
+  ings of the IEEE/CVF winter conference on applications
+  of computer vision, pp. 3531–3539, 2021.
+Sohl-Dickstein, J., Weiss, E., Maheswaranathan, N., and
+  Ganguli, S. Deep unsupervised learning using nonequi-
+  librium thermodynamics. In International conference on
+  machine learning, pp. 2256–2265. pmlr, 2015.
+Sun, L. and Wang, J.-X. Physics-constrained bayesian neu-
+  ral network for fluid flow reconstruction with sparse and
+  noisy data. Theoretical and Applied Mechanics Letters,
+  10(3):161–169, 2020.
+Toscano, J. D., Käufer, T., Wang, Z., Maxey, M.,
+  Cierpka, C., and Karniadakis, G. E. Inferring turbu-
+  lent velocity and temperature fields and their statistics
+  from lagrangian velocity measurements using physics-
+  informed kolmogorov-arnold networks. arXiv preprint
+  arXiv:2407.15727, 2024.
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones,
+  L., Gomez, A. N., Kaiser, Ł., and Polosukhin, I. At-
+  tention is all you need. Advances in neural information
+  processing systems, 30, 2017.
+
+                                                               11
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+A. Theory
+A.1. Parallel-in-time models are on-trajectory
+Here we provide a simple derivation to show that parallel-in-time models are on-trajectory under Assumption 3.1. We will
+show that for an appropriate window size h, for all t ∈ N and any ϵ1 > 0:
+
+                                          ||pθ (xt | m[t−h,t] ) − p(xt | m[0,t] )|| < ϵ1 .                                      (8)
+
+First, from Assumption 3.1 choose a window size h such that:
+                                                                                             ϵ1
+                                       ||p(xt | m[t−h,t] ) − p(xt | m[0,t] )|| < ϵ2 <           .                               (9)
+                                                                                             2
+Then, from the Universal Function Approximator Theorem (Cybenko, 1989), choose an approximation of the true distribution
+as follows:
+                                                                                    ϵ1
+                                  ||pθ (xt | m[t−h,t] ) − p(xt | m[t−h,t] )|| < ϵ3 < .                              (10)
+                                                                                    2
+Summing up the individual ϵ1 and ϵ2 the total approximation error is: ϵ2 + ϵ3 < ϵ21 + ϵ21 < ϵ1 .
+
+
+A.2. In general, autoregressive models are not on-trajectory
+Here we show a more detailled counterexample to illustrate that autoregressive model of the form
+                                                                          t
+                                                                          Y
+                                p(x[0,t] | m[0,t] ) = p(x0 | m[0,t] ) ·         pθ (xi | xi−1 , m[0,t] ),                     (11)
+                                                                          i=1
+
+do not generally fulfill the on-trajectory property. We construct this example while demonstrating the over-reliance on
+autoregressive state. Being on-trajectory is defined as: for all t ∈ N and all ϵ > 0:
+
+                                            ||pθ (xt | m[0,t] ) − p(xt | m[0,t] )|| < ϵ.                                      (12)
+
+From Section 3.3 it is known that autoregressive models accumulate errors with the product of Jacobians, similar to classical
+ODEs (Orrell, 2005).
+Logistic map. Let f : R 7→ R be the logistic map, which is chaotic for r = 3.8 (May, 1976):
+
+                                              f (xt−1 , ηt ) = r · xt−1 · (1 − xt−1 )                                         (13)
+
+Then we assume the model fθ ignores the measurements and learns to predict xt from xt−1 alone, but with a small error
+ϵ′ > 0.
+
+                                       fθ (xt−1 , m[0,t] , ηt ) = r · xt−1 · (1 − xt−1 ) + ϵ′                                 (14)
+
+This is an extreme case of over-reliance on autoregressive state, namely solely relying on it and not relying on the
+measurements at all. For infinitesimal perturbations in xt−1 exponentiate over time, causing pθ (xt | m[0,t] ) to diverge
+from the true trajectory distribution p(xt | m[0,t] ) even for arbitrarily small ϵ′ . Thus, the autoregressive factorization is not
+on-trajectory because the model’s sequential predictions amplify initial errors, violating the required closeness condition for
+all t > 0.
+
+B. Experimental details
+B.1. Dataset
+Turbulent single jet dataset. We use an in-house dataset to ensure its quality and match the specific requirements of our
+study. As we have the capability to generate reliable high-fidelity data, additional external datasets were not needed. We
+consider the domain shown in Figure 8, which produces a two-dimensional turbulent free jet. The inlet is prescribed by a
+
+                                                                12
+                           PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+turbulent power-law velocity profile, with the system dynamics controlled by the mean inlet velocity. The Reynolds number
+is defined with respect to the inlet velocity as
+
+                                                       Re = ⟨u⟩inlet hinlet ν −1 .                                                    (15)
+
+The dataset is generated using the incompressible, pressure-based solver pimpleFOAM in OpenFOAM 8 ((OpenCFD,
+2009)), with subgrid scales modeled by the Smagorinsky LES model (Pope, 2001; Fröhlich, 2006). Simulations are performed
+on a structured mesh consisting of 19040 cells, and for training purposes, a subregion is extracted and interpolated onto a
+regular 128 × 128 grid to facilitate adaptability. The numerical simulations made use of a timestep size of ∆t = 6.5 × 10−4 s.
+For training purposes, the data are sampled every 70th timestep, resulting in an effective temporal resolution of 4.55 × 10−2 s.
+For each Reynolds number, the dataset contains 1000 such snapshots.
+
+
+                    u=0
+                                                                                       ∂u
+               u = uinlet                                                                 = 0 for u · n ≥ 0,
+                                                                                       ∂n
+                     hinlet                                                             u = 0 for u · n < 0.
+
+
+
+Figure 8. Computational domain of the CFD simulation, featuring a thin channel with a prescribed inlet velocity profile, transitioning into
+an expanded outflow region zone. The channel and outflow orifice walls enforce a no-slip boundary condition, while the top, bottom and
+right boundaries of the outflow region implement a conditional Neumann/Dirichlet outflow condition. The light-grey subregion denotes
+the part of the CFD domain considered for model training. The arrow shows the imposed inlet flow direction.
+
+A note on 2D turbulence. In fluid mechanics, the behavior of turbulent flows differs fundamentally between three and two
+dimensions. In three dimensions, turbulence is characterized by the energy cascade: the largest eddies form due to inertial
+instabilities but tend to exist only briefly, breaking up into progressively smaller eddies. This cascade continues until viscous
+forces dissipate the smallest scales.
+In contrast, in two dimensions, the energy cascade is reversed, transferring energy from smaller to larger eddies, which
+produces coherent, long-lived vortices. Intuitively, this can be explained by vortex stretching. Consider a thin tube of
+vorticity: if a velocity gradient along the tube axis is present, the tube stretches, and due to conservation of angular
+momentum, the vorticity magnitude increases. This mechanism is absent in two dimensions because there is no third
+dimension along which stretching can occur. As a result, vortices cannot break up and tend to merge into larger structures if
+they have the same rotational sense, which explains the inverse energy cascade.
+Mathematically, this is seen in the vorticity transport equation derived from the curl of the Navier–Stokes equations. In 2D,
+the velocity and vorticity vectors are perpendicular, which makes the vortex stretching term identically zero.
+In reality, there is no perfectly two-dimensional turbulence; even quasi-2D flows, such as atmospheric flows, exhibit three-
+dimensional structures at smaller scales. Nevertheless, we are confident that the proposed method, having demonstrated
+robust performance in two-dimensional turbulence, will generalize effectively to three-dimensional turbulent flows. For a
+more detailed discussion of two-dimensional turbulence, see (Davidson, 2015).
+Train/val/test splits. We consider 18 different training trajectories with varying Reynolds numbers, as explained above.
+The Reynolds numbers used range from 700 to 2400 in steps of 100. The split is performed at random, but avoiding that any
+validation or test data is placed in the extrapolation regime. The exact split can be seen in Table 2.
+
+B.2. Implementation and architecture
+Architecture and hyperparameters. FlowPAINT and the autoregressive UNet were both implemented in Pytorch (Paszke
+et al., 2017). For FlowPAINT we trained in float16 mixed precision. The most important training parameters are provided in
+Table 3. Our code also uses FlashAttention (Dao et al., 2022; Dao, 2024). For both models we use 20 denoising steps for
+generating samples.
+Autoregressive UNet. For the UNet we followed (Kohl et al., 2023) and took the implementation of the public Github
+
+                                                                    13
+                        PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+                                            Table 2. Reynolds numbers by split.
+
+                                              Reynolds     train   val    test
+                                              700            X
+                                              800            X
+                                              900            X
+                                              1000           X
+                                              1100                         X
+                                              1200           X
+                                              1300           X
+                                              1400           X
+                                              1500           X
+                                              1600                  X
+                                              1700           X
+                                              1800           X
+                                              1900           X
+                                              2000           X
+                                              2100                         X
+                                              2200           X
+                                              2300           X
+                                              2400           X
+
+
+
+repository 2 . We matched the number of parameters by increasing the default model dimension from 128 to 224. For
+probe-conditioning, we followed the same recipe as for prior timestep conditioning and added mask and probe values as
+additional channels. We trained two UNet variants, one conditioned on probe measurements from the current timestep and
+another conditioned on a 16-timestep probe history, to ensure a fair comparison with FlowPAINT as well as demonstrate
+that even an extensive probe history cannot overcome the dominance of the autoregressive state in a given prediction.
+Autoregressive Diffusion Transformer. We tested the Diffusion Transformer (Peebles & Xie, 2023) architecture used for
+PAINT as an autoregressive model. However, we observe that its predictive performance degrades rapidly after only a few
+rollout steps (see Figure 22). Consequently, we rely on the above-mentioned well-established UNet architecture mentioned
+above for the primary comparison to ensure a fair and robust baseline.
+Optimization hyperparameters. We employed well-established techniques and hyperparameters for optimization,
+including AdamW (Loshchilov et al., 2017), cosine annealing of the learning rate, etc. These choices were grounded in their
+proven effectiveness and widespread adoption in the literature. Although we acknowledge that tuning these hyperparameters
+could potentially yield marginal performance improvements, we do not anticipate that such modifications would substantially
+impact the primary conclusions and insights drawn from our experiments. Given the computational constraints and the
+dimensionality of the hyperparameter search space, we chose to use the established settings for the sake of experimental
+tractability. Future work may explore the potential benefits of hyperparameter tuning in this context to validate this
+assumption.
+Selection of batch size and timesteps per batch. As mentioned in Section 4, a direct comparison between PAINT and
+the autoregressive baseline is not entirely feasible, given PAINT’s prediction of a full sequence of states. Therefore, we
+carefully evaluated and chose the batch size and the timesteps per batch according to the following procedure
+For the autoregressive UNet, we opted for the maximum batch size that could be accommodated by a single GPU, which
+amounted to 144. We also tested a batch size of 288 on 2 GPUs via data-parallel training. However, as there was no
+significant change in training nor validation loss, we settled on a batch size of 144 for all experiments.
+In the case of FlowPAINT 16/8, we maintained the same batch size of 144. For FlowPAINT 16/0, we tested two variants:
+one with a batch size of 144, and another with an increased batch size of 144 × 1.5 = 216. The latter was chosen to align
+the number of predicted timesteps with the 16/8 setting. Given the negligible difference observed between the two variants,
+we proceeded with a batch size of 144 for the remainder of the FlowPAINT experiments.
+Compute requirements. FlowPaint is expensive during training, as it needs to reconstruct a video in parallel. We had
+   2
+       https://github.com/tum-pbs/autoreg-pde-diffusion
+
+                                                            14
+                        PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+                          Table 3. Experimental details for FlowPaint and the autoregressive baseline.
+
+                                                                             FlowPaint         AR baseline
+                       Data
+                                        Autoregressive history length             0                 2
+                                        Probe history length                     16              [16, 1]
+                                        Forward prediction                     [8, 0]               1
+                       Optimization
+                                        Optimizer                             AdamW             AdamW
+                                        AdamW decay                             0.05              0.05
+                                        Learning rate                           10−4              10−4
+                                        Learning rate start                   5 · 10−7          5 · 10−7
+                                        Learning rate warmup steps             10000             10000
+                                        Learning rate end                       10−5              10−5
+                                        Train steps                            100K              100K
+                                        Batch size                           [144, 216]            144
+
+
+limited access to a cluster environment and trained FlowPaint on 3 nodes each consisting of 4 NVIDIA Ampere A100 GPUs
+with 64GB VRAM. Training took around 30 hours for 100K iterations.
+The autoregressive baseline is comparably cheap. It was trained on either a single Nvidia RTX-PRO6000 Blackwell 96GB
+or a single Nvidia H100-SXM-80GB for ca. 24 hours. The inference times are reported in the main paper.
+
+                                          Table 4. Architectural details of FlowPaint.
+
+                                     Encoding
+                                                      num layers of 3x3x3 conv            3
+                                                      patch size in pixels               4x4
+                                     Transformer
+                                                      model dim                          192
+                                                      layers                              10
+                                                      num heads                           3
+                                                      Spatial Block                      Yes
+                                                      Temporal Block                     Yes
+                                                      Temporal Convolution               No
+                                     Decoding
+                                                      num layers of 3x3x3 conv           3
+
+
+B.3. Additional results and ablations
+We perform ablations to gain further insights on the importance of certain components. Ablation results are summarized in
+Table 5, with further evaluations shown in Figures 19, 20, 17, 18 and 22.
+Stability through future predictions. Comparing the smoothing-and-filtering variant, FlowPAINT 16/0 with the
+smoothing-filtering-and-prediction variant, FlowPAINT 16/8 highlights the stabilizing effect of incorporating future-state
+predictions. While the FlowPAINT 16/0 approach relies exclusively on reconstructing the given measurement series, the
+inclusion of predictive task seems to enable FlowPAINT 16/8 to produce more stable reconstructions. FlowPAINT 16/0
+performs in general worse than FlowPAINT 16/8, though still better than the autoregressive baseline.
+
+
+
+
+                                                              15
+                           PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+Figure 9. The solid lines indicate the mean MSE over a reconstructed sequence, with the shaded regions indicating ± one standard
+deviation across samples. While the average MSE for future timesteps remains relatively low, FlowPAINT surprisingly exhibits the highest
+error for timesteps in the past. This data stems from an evaluation using Reynolds number 2100 and the grid probe point constellation.
+
+
+
+
+Figure 10. MSE over number of probe points provided during inference. Probe points are arranged in a pattern comparable to the grid
+probe constellation. For FlowPAINT 16/8, the MSE decreases as the number of probe points increases, reaching an optimum near 100.
+Beyond this point, the MSE increases again, as FlowPAINT was only trained with 25 probe points. In contrast, the performance of the
+autoregressive baseline shows little sensitivity to the number of probe points provided.
+
+
+
+
+                                                                  16
+                           PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+Table 5. Results for physical coherence of FlowPAINT (ours) and the autoregressive UNet baseline (AR UNet). The MAE, MSE and
+RMSE are taken between the ground truth and the predicted quantity. u and u′2 denote the mean and variance over time. E(k) is the
+predicted kinetic energy spectra. MSE(u[0,t] ) is the mean squared error between the predicted and the ground-truth trajectory as a whole.
+All values are taken along 900 timesteps in the test trajectories. The values after ± are standard deviations from averaging over 10 seeds.
+Generally, the higher Reynolds number seems to be more difficult for both models.
+
+ Model             Cond.     Batchsize        Re     Probes      MAE(u) ↓        MAE(u′2 ) ↓        MSE([u[0,t] ]) ↓      RMSE(E(k)) ↓
+                                                                    ×10−3            ×10−5               ×10−5                ×10−6
+                   16/8          144                              1.2 ± 1.6        9.9 ± 21.7           8.1 ± 3.6                6.9
+ FlowPAINT         16/0          144         2100    grid         1.3 ± 2.6        8.7 ± 15.1          10.8 ± 3.9                6.3
+                   16/0          216                              1.5 ± 3.2        9.1 ± 15.5          11.5 ± 4.9                6.9
+                   16/0          144                             8.2 ± 13.7      93.0 ± 103.2        155.0 ± 50.1               66.3
+ Autoreg.                                    2100    grid
+                   1/0           144                             9.5 ± 14.3      98.7 ± 110.4        158.3 ± 46.8               70.9
+                   16/8          144                              2.2 ± 3.1       30.2 ± 38.4         49.0 ± 21.0               20.1
+ FlowPAINT         16/0          144         2100    vertical     3.0 ± 3.2       30.0 ± 41.6         68.2 ± 25.3               20.5
+                   16/0          216                              2.9 ± 2.9       25.7 ± 34.6         70.6 ± 26.6               18.9
+                   16/0          144                             7.4 ± 12.5       87.6 ± 96.1        156.2 ± 50.9               62.4
+ Autoreg.                                    2100    vertical
+                   1/0           144                             9.2 ± 13.8      97.8 ± 108.8        157.3 ± 70.0               71.8
+                   16/8          144                              0.9 ± 1.3         2.2 ± 5.5           2.0 ± 1.0                2.0
+ FlowPAINT         16/0          144         1100    grid         1.2 ± 2.8        6.2 ± 10.7           4.6 ± 1.6                4.6
+                   16/0          216                              1.0 ± 2.2         4.9 ± 8.2           3.8 ± 1.3                3.4
+                   16/0          144                              3.7 ± 6.3       16.0 ± 24.1          29.9 ± 8.8               12.3
+ Autoreg.                                    1100    grid
+                   1/0           144                              3.5 ± 5.6       17.3 ± 25.9          28.8 ± 8.3               12.4
+                   16/8          144                              1.1 ± 1.6        6.3 ± 11.1           8.9 ± 3.4                3.7
+ FlowPAINT         16/0          144         1100    vertical     3.0 ± 5.8        8.2 ± 15.8          24.2 ± 6.5                9.9
+                   16/0          216                              3.4 ± 6.2       10.2 ± 17.5          27.2 ± 6.9               11.7
+                   16/0          144                              3.7 ± 6.1       15.9 ± 23.9          29.5 ± 8.8               12.3
+ Autoreg.                                    1100    vertical
+                   1/0           144                              3.4 ± 5.5       16.9 ± 25.5          28.8 ± 8.1               12.2
+
+
+
+
+                 (a) Vertical probe constellation.                                        (b) Grid probe constellation.
+Figure 11. MSE over time of ground-truth vs. predicted trajectories for the Re = 1100 test trajectory and different probe point
+constellations, comparing the autoregressive baselines with FlowPAINT 16/8 and 16/0. The autoregressive model indicates over-reliance
+on the autoregressive state.
+
+
+
+
+                                                                   17
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+Figure 12. Left: Exemplary groundtruth velocity snapshot, for Reynolds number 2100 and using the vertical probe point constellation.
+Center: Mean of the predictions using FlowPAINT 16/8 over 10 independent seeds. Right: Standard deviation of the predictions using
+FlowPAINT 16/8 over the same 10 seeds. All values are normalized by the mean inlet velocity.
+
+
+
+
+                                                                18
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+      (a) Mean velocity (u) and variance (u′2 ) of the reconstructed trajectories compared with the ground truth. All values are
+      normalized by the mean inlet velocity.
+
+
+
+
+        (b) Histogram of time-averaged kinetic energy.                          (c) Time-averaged kinetic energy spectrum.
+Figure 13. Statistical analysis of reconstructed flow fields using FlowPAINT 16/8 for Reynolds number 2100 and a grid probe point
+constellation.
+
+
+
+
+                                                                 19
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+      (a) Mean velocity (u) and variance (u′2 ) of the reconstructed trajectories compared with the ground truth. All values are
+      normalized by the mean inlet velocity.
+
+
+
+
+        (b) Histogram of time-averaged kinetic energy.                          (c) Time-averaged kinetic energy spectrum.
+Figure 14. Statistical analysis of reconstructed flow fields using FlowPAINT 16/8 for Reynolds number 1100 and a grid probe point
+constellation.
+
+
+
+
+                                                                 20
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+      (a) Mean velocity (u) and variance (u′2 ) of the reconstructed trajectories compared with the ground truth. All values are
+      normalized by the mean inlet velocity.
+
+
+
+
+        (b) Histogram of time-averaged kinetic energy.                          (c) Time-averaged kinetic energy spectrum.
+Figure 15. Statistical analysis of reconstructed flow fields using FlowPAINT 16/8 for Reynolds number 1100 and a vertical probe point
+constellation.
+
+
+
+
+        (a) Time-averaged kinetic energy spectrum.                                    (b) Histogram of the kinetic energy.
+Figure 16. Statistical analysis of reconstructed flow fields using FlowPAINT 16/8 for Reynolds number 2100 and a vertical probe point
+constellation.
+
+
+
+                                                                 21
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+      (a) Mean velocity (u) and variance (u′2 ) of the reconstructed trajectories compared with the ground truth. All values are
+      normalized by the mean inlet velocity.
+
+
+
+
+        (b) Histogram of time-averaged kinetic energy.                          (c) Time-averaged kinetic energy spectrum.
+Figure 17. Statistical analysis of reconstructed flow fields using FlowPAINT 16/0 for Reynolds number 2100 and a grid probe point
+constellation.
+
+
+
+
+                                                                 22
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+      (a) Mean velocity (u) and variance (u′2 ) of the reconstructed trajectories compared with the ground truth. All values are
+      normalized by the mean inlet velocity.
+
+
+
+
+        (b) Histogram of time-averaged kinetic energy.                          (c) Time-averaged kinetic energy spectrum.
+Figure 18. Statistical analysis of reconstructed flow fields using FlowPAINT 16/0 for Reynolds number 2100 and a vertical probe point
+constellation.
+
+
+
+
+                                                                 23
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+      (a) Mean velocity (u) and variance (u′2 ) of the reconstructed trajectories compared with the ground truth. All values are
+      normalized by the mean inlet velocity.
+
+
+
+
+        (b) Histogram of time-averaged kinetic energy.                          (c) Time-averaged kinetic energy spectrum.
+Figure 19. Statistical analysis of reconstructed flow fields using FlowPAINT 16/0 for Reynolds number 1100 and a grid probe point
+constellation.
+
+
+
+
+                                                                 24
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+      (a) Mean velocity (u) and variance (u′2 ) of the reconstructed trajectories compared with the ground truth. All values are
+      normalized by the mean inlet velocity.
+
+
+
+
+        (b) Histogram of time-averaged kinetic energy.                          (c) Time-averaged kinetic energy spectrum.
+Figure 20. Statistical analysis of reconstructed flow fields using FlowPAINT 16/0 for Reynolds number 1100 and a vertical probe point
+constellation.
+
+
+
+
+                                                                 25
+                         PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+                                                  (a) Grid probe constellation.
+
+
+
+
+                                                 (b) Vertical probe constellation.
+Figure 21. The top rows show five exemplary LES ground truth snapshots. Time steps with t ≤ 0 correspond to reconstructions based
+on measurements, while time steps with t > 0 represent predictions with no measurements present. The following three rows display
+reconstructions and predictions using FlowPAINT 16/8 from three independent random seeds, each showing a connected sequence
+generated based on the probe information provided. All values are normalized by the mean inlet velocity.
+
+
+                                                                26
+                          PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+Figure 22. Autoregressive rollout of a baseline model with an architecture comparable to our PAINT implementation. The prediction
+quality deteriorates almost immediately, motivating the use of a well-established autoregressive baseline to enable a fair comparison
+between traditional autoregressive methods and our parallel-in-time approach.
+
+
+
+
+                                                                 27
+                           PAINT: Parallel-in-time Neural Twins for Dynamical System Reconstruction
+
+
+
+
+Figure 23. Qualitative illustration of the discontinuities induced by our parallel-in-time approach, using Autoreg. 1/0 and FlowPAINT
+16/8 for Reynolds number 2100 and the vertical probe point constellation. Shown are consecutive prediction timesteps of a groundtruth
+trajectory, alongside the autoregressive baseline and the parallel-in-time approach. Due to its inherently temporally discontinuous nature,
+PAINT exhibits larger frame-to-frame changes. The autoregressive approach, on the other hand, displays frame-to-frame variations
+comparable to the ground truth, as each prediction is conditioned on previous outputs.
+
+
+
+
+                                                                    28
+

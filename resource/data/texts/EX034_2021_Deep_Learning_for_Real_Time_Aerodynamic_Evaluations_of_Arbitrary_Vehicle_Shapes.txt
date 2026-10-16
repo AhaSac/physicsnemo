@@ -1,0 +1,612 @@
+               Deep Learning for Real-Time Aerodynamic Evaluations of Arbitrary Vehicle
+                                                                                Shapes
+                                             Sam Jacob Jacob1, Markus Mrosek2, Carsten Othmer2 and Harald Köstler1
+                                                                             1
+                                                                              Friedrich-Alexander University of Erlangen-Nuremberg, Germany
+                                                                                                                    2
+                                                                                                                      Volkswagen AG, Germany
+
+Abstract                                                                         high-fidelity simulations can be used to get fast approximate results
+                                                                                 in a constrained design space. High-fidelity simulations did not lead
+                                                                                 to abandoning wind tunnel experiments but increased the number of
+The aerodynamic optimization process of cars requires multiple
+                                                                                 geometries evaluated. Similarly, data-driven surrogate models can be
+iterations between aerodynamicists and stylists. Response Surface
+                                                                                 used as a precursor to high fidelity simulation, enabling the stylists
+Modeling and Reduced-Order Modeling (ROM) are commonly used
+                                                                                 and aerodynamicists to search faster in a broader design space.
+to eliminate the overhead due to Computational Fluid Dynamics
+(CFD), leading to faster iterations. However, a primary drawback of
+these models is that they can work only on the parametrized                      For the development of the vehicle shape, not only the
+geometric features they were trained with. This study evaluates if               aerodynamicist’s advice but also the advice regarding aesthetics from
+deep learning models can predict the drag coefficient (cd) for an                the stylist have to be considered. Multiple iterations between stylists
+arbitrary input geometry without explicit parameterization. We use               & aerodynamicists are typically required for the aerodynamic
+two similar data sets (total of 1000 simulations) based on the publicly          optimization process. However, the improvements are slow because
+available DrivAer geometry for training. We use a modified U-Net                 of the overhead due to the CFD computation time of up to several
+architecture that uses Signed Distance Fields (SDF) to represent the             days. Methods like adjoint sensitivity [1] and evolutionary
+input geometries. Our models outperform the existing models by at                optimization algorithms [2] are used for automated optimization of
+least 11% in prediction accuracy for the drag coefficient. We                    geometries based on predefined constraints. These methods are
+achieved this improvement by combining multiple data sets that were              computationally expensive and are suited only for improving
+created using different parameterizations, which is not possible with            aerodynamics, and cannot consider aesthetics. Evaluating aesthetics
+the methods currently used. We have also shown that it is possible to            cannot be currently automated, and a human in the loop is required.
+predict velocity fields and drag coefficient concurrently and that               Surrogate models enable fast aerodynamic evaluation and reduce the
+simple data augmentation methods can improve the results. In                     iteration time between aerodynamicists and stylists.
+addition, we have performed an occlusion sensitivity study on our
+models to understand what information is used to make predictions.               It is common practice in the automotive industry to use the Kriging
+From the occlusion sensitivity study, we showed that the models                  model [3, 4] for predicting cd, and ROM – via an approach called
+were able to identify the geometric features and have discovered that            Proper Orthogonal Decomposition plus Interpolation (POD+I) [4] -
+the model has learned to exploit the global information present in the           for predicting fields (velocity, pressure & wall shear stress) in real-
+SDF. In contrast to the currently operational method, where design               time. These two methods are also used in the present study as a
+changes are restricted to the initially defined parameters, this study           reference for the results obtained via the neural networks and are
+brings data-driven surrogate models one step closer to the long-term             referred to as the Kriging and ROM model in the remainder of this
+goal of having a model that can be used for approximate aerodynamic              article. For both models, a few geometric features of a baseline
+evaluation of unseen, arbitrary vehicle shapes, thereby providing                geometry are parameterized. Geometries are sampled via Design of
+complete design freedom to the vehicle stylists.                                 Experiments (DoE) and simulated via CFD. This data is then used to
+                                                                                 train the models. The trained models can be used for aerodynamic
+Keywords: Computational fluid dynamics, Data-driven surrogate                    evaluation in the defined design space. The main disadvantage is that
+                                                                                 the models can work only for the parameters used during training.
+models, Deep Learning, DrivAer, Model interpretability, Occlusion
+                                                                                 This study evaluates if deep learning models that work on arbitrary
+sensitivity, Real-time aerodynamics, Signed distance field, U-Net,
+                                                                                 input geometries without explicit parameterization can be used for
+Vehicle aerodynamics.
+                                                                                 approximate aerodynamic evaluation, with error rates similar to those
+                                                                                 reported by Mrosek et al. [4]. The long-term goal would be to have
+Introduction                                                                     models (e.g., one model per vehicle type) that can learn from multiple
+                                                                                 data sets created using different geometric parameterizations as well
+Simulations have witnessed widespread adoption for aerodynamic                   as from simulation results for vehicle shapes that have been evaluated
+optimization processes, with one of the principal goals being to                 during the development process. The resulting models increase in
+minimize the carbon footprint. Any improvement in the aerodynamic                accuracy over time when more training data is gathered and allow for
+coefficients of a car results in increased fuel savings over its lifetime.       predicting the cd for arbitrary vehicle variations, thus yielding
+It is common to simulate geometries with minor variations for                    complete design freedom.
+iterative improvement based on prior experience or by trial & error.
+However, evaluating a few handcrafted simulations might lead to
+suboptimal designs, and searching large design spaces is
+computationally expensive.
+
+During the early development stages, approximate aerodynamic
+results often suffice. Data-driven surrogate models trained using
+
+Page 1 of 12
+
+27/07/2021
+     Figure 1 Geometric parameters of the DrivAer data set. The parameters are color-coded: blue for local parameters, red for global
+     parameters, and green for the Boolean parameter
+
+
+
+
+     Figure 2. Surface mesh corresponding to the parameters that lead to the minimum volume (left) and maximum volume (right) of the
+     DrivAer geometry.
+
+Convolutional Neural Networks (CNNs) are commonly used to deal                improving cd prediction, including experiments with predicting
+with spatial data and are good at extracting spatial features. However,       velocity fields in addition to predicting cd. Additionally, we have
+simulation geometries are mostly made of unstructured meshes, and             performed an occlusion sensitivity study [12] to get an intuition on
+they cannot be directly represented in an orderly spatial grid, making        what the model learned. In summary, we evaluate if deep learning
+it hard to use with CNNs. There have been multiple methods to make            models can be used to predict cd while being agnostic to the solver
+meshes amenable as input for neural networks; some of them are as             used and the geometric representation.
+follows: Baque et al. [5] remeshed the geometries to a poly-cube to
+construct a uniform simplified geometry and then uses geodesic                DrivAer data set
+convolutional neural networks to perform aerodynamic optimization.
+Thuerey et al. [6] used a binary mask to approximate Reynolds-
+averaged Navier–Stokes simulations of airfoils, where the points in a         The DrivAer geometry was introduced by Heft et al. [13], such that
+Cartesian grid are marked one if inside the geometry and zero if              there exists a public car geometry to simulate complex flows for
+otherwise. SDF is used by Guo et al. [7] and Bhatnagar et al. [8] to          performing aerodynamic research. The DrivAer model has fastback,
+represent the geometry for external aerodynamic evaluation. Qi et al.         notchback, and estate back variants, and we use a notchback variant
+[9, 10] used discrete points to represent geometries for classification       with a simplified electric drive train introduced as part of the
+and segmentation tasks. There have also been recent methods capable           UPSCALE project [14]. Several geometric parameters that have a
+of directly using manifold meshes [11], but they are memory                   noticeable impact on the aerodynamics are chosen and are varied
+intensive for larger meshes.                                                  within a fixed range to produce the data set. We create a design of
+                                                                              experiments by sampling parameters using Sobol sequences [15]
+                                                                              from the constrained design space and split the samples as 70%, 15%,
+In this study, we evaluate if we can use SDF to represent geometries
+                                                                              and 15% for training, validation, and test, respectively.
+for aerodynamic evaluation. The data set is explained in the DrivAer
+data set section. In the Methodology section, we discuss the SDF
+                                                                              Figure 1 shows the 15 geometric parameters, and Table 1 shows the
+representation, the network architecture, various training, and
+                                                                              extents of their geometric variation. Mrosek et al. [16] have discussed
+evaluation methods. In the Results section, we primarily focus on
+Page 2 of 12
+
+27/07/2021
+     Figure 3. Distribution of cd and cl for the different splits and the baseline geometry: DrivAer without spoiler data set (left) and DrivAer
+     with spoiler data set (right).
+
+
+
+
+     Figure 4. SDF slices for the baseline DrivAer geometry. A green contour is present where the SDF is zero. The geometry is offset from the
+     center because we generate SDF in the same volume where we are interested in making a velocity field prediction. We have clipped the
+     SDF between -1 and +1 for easier visualization.
+
+the DrivAer data set used in detail. The trunk lid spoiler is a Boolean           Table 1. Summary of all the parameters of the DrivAer data set along
+parameter, i.e., the trunk lid spoiler is either present or not. As the           with the minimum and maximum deviation values of the parameters
+existing methods used within the automotive industry cannot deal                  with respect to the baseline. The trunk spoiler parameter is the only
+with geometries created using multiple explicit parameterizations, we             Boolean type parameter, and it controls if the spoiler exists. The
+created two data sets, one for samples with spoiler and another for               ranges of the various parameters are chosen such that the values
+without spoiler. Figure 2 shows the minimum and maximum volume                    outside are either hard to manufacture or are not aesthetically
+geometries based on the geometric parameters.                                     pleasing.
+
+The “DrivAer without spoiler” data set has 400 samples, and the                    Parameter name
+                                                                                                              Minimum     Maximum
+                                                                                                                                      Unit   Type
+“DrivAer with spoiler” data set has 600 samples. We performed                                                 value       value
+Lattice Boltzmann simulations using Altair’s ultraFluidX [17, 18],                 Ramp angle                 -50         50          mm     Continuous
+and each simulation took about 5.6 hours using eight NVIDIA V100                   Lower intake height        -30         30          mm     Continuous
+GPUs. We simulated four seconds of physical simulation time and                    Upper intake height        -30         30          mm     Continuous
+                                                                                   Bonnet inclination         -50         50          mm     Continuous
+averaged the aerodynamic coefficients & fields over the last two
+                                                                                   Windscreen inclination     -25         30          mm     Continuous
+seconds. Figure 3 shows the distribution of cd and lift coefficient (cl)
+                                                                                   Rear window inclination    -25         25          mm     Continuous
+for both data sets.                                                                Rear window length         -45         45          mm     Continuous
+                                                                                   Trunk spoiler                  −           −        −     Boolean
+                                                                                   Trunk spoiler angle        -8          16          mm     Continuous
+                                                                                   Trunk lid angle            -45         30          mm     Continuous
+                                                                                   Trunk length               -55         55          mm     Continuous
+                                                                                   Diffusor angle             -50         50          mm     Continuous
+                                                                                   Battery pack z-position    -30         30          mm     Continuous
+                                                                                   Ride height: ground
+                                                                                                              -25         50          mm     Continuous
+                                                                                   clearance
+                                                                                   Ride height: pitch angle   -1          1             ∘    Continuous
+
+
+
+Page 3 of 12
+
+27/07/2021
+                             a) Original mesh                                                   b) Manifold mesh
+
+
+
+
+                            c) Simplified mesh                                                 d) Remeshed mesh
+
+Figure 5. Examples of augmented meshes. The subfigures are arranged according to the order of the data augmentation process.
+
+Methodology                                                                 the scale of the geometric features we want to capture, we can adjust
+                                                                            the resolution.
+SDF Representation                                                          Watertight meshes are ideally suited to generate SDF. However,
+                                                                            since our geometries are not watertight, we used an approximation
+SDF (Equation 1 and 2) is the distance between points in 3D space           method [19] to generate our SDF. Using this approximation method
+and the corresponding closest points on the geometry; the sign is           introduced some artifacts and noise, which are alleviated by the data
+positive for the points within the geometry and negative if otherwise.      augmentation introduced in the next section. It takes about an hour
+                                                                            with a single CPU core to generate an SDF with a resolution of 256 x
+               −1,    𝑖𝑓 𝑥 𝑖𝑠 𝑖𝑛𝑠𝑖𝑑𝑒 𝑡ℎ𝑒 𝑔𝑒𝑜𝑚𝑒𝑡𝑟𝑦                   (1)     64 x 64 for one geometry. It is possible to generate SDF near real-
+𝑠𝑖𝑔𝑛(𝒙) =
+               +1,    𝑜𝑡ℎ𝑒𝑟𝑤𝑖𝑠𝑒                                             time by parallelizing SDF generation or by using other SDF
+                                                                            generation libraries like OpenVDB [20].
+𝑆𝐷𝐹(𝒙) = 𝑠𝑖𝑔𝑛(𝒙). min |𝑝 − 𝒙|                                       (2)
+                     ∀ ∈𝐙
+
+
+Where:
+𝒙 ∈ ℝ𝟑 = a cell center of the Cartesian grid
+𝒁 = set of all points 𝒛 ∈ ℝ𝟑 on the surface of the geometry
+
+
+We generate SDF over a 3D Cartesian grid. From Figure 4, we see
+the 2D slice of SDF for a DrivAer sample. For the DrivAer data sets,
+the SDF can capture relevant geometric features and achieve
+reasonable error rates with a resolution of 256 x 64 x 64. Based on
+
+
+Page 4 of 12
+
+27/07/2021
+    Figure 6. U-Net architecture illustration (using 2D slices through the 3D SDF input and 3D velocity field output). The architecture shows
+    a multi-task learning model that can predict both the cd and velocity fields simultaneously. The velocity field decoder branch can be
+    ignored when we predict only the cd. In our models, we use three identical decoders for the three components of velocity. PlotNeuralNet
+    [22] is used for the architecture illustration.
+
+Data augmentation                                                             The simplified meshes are remeshed seventeen times using different
+                                                                              mesh types and meshing parameters. Figure 5 shows examples from
+                                                                              different data augmentation steps, and Table 2 shows a summary of
+Due to the enormous computational cost, it is time-consuming to
+                                                                              the number of samples in the data sets. We use meshes from all the
+generate a large amount of training data. We use data augmentation
+                                                                              steps for training.
+to increase the number of training samples at a low computation cost.
+Data augmentation also acts as a regularizer. It helps to prevent
+overfitting and to deal with the noise from SDF generation. Data              U-Net architecture
+augmentation is done by remeshing a geometry in multiple different
+ways to generate equivalent meshes. The augmented meshes have                 We use a modified U-Net architecture (Figure 6) to predict cd and the
+subtle differences compared to the original meshes; this forces the           velocity fields concurrently. U-Net is an encoder-decoder architecture
+network to learn the geometric features that matter and deter the             introduced by Ronneberger et al. [23] for medical image
+network from memorizing. Data augmentation also mimics the field              segmentation. There have been multiple variations and improvements
+implementation (i.e., when aerodynamicists or stylists use a trained          for various applications [24, 25], including CFD [6]. The encoder
+model for aerodynamic evaluation), where the geometries presented             part of a U-Net has multiple blocks that progressively down sample
+to the network might use different mesh structures or mesh types.             and extract a growing number of feature maps with increasing
+Since all our meshes used for the simulation are created in a very            complexity. The encoder extracts all the relevant information from
+similar way, data augmentation makes the network more robust by               the input SDF and outputs a global feature vector. Then, the global
+exposing it to different mesh types.                                          feature vector is passed through decoders to predict the cd and the
+                                                                              velocity fields. In essence, the global feature vector can predict any
+Table 2. Summary of the number of samples in the DrivAer data sets.           other parameter or field when trained with a suitable decoder.
+
+                                    DrivAer without   DrivAer with            The velocity field decoder is a mirror of the encoder part. It
+                                    spoiler           spoiler                 progressively up samples the feature map size and reduces the
+ Total original samples             400               600
+                                                                              number of feature maps to predict the velocity field. The decoder
+ Training samples                   280               420
+                                                                              blocks have skip connections from the corresponding encoder blocks.
+ Augmented training samples         6,440             9,660
+ Validation samples                 60                90
+                                                                              The skip connections enable the decoder to reuse the feature maps
+ Test samples                       60                90                      learned by the encoder. The cd decoder flattens the global feature
+ Total training samples with data                                             vector, then passes through a dropout layer, a fully connected layer,
+                                    6,720             10,080                  ReLU activation, a dropout layer, a batch normalization layer, and an
+ augmentation
+                                                                              output fully connected layer of one neuron.
+
+It is computationally expensive to remesh the original meshes as they         A sequence of ReLU activation, squeeze & excitation block [26],
+have about eight million cells. To reduce the computational cost, we          convolutional layer with dilations, max-pooling layer (with a stride of
+simplify the original meshes before remeshing. We generate a                  two), and batch normalization layer is a single U-Net encoder block.
+manifold mesh [21] from the original mesh, which reduces the cell             The convolutional and the max-pooling layer of the U-Net encoder
+count to about five million. We simplify the manifold meshes to               block are replaced by a transpose convolutional layer (with a stride of
+meshes having 250000, 450000, 500000, 550000, and 600000 faces.               two) for the velocity field decoder block. We have three separate
+
+Page 5 of 12
+
+27/07/2021
+velocity field decoders for the three components of velocity. The          prediction, with the best possible R2 score being one. We use the
+encoder has a convolutional layer followed by six U-Net encoder            Mean Absolute Error (MAE) as in Equation 6 for a straightforward
+blocks.                                                                    interpretation of the cd error. For cd estimation in wind tunnel
+                                                                           experiments, MAE less than 0.005 with respect to wind tunnel
+Typically, not all the feature maps and all the spatial information is     measurements is considered acceptable [29]. To find the worst cd
+relevant for a specific geometry. Squeeze & excitation blocks              estimation, we also compute the Maximum Absolute Error (Max
+explicitly model selective weighting of most relevant information,         AE). For evaluating the predicted velocity fields, we use the relative
+akin to self-attention methods that learn to focus on the most relevant    L2-error (Equation 7).
+information selectively. We use concurrent spatial and channel
+squeeze & excitation block [27], a variation of squeeze & excitation                              1
+block, which weighs the importance of spatial regions and the              WMSE           =                𝑤 𝑐 −𝑐
+                                                                                              𝑛                                                 (3)
+importance of feature maps concurrently.
+
+When predicting both velocity fields and cd, we have 100 million                                  1
+trainable parameters. We do not use the velocity field decoders when       WMSE =                                𝑤 𝑢 −𝑢
+                                                                                              𝑛       𝑛                                         (4)
+predicting only the cd; in this case, we have about 23 million trainable
+parameters. We use either Adam or NAdam optimizer and
+“ReduceLROnPlateau” learning rate decay implementation from                               ∑           (𝑐 − 𝑐 )
+TensorFlow [28]. ReduceLROnPlateau reduces the learning rate by a          𝑅 =1−
+                                                                                          ∑           (𝑐 − 𝑐 )                                  (5)
+factor when there is no improvement in the validation loss for a
+predefined number of epochs. We perform early stopping based on
+the cd validation loss. We later restore the weights from the best                        1
+performing epoch.                                                          MAE =                          𝑐 −𝑐
+                                                                                      𝑛                                                         (6)
+
+Loss and error metrics
+                                                                                      1               ∥𝑢 −𝑢 ∥
+The loss function used is the Weighted Mean Squared Error (WMSE            𝐿2 =
+                                                                                  𝑛                     ∥∥𝑢 ∥∥                                  (7)
+- Equation 3 and 4). When we compare augmented meshes with
+original meshes, we can see slight variations. To account for this
+error, we weigh the augmented meshes lower than the original               Where:
+meshes, which is akin to informing the model that we are less              𝑛     = Number of test samples
+confident of the augmented meshes compared to the original meshes.         n = Number of data points: Number of cells times three
+We also weigh multiple tasks differently. When predicting both cd              (number of velocity field components)
+and velocity fields, we weigh the loss for velocity field prediction       𝑐 = True drag coefficient value
+lower because we prioritize cd prediction.                                 𝑐 = Mean true drag coefficient value
+                                                                           𝑐 = Predicted drag coefficient value
+In the DrivAer data set, only a small region of the total velocity field   𝑢 = True velocity field vector
+varies due to the geometric variations, and the velocity field in most     𝑢 = Predicted velocity field vector
+regions is relatively constant. The network can get a good portion of      𝑤 = Sample/data point weight
+accuracy by predicting the constant regions, but the network cannot
+learn much from these regions. We weigh the velocity field such that
+it forces the model to give higher importance to the regions in the        Occlusion Sensitivity
+velocity field that have a higher variance across the training samples.
+The weight for velocity field loss is calculated by computing the          When CNNs first gained mass exposure, it was regarded as a black
+variance of the velocity field (cell-wise) in the training set and then    box, and many were hesitant to use it. Methods like Grad-CAM [30]
+scaling it between 0.5 and 4. This weighting forces the network to         and guided backpropagation [31] were later developed to understand
+focus more on the vehicle’s wake and less on regions inside the            what and how the network is learning. Visualizing the filters learned
+geometry and the regions with low variance.                                by the network and seeing where specific filters produce high
+                                                                           activation values is a straightforward way to do this. However, this
+We evaluate the models by comparing the R2 score (also called the          method is not of much use in our case because SDF carries both
+coefficient of determination, Equation 5) on the test set for cd           global and local information, and it is also hard to visualize &
+                                                                           understand 3D filters.
+
+
+
+
+Page 6 of 12
+
+27/07/2021
+          a) Model trained using DrivAer without spoiler data set and evaluated     b) Model trained using DrivAer with spoiler data set and evaluated for
+                           for DrivAer without spoiler data set                                         DrivAer with spoiler data set
+
+     Figure 7. Correlation plot (for test samples) between the true cd and predicted cd. We compare the best model trained with data
+     augmentation against the best model trained without data augmentation.
+
+
+
+
+                 a) Model evaluated for DrivAer without spoiler data set                    b) Model evaluated for DrivAer with spoiler data set
+
+     Figure 8. Correlation plot (for test samples) between the true cd and predicted cd. We compare the best model trained using both the
+     DrivAer data sets against the best model trained only using the data set it is evaluated on. All the models were trained using data
+     augmentation.
+
+Occlusion sensitivity [12] is a method that can be used for evaluating            Results
+which regions of the input SDF are crucial for the model to make an
+accurate prediction. By methodically occluding certain areas of the
+input SDF, we can determine the regions that lead to an increase in               DrivAer individually trained model results
+the error. First, we set the values of all the elements in a cube of edge
+length ten to zero in the input SDF, and then we move the cube                    We trained models using either only DrivAer with spoiler data set or
+around the SDF with a stride of five and evaluate the MAE on the test             DrivAer without spoiler data set and evaluated only on the test
+set. Finally, we scale the MAE between zero and one for a more                    samples of the corresponding data set. We also evaluated if the model
+straightforward interpretation. The regions with values close to one              improved with data augmentation. From Table 4, we can see that the
+are crucial for the model to make accurate predictions, and regions               model trained using DrivAer with spoiler data set with data
+with values lower than 0.1 have a negligible impact on the                        augmentation has its metrics very similar to the Kriging model. All
+predictions.                                                                      other models performed worse when compared to the Kriging model.
+                                                                                  From the correlation plots (Figure 7) and the metrics, we can see that
+Page 7 of 12
+
+27/07/2021
+    Figure 9. Comparing slices of CFD results with velocity field prediction from multi-task learning model trained on DrivAer with spoiler
+    data set. The first row is the true CFD results, the second row is the prediction, and the third row is the absolute error. We have chosen
+    two samples that have different velocity profiles.
+
+models trained using data augmentation are better (about 13% and               one DrivAer data set, as seen from the metrics in Table 4 and the
+19% concerning MAE) than models trained without data                           correlation plot (Figure 8). We can see an improvement of about 35%
+augmentation.                                                                  for DrivAer without spoiler data set and 11% for DrivAer with
+                                                                               spoiler data set over the Kriging model. The inclusion of squeeze &
+Although the best models trained here do not use squeeze &                     excitation blocks is the only change in the architecture.
+excitation blocks, the models using squeeze & excitation blocks had
+very close results. As models trained using data augmentation are              It is likely that when we use both the DrivAer data sets, the results
+better than models trained without data augmentation, we will only             improve because there are more training samples, and in our case, all
+discuss models trained with data augmentation in further                       but one geometric feature are common between the data sets. In
+experiments.                                                                   contrast, the conventional Kriging model has one primary drawback:
+                                                                               we can train only with a single data set. This experiment strongly
+Table 3. Evaluation of test metrics and comparison with the Kriging            indicates that our model can make more accurate predictions when
+model for cd prediction. Models trained without data augmentation              trained using similar data sets by reusing and refining learned feature
+were trained using one NVIDIA P100 GPU. Models trained with data               maps.
+augmentation were trained using three NVIDIA P100 GPUs.
+                                                                               Multi-task learning model
+                Evaluation     R2                 Max        Training
+ Model                                  MAE
+                data set       score              AE         time [h]
+ Our model      Without                                                        Table 5. cd prediction for multi-task learning models trained on
+                               0.951    0.0025    0.0088     1                 DrivAer with spoiler data set - evaluation and comparison with
+ without        spoiler
+ augmentation   With spoiler   0.967    0.0023    0.0083     3                 existing models. L2-error is used for evaluating the fields and the
+                Without                                                        other metrics for evaluating cd. The models were trained using four
+                               0.961    0.0022    0.0074     9
+                spoiler                                                        NVIDIA P100 GPUs.
+ Our model
+                With spoiler   0.975    0.0019    0.0076     17
+ with
+                Without                                                                      R                  Max        L2-error
+ augmentation                  0.990    0.0013    0.0026                         Model                 MAE                             Training time
+                spoiler                                      31                              score              AE         [%]
+                With spoiler   0.980    0.0017    0.0060                         Our
+                Without                                                                      0.969     0.0023   0.0068     2.80        27 hours
+                               0.968    0.0020    0.0070     -                   model
+ Kriging        spoiler                                                          Kriging     0.977     0.0019   0.0080     -           -
+                With spoiler    0.977 0.0019       0.0080      -                 ROM         -         -        -          1.59        -
+                                 Legend
+                Trained using DrivAer without spoiler data set
+                Trained using DrivAer with spoiler data set
+                Trained using both DrivAer with spoiler and DrivAer
+                                                                               We trained a multi-task learning model that can concurrently predict
+                without spoiler data set                                       cd and velocity fields using the DrivAer with spoiler data set. From
+                                                                               Table 5, we can see that the model performed worse than the
+                                                                               previous models. Nevertheless, we can see that the model can predict
+                                                                               both the velocity fields (with a 1.21% absolute increase in L2-error as
+Model trained using both DrivAer data sets                                     compared to ROM) and cd (with a 21% relative increase in MAE
+                                                                               compared to the Kriging model) simultaneously. Figure 9 shows the
+We trained the models using both DrivAer data sets to see if the               velocity field prediction for two samples from the test set. From the
+models improve by leveraging information from both data sets                   figure, we can see that the model can capture the large-scale features
+simultaneously. It turned out that the models improved significantly           for both test samples. We can see artifacts predominantly close to the
+compared to the Kriging model and the models trained using only                geometry surface, which could be the checkerboard artifacts [32]
+Page 8 of 12
+
+27/07/2021
+     Figure 10. Visualization of occlusion sensitivity maps from two views for a model trained using both DrivAer data sets. The occlusion map
+     is thresholded from 0.1 to 1.0. The regions with a value lower than 0.1 have little to no effect on the prediction. The thresholded region
+     corresponds to about 22% of the total volume. It is concentrated mainly around the front and rear of the car, which corresponds to the
+     regions with most of the parameterized features. There is a break in the middle of the car where there are only a few geometric features.
+
+caused by transpose convolutional layers. One of the difficulties in           the regions with values greater than 0.9 to estimate eight of the
+training multi-task learning models is that the tasks are of varying           fourteen geometric features.
+complexity and require different numbers of training epochs. To
+reduce these conflicts, we weighed the velocity field loss lower,              It is not an anomaly that the best model prefers the regions close to
+weighed the velocity field based on variance, and applied learning             the domain boundaries as this behavior was consistent among
+rate decay based only on the cd validation loss.                               multiple well-performing models. The network can estimate all the
+                                                                               relevant geometric features from the global information present in a
+Multi-task learning models improved only for about 100 to 120                  few fixed regions in space. This workaround of exploiting the global
+epochs compared to 300 to 500 epochs for models trained solely for             information was probably more straightforward for the model to learn
+predicting cd. We suspect that this is either because (1) the network          than learning to estimate the geometric features by following the
+learns relatively faster with the velocity fields or (2) that after the        vehicle surface. Guo et al. [7] showed that models trained using SDF
+early epochs, the two tasks are no longer complementing one another            could perform better than binary mask representations for the same
+and are unable to improve. Multi-task learning shows promise, but              model complexity. A reason for this might be that the model does not
+further research is needed to find better training methods and                 have to learn to follow the geometries’ surface when using SDF to
+approaches to balance the tasks. Improvement in predicting the                 represent geometries.
+velocity field is among the future works.
+                                                                               It is well known that models sometimes learn workarounds, wrong
+Occlusion sensitivity                                                          features, or noise but still make reasonable predictions. It is also
+                                                                               common to use multiple regularization methods to prevent this. For
+                                                                               our use case, the model using this workaround might not be an issue
+We performed an occlusion sensitivity study on our best models. For
+                                                                               when we train models on data sets for one vehicle geometry.
+an easier understanding of the 3D occlusion map, we have visualized
+                                                                               However, using the workaround might be of concern when we expect
+after clipping the occlusion map values between a few specific
+                                                                               the trained model to transfer learned geometric features from one
+ranges. From Figure 10, we can see a concentration of regions of
+                                                                               vehicle geometry to another, as we may have unintentionally
+importance in the front and the rear of the car, and about 22% of cells
+                                                                               introduced a bias regarding the orientation and scales of the
+have values higher than 0.1. In addition, we can see a distinct gap in
+                                                                               geometric features.
+the middle which shows that the model has discovered that most of
+the geometric features are in the front or rear of the geometry.
+                                                                               The long-term goal would be to have a vast repository of simulations
+                                                                               from multiple cars (of the same vehicle type) and the ability to
+We can see from Figure 11, most of the regions with a high impact
+                                                                               predict approximate aerodynamic results for new vehicle shapes. This
+on the cd are close to the domain boundary, and surprisingly at first
+                                                                               goal can be achieved only if the model can accurately transfer
+sight, the network does not prefer the regions near the surface.
+                                                                               geometric features. Towards this aim, we can do transformations like
+However, we need to keep in mind that SDF contains both local &
+                                                                               rotation, scaling, translation, etc., on the input geometry. This can
+global information. The cells with the highest importance values have
+                                                                               pressure the network to learn to recognize the same geometric feature
+global information from the rear of the geometry. We can also infer
+                                                                               from different orientations. However, this data augmentation method
+from Figure 11 that the geometric features in the rear affect the cd
+                                                                               is rather impractical because simulating multiple augmented
+prediction more than the other geometric features. The model can use
+                                                                               geometries would be computationally expensive.
+
+
+
+
+Page 9 of 12
+
+27/07/2021
+     Figure 11. Same as Fig. 10. The volume is thresholded in three different ranges (see captions) for easier understanding. From the
+     thresholded volumes, we can infer that the geometric features in the rear of the car affect the c d more than the geometric features in the
+     front of the car.
+
+As a more practical approach that does not require additional                    on its variance across training samples, which forces the network to
+simulations, we can make the model robust to affine transformations              focus on vital regions like the wake of the car. Multi-task learning
+using an autoencoder setup. We could perform numerous                            shows promise, even though we were unable to produce results better
+transformations on the car geometries and generate SDF at a low                  than the existing models. Better training methodology and strategies
+computation cost. The augmented SDF could be used to train an                    to balance both tasks are some of the areas in need of improvement.
+autoencoder, and we could predict the cd and velocity fields using the
+latent representation. This method could result in a model that might            We performed an occlusion sensitivity study to get an insight into
+be more robust to transformations and be better at transferring                  how the network is learning. We showed that the model has identified
+geometric features. If we doubt that the model is not learning the               regions where the geometric parameters are present, and the model
+intended geometric features properly, this will be an area to                    prioritized the geometric parameters in the DrivAer’s rear. We also
+investigate in the future.                                                       realized that the model had learned a workaround for estimating the
+                                                                                 geometric parameters by just looking at a few fixed regions close to
+Conclusions                                                                      the domain boundary, thus exploiting that the SDF carries both global
+                                                                                 and local information. Using this workaround may not be a concern
+                                                                                 when working with datasets created from a single-vehicle geometry.
+In summary, we demonstrated that neural networks could accurately
+                                                                                 However, it might be a problem when we want the model to transfer
+predict the drag coefficient cd and velocity fields of an arbitrary input
+                                                                                 geometric features between multiple geometries.
+mesh represented as an SDF without explicit parameterization. Our
+best models outperformed the Kriging model in predicting cd for both
+data sets with at least an 11% MAE improvement. Although models                  The DrivAer data set was generated using explicit parameterization
+trained without data augmentation made reasonable predictions, we                and was used for this study as, currently, no real-world data set
+demonstrated that data augmentation improves results and that we                 generated without explicit parameterization exists. Such a data set
+can train deep learning models without a large number of training                could be, for example, a historical data set containing all simulation
+simulations.                                                                     results for one particular vehicle model gathered during the exterior
+                                                                                 shape development, potentially even across various generations of
+                                                                                 that particular vehicle model. Future work foresees the creation of
+Our models trained on individual DrivAer data sets performed worse
+                                                                                 such a data set generated without explicit parameterization. Other
+or similar to the Kriging model, but our models trained using both the
+                                                                                 future works include improving multi-task learning and
+DrivAer data sets outperformed the Kriging model significantly. We
+                                                                                 experimentation with larger data sets.
+demonstrated that the network improves with additional samples
+from a similar data set, which is a notable advantage over the Kriging
+model.
+
+We demonstrated that velocity fields could be predicted concurrently
+with cd and presented a method of weighting the velocity field based
+Page 10 of 12
+
+27/07/2021
+Contact Information                                                         SAE Technical Paper, 2012-01-0168, 2012, doi:10.4271/2012-
+                                                                            01-0168.
+                                                                       [14] Nikolaos, K., De Villiers, E., Huang, J., Othmer, C. et al., “D2.2
+Markus Mrosek
+                                                                            Reduced order models for aerodynamic performance
+Volkswagen AG
+                                                                            prediction,” https://www.upscaleproject.eu/wp-
+Group Innovation
+                                                                            content/uploads/2019/04/D2.2-Reduced-order-models-for-
+Wolfsburg
+                                                                            aerodynamic-performance-prediction.pdf, accessed July 2021.
+markus.mrosek@volkswagen.de
+                                                                       [15] Niederreiter, H., “Low-discrepancy and low-dispersion
+Tel. +49 5361 9-44407
+                                                                            sequences.” Journal of number theory 30, no. 1:51-70, 1988,
+                                                                            doi:10.1016/0022-314X(88)90025-X.
+References                                                             [16] Mrosek, M., Othmer, C., and Radespiel, R., “Variational
+[1]  Othmer, C., “Adjoint methods for car aerodynamics,” Journal            Autoencoders for Model Order Reduction in Vehicle
+     of Mathematics in Industry 4, 6, 2014, doi:10.1186/2190-5983-          Aerodynamics.,” Accepted for 2021 AIAA AVIATION Forum
+     4-6.                                                                   and Exposition, Virtual Conference, Aug. 2021.
+[2] Lundberg, A., Hamlin, P., Shankar, D., Broniewicz, A. et al.,      [17] Niedermeier, C.A., Bene, C.D., Janßen, C.F., Schnepf, B. et al.,
+     “Automated Aerodynamic Vehicle Shape Optimization Using                “Ultra-fast, high-fidelity computational fluid dynamics on
+     Neural Networks and Evolutionary Optimization,” SAE Int. J.            GPUs for automotive aerodynamics,” 13th World Congress on
+     Passeng. Cars - Mech. Syst. 8(1):242–251, 2015,                        Computational Mechanics (WCCM XIII), 2018.
+     doi:10.4271/2015-01-1548.                                         [18] Niedermeier, C.A., Janssen, C.F., and Indinger, T., “Massively-
+[3] Forrester, A., Sóbester, A., and Keane, A., “Engineering Design         parallel multi-GPU simulations for fast and accurate automotive
+     via Surrogate Modelling: A Practical Guide,” (Chichester,              aerodynamics,” 7th ECCOMAS European Conference on
+     Wiley, 2008), doi:10.1002/9780470770801.                               Computational Fluid Dynamics, ECFD 2018, ISBN 978-
+[4] Mrosek, M., Othmer, C., and Radespiel, R., “Reduced-Order               849473116-7, 2020.
+     Modeling of Vehicle Aerodynamics via Proper Orthogonal            [19] Park, J.J., Florence, P., Straub, J., Newcombe, R. et al.,
+     Decomposition,” SAE Int. J. Passeng. Cars - Mech. Syst.                “DeepSDF: Learning Continuous Signed Distance Functions for
+     12(3):225–236, 2019, doi:10.4271/06-12-03-0016.                        Shape Representation,” IEEE/CVF Conference on Computer
+[5] Baque, P., Remelli, E., Fleuret, F., and Fua, P., “Geodesic             Vision and Pattern Recognition (CVPR), 165-174, 2019,
+     Convolutional Shape Optimization,” Proceedings of the 35th             doi:10.1109/CVPR.2019.00025.
+     International Conference on Machine Learning, PMLR 80:472-        [20] Museth, K., Lait, J., Johanson, J., Budsberg, J. et al.,
+     481, 2018.                                                             “OpenVDB: An Open-Source Data Structure and Toolkit for
+[6] Thuerey, N., Weißenow, K., Prantl, L., and Hu, X., “Deep                High-Resolution Volumes,” ACM SIGGRAPH 2013 Courses,
+     Learning Methods for Reynolds-Averaged Navier–Stokes                   SIGGRAPH’13, Association for Computing Machinery, New
+     Simulations of Airfoil Flows,” AIAA Journal 58 no. 1:25–36,            York, NY, USA, ISBN 9781450323390, 2013.
+     2020, doi:10.2514/1.J058291.                                      [21] Huang, J., Su, H., and Guibas, L., “Robust Watertight Manifold
+[7] Guo, X., Li, W., and Iorio, F., “Convolutional Neural Networks          Surface Generation Method for ShapeNet Models,” arXiv
+     for Steady Flow Approximation,” Proceedings of the 22nd                preprint arXiv:1802.01698, 2018.
+     ACM SIGKDD International Conference on Knowledge                  [22] Iqbal, H., “HarisIqbal88/PlotNeuralNet v1.0.0,” Zenodo, 2018,
+     Discovery and Data Mining, 481-490, 2016, doi:                         doi:10.5281/zenodo.2526396.
+     10.1145/2939672.2939738                                           [23] Ronneberger, O., Fischer, P., and Brox, T., “U-Net:
+[8] Bhatnagar, S., Afshar, Y., Pan, S., Duraisamy, K. et al.,               Convolutional Networks for Biomedical Image Segmentation,”
+     “Prediction of Aerodynamic Flow Fields Using Convolutional             Medical Image Computing and Computer-Assisted Intervention
+     Neural Networks,” Comput Mech 64, no. 2:525–545, 2019,                 -- MICCAI 2015, Lecture Notes in Computer Science, vol 9351.
+     doi:10.1007/s00466-019-01740-0.                                        Springer, Cham., 2015, doi:10.1007/978-3-319-24574-4_28.
+[9] Qi, C., Su, H., Mo, K., and Guibas, L., “PointNet: Deep            [24] Zhang, Z., Liu, Q., and Wang, Y., “Road Extraction by Deep
+     Learning on Point Sets for 3D Classification and                       Residual U-Net,” IEEE Geoscience and Remote Sensing
+     Segmentation,” 2017 IEEE Conference on Computer Vision and             Letters, vol. 15, no. 5:749–753, 2018,
+     Pattern Recognition (CVPR):77–85, 2017, doi:                           doi:10.1109/LGRS.2018.2802944.
+     10.1109/CVPR.2017.16.                                             [25] Çiçek Ö., Abdulkadir A., Lienkamp S.S., Brox T. et al., “3D U-
+[10] Qi, C., Yi, L., Su, H., and Guibas, L., “PointNet++: Deep              Net: learning dense volumetric segmentation from sparse
+     Hierarchical Feature Learning on Point Sets in a Metric Space,”        annotation.” Medical Image Computing and Computer-Assisted
+     Proceedings of the 31st International Conference on Neural             Intervention – MICCAI 2016. MICCAI 2016. Lecture Notes in
+     Information Processing Systems, NIPS’17, Curran Associates             Computer Science, vol 9901. Springer, Cham., 2016,
+     Inc, ISBN 9781510860964:5105–5114, 2017.                               doi:10.1007/978-3-030-00928-1_48
+[11] Hanocka, R., Hertz, A., Fish, N., Giryes, R. et al., “MeshCNN:    [26] Hu, J., Shen, L., and Sun, G., “Squeeze-and-Excitation
+     A Network with an Edge,” ACM Trans. Graph. 38, no. 4, 2019,            Networks,” 2018 IEEE/CVF Conference on Computer Vision
+     doi:10.1145/3306346.3322959.                                           and Pattern Recognition, 2018, pp. 7132-7141,
+[12] Zeiler, M.D. and Fergus, R., “Visualizing and Understanding            doi:10.1109/CVPR.2018.00745.
+     Convolutional Networks,” European conference on computer          [27] Roy, A.G., Navab, N., and Wachinger, C., “Concurrent Spatial
+     vision 2014, Springer International Publishing, Cham,                  and Channel ‘Squeeze & Excitation’ in Fully Convolutional
+     doi:10.1007/978-3-319-10590-1_53                                       Networks,” Medical Image Computing and Computer Assisted
+[13] Heft, A., Indinger, T., and Adams, N., “Introduction of a New          Intervention - MICCAI 2018, MICCAI 2018, Lecture Notes in
+     Realistic Generic Car Model for Aerodynamic Investigations,”           Computer Science, vol 11070. Springer, Cham, 2018,
+                                                                            doi:10.1007/978-3-030-00928-1_48.
+
+Page 11 of 12
+
+27/07/2021
+[28] Abadi, M., Agarwal, A., Barham, P., Brevdo, E., et al.,                        Conference on Computer Vision (ICCV):618–626, 2017,
+     “TensorFlow: Large-Scale Machine Learning on Heterogeneous                     doi:10.1109/ICCV.2017.74.
+     Systems,” arXiv preprint arXiv:1603.04467 (2016).                         [31] Springenberg, J. T., Dosovitskiy, A., Brox, T., and Riedmiller,
+[29] Schütz, T., “Aerodynamik des Automobils:                                       M., “Striving for Simplicity: The All Convolutional Net,” arXiv
+     Strömungsmechanik, Wärmetechnik, Fahrdynamik, Komfort                          preprint arXiv:1412.6806, 2014.
+     (Aerodynamics of the automobile: fluid mechanics, thermal                 [32] Odena, A., Dumoulin, V., and Olah, C., “Deconvolution and
+     engineering, driving dynamics, comfort),” (Wiesbaden,                          Checkerboard Artifacts,” Distill, 2016,
+     Springer Vieweg, 2013), doi:10.1007/978-3-8348-2316-8.                         doi:10.23915/distill.00003.
+[30] Selvaraju, R.R., Cogswell, M., Das, A., Vedantam, R. et al.,
+     “Grad-CAM: Visual Explanations from Deep Networks via
+     Gradient-Based Localization,” 2017 IEEE International
+
+Disclaimer
+The results, opinions and conclusions expressed in this publication are not necessarily those of Volkswagen Aktiengesellschaft.
+
+
+
+
+Page 12 of 12
+
+27/07/2021
+

@@ -1,0 +1,912 @@
+                                                 LatticeGraphNet: A two-scale graph neural
+                                                    operator for simulating lattice structures
+
+                                                         Ayush Jain⋆ ,∗,†,‡ Ehsan Haghighat⋆ ,∗,† and Sai Nelaturi∗,†
+arXiv:2402.01045v1 [cs.LG] 1 Feb 2024
+
+
+
+
+                                                                            †Carbon Inc., Redwood City, CA
+                                        ‡Georgia Institute of Technology, School of Materials Science and Engineering, Atlanta, GA
+
+                                           E-mail: ayush.jain@gatech.edu; ehsan haghighat@carbon3d.com; snelaturi@carbon3d.com
+
+
+                                                                                         Abstract
+
+                                                     This study introduces a two-scale Graph Neural Operator (GNO), namely, Lattice-
+
+                                                 GraphNet (LGN), designed as a surrogate model for costly nonlinear finite-element
+
+                                                 simulations of three-dimensional latticed parts and structures. LGN has two networks:
+
+                                                 LGN-i, learning the reduced dynamics of lattices, and LGN-ii, learning the mapping
+
+                                                 from the reduced representation onto the tetrahedral mesh. LGN can predict defor-
+
+                                                 mation for arbitrary lattices, therefore the name operator. Our approach significantly
+
+                                                 reduces inference time while maintaining high accuracy for unseen simulations, es-
+
+                                                 tablishing the use of GNOs as efficient surrogate models for evaluating mechanical
+
+                                                 responses of lattices and structures.
+
+
+                                        Keywords Graph Neural Networks; Neural Operators; Structural Analysis; Metamateri-
+                                        als.
+                                           ⋆
+                                               AJ and EH contributed equally to this work.
+
+
+
+
+                                                                                             1
+1     Introduction
+
+Lattice structures, constructed by repeated copies and interpolation of smaller scale truss
+structures, are crucial in diverse scientific fields. In materials science, they are known for
+their exceptional strength-to-weight ratio, ideal for applications requiring both lightness and
+durability. 1–3 These structures are also mirrored in biological systems, illustrating nature’s
+efficiency in structural design. The rise of 3D printing has particularly highlighted their
+significance, enabling the creation of customized designs with complex geometries and spa-
+tially tuned material properties 4,5 once thought unfeasible. 6,7 Such innovations are vital in
+sectors like aerospace and biomedical engineering, where tailored lattice designs can meet
+specific needs such as improved load-bearing capabilities or enhanced thermal conductivity.
+Thus, lattice structures represent a key intersection of theory and practical application across
+various scientific and engineering disciplines.
+    Physical experimentation is often employed to understand the mechanical characteristics
+of lattice structures. This requires fabricating the structure first (typically with 3D printing)
+and conducting physical testing, which are both costly. To reduce the cost of physical char-
+acterization, high-fidelity numerical simulations, using the Finite Element Method (FEM),
+have been used to guide design. 8,9 For example, our team at Carbon Inc. has demonstrated
+that the Incremental Potential Contact (IPC) 10 method can accurately characterize the
+compressive response of elastomeric lattice structures by accounting for large deformations,
+instabilities (buckling) and contact. 5 However, the complexity of IPC simulations results in
+a long runtime, on the order of 48 hours to 10 days per model, depending on the mesh size,
+topological characteristics, and nonlinearities due to buckling and self-contact. Therefore,
+we experience the need for faster simulations firsthand.
+
+
+
+
+                                                  2
+1.1    Machine Learning To Accelerate Physical Simulation
+
+In recent years, machine-learning (ML) techniques have made major inroads to accelerate
+physical simulations. 11–14 There have been some efforts to offer ML-based alternatives to
+traditional boundary value problem (BVP) solvers, e.g., Physics-Informed Neural Networks
+(PINNs). 15–17 They have also been used in generative design 2,18 and inverse design 1,19–22 of
+lattices and meta-materials. Despite the progress, the application of ML solvers in realistic
+(industrial) applications remains very limited. Recently, Graph Neural Networks (GNNs)
+have been considered the state-of-the-art for learning physical phenomena. 23–26 Specifically,
+an ML architecture called MeshGraphNet (MGN) 27,28 is proposed to be a generalizable GNN
+architecture that can learn the dynamics of mesh-based simulations. MGNs work by encoding
+the discretization mesh into a multigraph of nodes and edges. This technique boasts short
+inference times with low point-by-point error comparisons between finite-element simulation
+counterparts. 27 Given this strength, MGN-based architectures have the potential to aid in
+the characterization of meta-material components.
+
+
+1.2    Contributions
+
+In this work, we propose LatticeGraphNet (LGN), an MGN architecture (detailed in Fig-
+ure 2) that serves as a surrogate model for high-fidelity nonlinear Neohookean IPC simu-
+lations of three-dimensional latticed meta-materials (see Figure 1). Latticed components
+used for IPC simulations typically require the use of high-precision discretizations. These
+representations are too complex (high-dimensional) for the standard MGN model, mak-
+ing it difficult for any GNN algorithm to learn directly from them. Our multi-scale LGN
+architecture overcomes this complexity by using two MGN-based architectures, each pre-
+dicting the dynamics on different precision levels. The input to the pipeline is a complex
+three-dimensional tetrahedral mesh of a latticed part. The first MGN-based model, LGN-i,
+encodes a reduced (beam) representation of the tetrahedron mesh by leveraging the skele-
+
+
+                                              3
+tal representation of the tetrahedral mesh. The predicted reduced displacements serve as
+information for the second MGN-based architecture, LGN-ii, to predict the full-scale three-
+dimensional displacements on the tetrahedral points. This allowed us to use only 108 IPC
+simulations to train the model with good accuracy. It is worth noting that the total cost of
+FEM simulations for these models is approximately 8,000 hr.
+   We find that our approach reduces the time of running inference to 10 to 30 min-
+utes, depending on the size of the tetrahedral mesh. For unseen simulations, our approach
+maintains an average point-by-point accuracy within 1.67% of the structure size. This work
+establishes a baseline for the use of GNNs as surrogate models to simulate the mechanical
+responses of lattices and structures.
+
+
+
+
+Figure 1: A sample 3D printed elastomeric part with a combination of five different unit
+cells, demonstrating the variety of configurations achieved by a small number of initial repeat
+blocks. 29
+
+
+
+
+                                              4
+       Initial Tetrahedral Mesh                   Predicted Compressed
+                                                    Tetrahedral Mesh
+
+
+
+
+       a                                          d
+
+
+
+                                                  Predicted Compressed            LGN-ii
+        Initial Reduced Mesh                         Reduced Mesh
+
+
+
+
+       b                            LGN-i         c
+
+Figure 2: Overview of the LatticeGrapNet (LGN) Pipeline. The pipeline starts with A)
+an initial three-dimensional lattice represented by a tetrahedral mesh and is transformed to
+B) a reduced (skeletal) representation of the initial mesh. C) LGN-i (see Section 3.1) runs
+inference on the reduced mesh to get the coarse displacement. D) LGN-ii (see Section 3.2)
+maps the reduced displacements of LGN-i to predict three-dimensional displacements on the
+tetrahedral mesh.
+
+
+
+2     Dynamics of lattices
+
+Let us consider the undeformed (reference) coordinate of a material point at time t as X.
+The deformed (spatial) coordinates of the same point are then expressed as x = ϕ(X, t) with
+ϕ as the mapping between reference and spatial frames. This mapping can also be expressed
+using the displacement vector u as ϕ(X, t) = u(X, t) + X. The Jacobian of this mapping
+is called the deformation gradient tensor F and is expressed as
+
+
+                                    F = ∇ϕ = ∇u + I,                                       (1)
+
+
+              ∂
+in which ∇ = ∂X is called the right reference gradient. 30
+    We consider elastomeric materials, and their mechanical response is described using the
+hyperelastic Neo-Hookean model under large deformations. The Neo-Hookean stored energy
+
+
+                                              5
+function is expressed as
+
+                               1                   1
+                        Ψ(F ) = λ(ln J)2 − µ ln J + µ(F : F − 3),                            (2)
+                               2                   2
+
+where J is the volumetric deformation of the material and expressed J = det(F ) and µ and
+λ are Lamé parameters. The first Piola-Kirchhoff (PK) stress tensor P is then derived as
+
+                                 ∂Ψ
+                           P =      = λ ln(J)F −T + µ(F − F −T ).                            (3)
+                                 ∂F
+
+The governing equations describing this system are mass conservation, expressed as ρJ = ρ0 ,
+and linear momentum conservation, expressed as
+
+                                                     ∂ 2u
+                                      ∇P + b = ρ0         ,                                  (4)
+                                                     ∂t2
+
+where b is the body force vector and ρ0 is density of material at its undeformed state. The
+second (angular) momentum conservation relation results in the symmetry condition on the
+stress tensor, i.e., F P = (F P )T . 30 Note that we will use mean and deviatoric invariants of
+the PK stress tensor, i.e., I1 = tr(P ) and J2 = 21 P : P , respectively, as state features in
+training the graph neural networks.
+    The training data for the deformation of lattices are generated based the NeoHookean
+elastodynamic formulation described above, using the IPC method. 10
+
+
+
+3     Lattice Graph Network
+
+Neural operators are designed to learn the generative solution of parametric PDEs, making
+them exceptionally suited for dealing with complex simulations often encountered in physics
+and engineering. 31–35 This growing interest is reflected in a surge of research and publications
+as scientists and engineers seek to leverage neural operators for more accurate, real-time
+
+
+
+                                               6
+predictions and decision-making processes. MeshGraphNet (MGN) 27 is a class of graph
+neural operators that is particularly relevant here for modeling lattices and structures. The
+inputs to the MGN architecture include the nodes and edges of the simulation mesh, nodal
+quantities of interest (QoI) at time t, as well as any parameterization of the system, and
+the outputs are QoI increments, such as displacement and pressure increments, at mesh
+nodes. Therefore, the network learns the physics of interactions between nodes based on
+edge connectivities. It is a generative model, meaning that once trained, we can input any
+mesh data and expect predictions for the QoI.
+   In this work, we build a surrogate model of lattices in three dimensions, like those shown
+in Figure 2, using a small number of high-fidelity simulation data. It is worth noting that
+the reduced (beam) representation of such structures is sufficient to predict deformations;
+however, we choose to build a surrogate model of the three-dimensional representation so that
+volumetric stresses are naturally measurable. We find that the standard MGN architecture
+fails to learn the response of the system, partly due to a small number of training samples
+and partly due to the very structure of the mesh (which itself is a particular discretization
+of the design). Note that some edges of the tetrahedral mesh do represent the underlying
+beam-like structure, e.g., those coincide with the skeletal representation, and others behave
+very differently. We hypothesize that this issue is the root cause of the challenges we faced
+with directly using the standard MGN architecture. Hence, we propose a two-scale sequential
+approach:
+
+  (i) An MGN model predicting the reduced (beam) representation of the three-dimensional
+      lattice.
+
+ (ii) An MGN model predicting the mapping between the reduced representation and the
+      three-dimensional representation.
+
+These models are detailed below. Note that to differentiate with three-dimensional state
+variables, those for the reduced representation are shown with ◦˜, e.g., ũ for lattice displace-
+
+
+                                               7
+ments.
+
+
+3.1      LGN-i: The reduced predictor
+
+
+   Reduced Lattice at                                                          Reduced Lattice at
+        time t                                                                     time t+1
+                                                                                                     (e)
+
+
+
+      (a)               (b)                 (c)
+                                                                                        Recompute Node
+                                     Message Passing Block                             and Edge Features
+
+
+                         𝜖"   𝑛!
+                                                    𝑃"
+                                                             𝑛!#   𝑛!#
+                                                                         𝑛!#   𝑫𝒖     #!
+                                                                                     𝜹𝒖
+                                                                                           (d)
+            𝑖
+                                       𝑃!
+                𝑗       𝜖!    𝑒!"
+                                                              #
+                                                             𝑒!"    #
+                                                                   𝑒!"
+
+                                                                                     𝑛!#   𝑫𝝈          $!
+                                                                                                      𝜹𝝈
+
+
+
+                                        15 Message Passing Steps
+
+
+Figure 3: Architecture of LGN-i. A) The input to the network is a reduced (graph) repre-
+sentation of the tetrahedral mesh. B) The node encoder (ϵN ) and edge encoder (ϵE ) encode
+the node and edge features to high-dimensional vectors, ni and eij , respectively. C) The
+message-passing block uses two processor MLPs: Pe which updates eij to e′ij , and Pn which
+updates ni to n′i . LGN-i uses 15 message-passing steps with identical blocks. D) The two-
+part decoder contains MLPs Du and Dσ . Du uses the updated node features to compute
+the displacement increment for node i, i.e., δ ũi . Dσ uses the final n′i concatenated with ui
+to calculate the change in the I1 and J2 stress invariants at node i, δ σ̃ i . E) Upon rollout,
+denoted by the orange lines, the calculated δ ũi and δ σ̃ i are integrated to obtain the node
+and edge features for the next timestep.
+
+   The reduced MGN network, namely LGN-i, detailed in Figure 3, contains three main
+parts: an encoder, a processor, and a decoder, similar to the original MeshGraphNet. 27 The
+architecture is an autoregressive type, meaning at every time step, the inputs to the network
+are the state parameters at time t and the outputs include the state parameters at the next
+time step t + 1. Hence, given the state of a strut lattice at time t, i.e., Lt (N, E) with nodes
+N and edges E, the network predicts the displacement increment δ ũ of each node at time
+
+                                                    8
+t + 1.
+
+
+Encoder The input features of nodes and edges contain physical attributes that represent
+the current state of the lattice structure. Node features consist of:
+
+   • Node-type: a one-hot encoded node type vector of size 4, representing fixed boundary
+         nodes, loading boundary nodes, free boundary nodes, and interior nodes,
+
+   • Strut diameter,
+
+   • Node degree, indicating the number of edge connections with other nodes in the mesh,
+
+   • Mean and deviatoric stress invariants (I˜1 , J˜2 ).
+
+We found that adding stress information as state variables helps with learning the buckling
+behavior. Edge features include information about the displacement between nodes:
+
+
+   • “Reference-space” which encodes the undeformed distance between connected nodes
+         (i.e., X̃ i − X̃ j for the edge connecting nodes i and j),
+
+   • “Current-space” which encodes the deformed distance between connected nodes (i.e.,
+         x̃i − x̃j for the edge connecting nodes i and j).
+
+
+Note that each edge feature has a size of four: three for the vector components and one for
+the length of the vector. As shown in Figure 3, there are two encoder MLPs, ϵN for encoding
+nodal features and ϵE for encoding edge features. The encoders map their respecting node
+and edge features to a latent vector of size 128.
+
+
+Processor The processor contains 15 sequential message-passing blocks. Each block con-
+tains two MLPs with residual connections, Pn and Pe , mapping input node embeddings ni
+and edge embeddings eij to their updated corresponding node and edge embeddings n′i and
+
+
+
+
+                                                   9
+e′ij , respectively. Each message-passing block is expressed as
+
+                                                                          X
+                          e′ij = Pe (eij , ni , nj ),        n′i = Pn (       e′ij , ni ).   (5)
+                                                                          j
+
+
+
+Decoder The decoder maps the latent node embeddings n′i to final displacement and stress
+increments through the displacement decoder Du and stress decoder Dσ networks. We also
+append the output of the displacement decoder to the input of the stress decoder network.
+This is expressed as
+                              δ ũi = Du (n′i ),        δ σ̃ i = Dσ (n′i , δ ũi ).          (6)
+
+Note that predicting stress components I1 and J2 are needed since they are state variables.
+
+
+Training To train the network, we follow a sequential approach. We first train the net-
+work only on displacements. Then, by freezing the parameters of the encoder, processor,
+and displacement decoder, we optimize the parameters of the stress-decoder network. Our
+reasoning is that we want the network to have the highest possible accuracy on displace-
+ments. To even further improve the accuracy of displacement predictions, we also adopt
+a strategy inspired by the “pushforward loss” technique. 36 Here, LGN undergoes a rollout
+for two time-steps starting from Lt (N, E). After the first timestep prediction, we truncate
+the computational graph to stop further backpropagation due to high memory requirements.
+Hence, the push-forwarded loss is only back-propagated through the second pass of the LGN.
+Therefore, the final loss functions are
+
+                            1 X i         2 1 X i             2
+                       Lu =     ũ − ũi∗ +      ũt+2 − ũi∗
+                                                           t+2    ,                          (7)
+                            N i              N i
+                            1 X i         2
+                       Lσ =     σ̃ − σ̃ i∗ ,                                                 (8)
+                            N i
+
+where ◦∗ represents the training data. Note that the training data for the reduced dimension
+is evaluated by interpolating the three-dimensional data (see Section 4.1 for more details).
+
+
+                                                        10
+Compared to a coupled standard optimization of both variables without the push-forward
+loss, we found that this strategy increases the accuracy of both displacement and stress
+predictions.
+
+
+3.2    LGN-ii: The tetrahedral predictor
+
+
+
+
+                                  S1
+                     Time = t
+                                              # 𝑺𝟏
+                                             𝛿𝒖                       Tetrahedral Node
+                Si                                                    Reduced Representation
+                                                                      Node
+                                                                      LGN-i displacement
+          Tij                                                         prediction of central node
+                                      # 𝑺𝒊
+                                     𝛿𝒖                               LGN-i displacement
+                                                                      prediction of adjacent nodes
+                             # 𝑻𝒊𝒋
+                            𝛿𝒖                                        Overall displacement of
+          S2                                                          tetrahedral nodes
+                                                                      Local deformation of
+                                                     𝛿𝑈"#             tetrahedral node to be
+                         # 𝑺𝟐
+                        𝛿𝒖                                            predicted by LGN-ii
+
+                                                 Time = t+1
+
+
+
+Figure 4: Volumetric deformation prediction set up by the LGN-ii. At time t, an initial
+configuration of the ith strut node (Si ), its nearby tetrahedral nodes (Tij ), and its connected
+strut nodes (S1 , S2 ) are known. LGN-i predicts the displacement of every strut node (δ ũSi ,
+δ ũS1 , δ ũS2 ). Based on this information, LGN-ii predicts the fine local deformation of the j th
+tetrahedral node (δU ij ). The final tetrahedral node displacement is δuTij = δU ij + δ ũSi .
+
+   As discussed above, our objective is to predict the complete three-dimensional volumetric
+response of the lattice structure; this allows us to estimate homogenized stresses for lattices.
+Since the first network learns the bulk deformation on the reduced mesh, we need a second
+network to map the reduced deformations onto its corresponding volumetric mesh, hence the
+LGN-ii here. Instead of predicting the displacement of the complete volume at once, LGN-ii
+
+                                                11
+iterates over each node in the reduced strut lattice (Si ). For every Si we build a sub-graph
+to encode spatial information between itself, its neighboring nodes (Sk ), and its assigned
+volumetric tetrahedral nodes (Tij ). This sub-graph is used as the input to LGN-ii to predict
+the deformation of nodes Tij (δuTij ) based on the LGN-i prediction of δ ũSk and δ ũSi . This
+problem setup is illustrated in Figure 4. Similar to LGN-i, LGN-ii is also an MGN network
+with an encoder, a processor, and a decoder.
+
+
+Encoder LGN-ii uses three encoder blocks:
+
+   • strut node encoder (ϵSN ), which encodes (Si , Sk ) to (sni , snk ),
+
+   • tetrahedral node encoder (ϵT N ), which encodes the state of Tij to tni ,
+
+   • edge encoder (ϵT N E ) encodes strut and tetrahedral edges (Ec ) to ec .
+
+(Si , Sk ) are represented by a feature vector of size 4, which includes the strut diameter and
+the predicted displacement relative to the ith strut node (δ ũSk −δ ũSi ). Tij nodes are provided
+a single feature of strut diameter. Ec edges are provided with edge type as a one-hot encoded
+feature, and the Euclidean distance and magnitude between the connected nodes.
+
+
+Processor Similar to the LGN-i, message-passing blocks are comprised of two MLPs, PT e
+for edge updates and PT n for node updates, with a hidden layer size of 64. Only four
+message-passing blocks are used in the LGN-ii. The blocks update tni to tn′i .
+
+
+Decoder The final block is the decoder block DU , which maps tn′i to the relative incre-
+mental displacements on the tetrahedral mesh δU ij .
+
+
+3.3    Post-processing and homogenization
+
+The FEM discretization provides a straightforward mechanism to calculate reaction forces.
+However, we cannot directly calculate reaction forces from LGN outputs. Instead, we need
+
+
+                                                12
+to use LGN displacement predictions of the tetrahedral meshes to predict element deforma-
+tion gradient and PK-stress components using Equations (1) and (3) respectively. Lastly,
+using cross-sectional equilibrium, we can approximate reaction forces, as shown in Figure 7.
+Horizontal slices are taken through the mesh at heights of 0.1, 0.15, 0.20, 0.25, 0.5, and 0.75.
+Multiple slices are used to mitigate approximation errors. The total traction force on each
+cross-section Γi is then given by
+
+                                             Z
+                                      Fi =        P · n dA.                                 (9)
+                                             Γi
+
+
+
+The homogenized reaction force is ultimately measured as the average of Fi on all cross-
+sections.
+
+
+
+4     Results and discussion
+
+In this section, we first summarize the details regarding the training dataset and model
+training and then present LGN results on test (unseen) structures. As per the implemen-
+tation, we implemented and trained LGN on Nvidia’s Modulus 37 by revising their MGN
+implementation.
+
+
+4.1    Dataset
+
+The training dataset is a subset of simulations used to build Carbon’s MetaMaterial library. 5
+To this end, we take a total of 116 high-fidelity simulations and split that into 108 training
+and 8 test samples. Every simulation step deforms the tetrahedral mesh at a rate of 20
+mm/s for a total of 0.315s using 15 implicit time steps. The goal of the study is to capture
+up to 25% compression, so the first 12 timesteps were used in the dataset. Due to the
+autoregressive architecture of the LGN, each timestep becomes a training point, so every
+simulation yields 12 unique training samples. Sample choices are for primary cell types, i.e.,
+pure Tetrahedral, Kagome, etc, 5 with varying strut diameters and cell sizes (see Figure 1).
+
+                                                 13
+Note that this is a relatively small training set; therefore, a small fraction of the dataset was
+used for testing. In the following sections, we address how we use these simulations to train
+LGN-i and LGN-ii.
+
+
+LGN-i Training Data As noted earlier, LGN-i learns the reduced (beam) representation
+of the tetrahedral mesh. Therefore, a mapping of the tetrahedral mesh to its reduced beam
+representation is created by using the skeletal representation. The displacement components
+δu as well as I1 and J2 stresses of the tetrahedral mesh are mapped onto the nodes on the
+reduced mesh using the closest neighborhood interpolation. Inverse distance weighting is
+used for interpolation, so tetrahedral nodes that are farther away from the strut node will
+contribute less to the strut node features.
+
+
+LGN-ii Training Data LGN-ii learns to map reduced representation back onto the tetra-
+hedral mesh, as shown in Figure 4. Since the inverse mapping is on repetitive geometries
+and connectivities, we found a much smaller number of training samples is needed to achieve
+the desired accuracy. Hence, a subset of strut nodes and their surrounding tetrahedral nodes
+were taken from 10 simulations in the training data, which amounts to 10,000 samples across
+the 12 time steps.
+
+
+Data Augmentation Augmentation on the dataset was done both in the preparation
+phase and stochastically during the training. For each simulation, multiple reduced repre-
+sentations were prepared with strut lengths of 1.25, 1.5, 1.75, and 2.0 millimeters to impose
+mesh invariance. Stochastic augmentation during training was done by randomly rotating
+each training sample around the Z-axis, to make the model rotation invariant. Random noise
+(σ = 0.003) was also applied to all node positions and displacements.
+
+
+
+
+                                               14
+Table 1: A summary of the lattices used for testing, their descriptors, and the prediction
+errors at 25% strain. The unit cell composition is parameterized from a set of 7 possible unit
+cells. 5 The cell size pertains to the size of the repeating unit cell.
+
+ Test    Unit Cell Composi-        Lattice    Cell    Average Point         Max Point by
+ ID      tion                      Thick-     Size    by Point Error        Point       Error
+                                   ness               (mm)                  (mm)
+ T1      100% Kelvin               0.6        9       0.313±3.80×10−2       2.50 ± 8.97 × 10−2
+ T2      100% Star                 0.8        7       0.297±1.94×10−2       1.92 ± 3.09 × 10−2
+ T3      100% Voronoi              1.4        10      0.412±1.17×10−2       2.71 ± 3.20 × 10−1
+ T4      20% Kagome, 40%           1.2        12      0.594±1.09×10−2       2.90 ± 1.15 × 10−1
+         Voronoi, 20% Kelvin,
+         20% Rhombic
+ T5      40% Kagome, 20%           1          6       0.302±7.84×10−3       1.67 ± 1.23 × 10−1
+         Voronoi, 20% Kelvin,
+         20 % Rhombic
+ T6      100% Kagome               1.4        11      0.376±9.39×10−3       3.28 ± 3.16 × 10−1
+ T7      100% Octahedral           0.6        12      0.491±1.93×10−2       4.41 ± 4.32 × 10−1
+ T8      20% Tetrahedral, 20%      0.8        9       0.330±1.09×10−2       2.57 ± 1.51 × 10−1
+         Voronoi, 40% Kelvin,
+         20% Rhombic
+
+
+4.2     Prediction of Lattice Deformation
+
+Figure 5 shows multiple examples of lattice structures and the predicted deformation, along
+with distributions of point-by-point errors in the test set, detailed in Table 1. We find that
+qualitatively, the results are representative of the deformation of elastomeric lattices. LGN
+learns to even predict the buckling of struts. This also introduces error at less-contained
+places like boundaries due to the non-deterministic nature of buckling. The point-by-point
+error distributions are concentrated to low errors, with most points falling within 1 mm of
+the ground truth IPC simulation. This average error is consistent with what is demonstrated
+by MGNs. 27 A small portion of tetrahedral nodes, mostly located at the boundaries of the
+lattice structure, show high errors, as highlighted by the red areas on the predicted puck
+deformations. This accuracy is maintained while keeping inference times for LGN-i to 1s
+and LGN-ii to 5-7s per time step, which are a significant speed-up compared to the FEM
+simulations. Note that in this error analysis, we consider different discretization lengths for
+
+
+                                              15
+the reduced representation, i.e., 1.25 mm, 1.5 mm, 1.75 mm, and 2.0 mm, to avoid any biased
+observations.
+
+ (a)
+
+
+
+
+                                                                   Error Magnitude (mm)
+ (b)
+
+
+
+
+                                                                   Error Magnitude (mm)
+ (c)
+
+
+
+
+                                                                   Error Magnitude (mm)
+
+
+
+
+ (d)
+                                                                   Error Magnitude (mm)
+
+
+
+
+Figure 5: Visualization of the (Left) original latticed puck, (Middle) predicted deformation
+at 25% compression from the LatticeGraphNet, and (Right) the distribution of displacement
+errors (mm) of volumetric nodes. Results are given for a) T1, b) T3, c) T5, and d) T7.
+
+
+
+
+4.3    Force Predictions
+
+As mentioned above, unlike FEM, LGN cannot directly predict reaction forces. To this
+end, we use the homogenization approach, detailed earlier, as shown in Figure 6. While the
+
+                                            16
+trend of increasing magnitude of the force is captured by LGN, we see notable differences in
+feedback force starting at 10% strain. The main cause of this difference is likely inaccuracies
+in the reduced displacement predictions propagated further by the LGN-ii. Even though the
+point-by-point error of most LGN predictions is less than 1 mm (Figure 5), accumulation
+of errors could cause significant distortion on individual tetrahedrons and amount to a large
+amount of noise for calculating the deformation gradient and, therefore, stresses. Despite
+inaccuracies, we find that overall trends within the dataset are identified. For example, in
+Figure 6 both IPC simulations and LGN predict a high magnitude feedback force for T5,
+and the lowest magnitude for T7. Both models also predict that T1 and T3 are comparable
+in stiffness, between the extremes of T1 and T7. This demonstrates that the importance of
+topological features, such as strut diameter and density of structures, are captured, therefore,
+LGN can be used in finding potential candidate lattices for different purposes.
+
+
+
+5     Conclusion
+
+In this work, we introduce LatticeGraphNet (LGN) for predicting the response of lattices and
+structures. The pipeline harnesses two Graph Neural Networks (GNNs), LGN-i for learning
+reduced responses of the lattices in meta-materials and LGN-ii for learning three-dimensional
+responses. Our pipeline is trained on a set of high-fidelity nonlinear finite-element simulations
+and evaluated by studying the compressive response of lattices on unseen geometries.
+    To our knowledge, this is the first study that tackles the three-dimensional response of
+lattices with nonlinearity and buckling considerations. We find that our approach provides
+reasonable responses until 25% compressive strain and can predict nonlinear behavior such
+as buckling. Beyond 25%, one needs to account for self-contact, which can be added to
+LGN-i. Homogenization of the LGN outputs showed similar force correlations with IPC but
+contained inaccuracies. Note that the size of training simulations is relatively small compared
+to original MGN works; therefore, we primarily associate the observed inaccuracies with the
+
+
+
+                                               17
+                                        T1                                            T3
+
+
+
+
+                                        T5
+
+
+
+
+                                                                                      T7
+
+
+
+
+                             LGN Prediction               IPC (Ground Truth)
+
+
+Figure 6: Feedback force of samples T1, T3, T5, T7 from LatticeGraphNet (LGN) compared
+with the force of the ground truth simulated sample. The shaded blue area represents the
+standard deviation of the predictions, caused by using multiple discretization lengths.
+
+
+size of the dataset. Extended training of the networks can also help improve the accuracy
+of the LGN network.
+   3D printing today has matured to be able to mass produce customized parts. Many of
+the key applications of elastomeric 3D printed products are seen in customized consumer
+products such as midsoles for footwear, protective pads for helmets, cushioning for bike
+seats, and several others. These energy-absorbing products are typically designed using
+expensive prototyping and physical testing cycles due to lack of simulation tools. The impact
+of this work is far-reaching because it offers a promising avenue to accelerate high-fidelity
+analysis of such products and other complex structures and drive the wider adoption of
+
+                                              18
+3D printing. The differentiable nature of LGN provides immense power for tuning and
+optimizing lattices and structures to desired needs. These strides in digital characterization
+mark a pivotal advancement in the widespread adoption of machine learning technologies in
+analyzing structures.
+
+
+
+Acknowledgement
+
+We thank M.A. Nabian for helping us with setting up Nvidia Modulus. We thank Carbon
+Inc. for their support of this work. We additionally thank Greg Dachs and Ruiqi Chen,
+Carbon Inc., for their constructive feedback.
+
+
+
+A     LGN and Homogenization Details
+
+The hyper-parameters of the LGN architecture are detailed in Tables 2 and 3. The homog-
+enization procedure is depicted in Figure 7.
+
+                             Table 2: LGN-i Hyperparameters
+
+        Parameter Name                                          Value
+        Initial Learning Rate                                   0.0001
+        Decay Rate                                              0.999995
+        Batch Size                                              1
+        Optimizer                                               Adam
+        Activation Functions                                    Hyperbolic Tangent
+        Encoder, Decoder, Processor Hidden Layer Size           128
+        Encoder, Decoder, Processor Hidden Layer Number         2
+        Message Passing Steps                                   15
+        Training Dataset Size                                   1296
+        Training Steps                                          200,000
+
+
+
+
+                                                19
+                              Table 3: LGN-ii Hyperparameters
+
+         Parameter Name                                           Value
+         Initial Learning Rate                                    0.0005
+         Decay Rate                                               0.99999
+         Batch Size                                               256
+         Optimizer                                                Adam
+         Activation Functions                                     Hyperbolic Tangent
+         Encoder, Decoder, Processor Hidden Layer Size            64
+         Encoder, Decoder, Processor Hidden Layer Number          2
+         Message Passing Steps                                    2
+         Training Dataset Size                                    120,000
+         Training Epochs                                          300
+
+
+
+
+Figure 7: Visualization of the homogenization steps to determine feedback force. 1. From
+the initial state of the structure, we take slices at fixed heights and record all tetrahedrals
+that intersect with that slice. 2. We calculate the stress of every intersecting tetrahedral
+using Equation (3). The area of intersection is used to calculate the traction force Fz on the
+area of intersection. The sum of traction forces is taken over all intersecting cells to get the
+total force on the plane. 3. The forces on every plane are averaged to get the feedback force
+of the lattice.
+
+
+References
+
+ (1) Zheng, X.; Zhang, X.; Chen, T.-T.; Watanabe, I. Deep Learning in Mechanical Metama-
+     terials: From Prediction and Generation to Inverse Design. Advanced Materials 2023,
+
+
+                                              20
+    2302530.
+
+(2) Garland, A. P.; White, B. C.; Jensen, S. C.; Boyce, B. L. Pragmatic generative opti-
+    mization of novel structural lattice metamaterials with machine learning. Materials &
+    Design 2021, 203, 109632.
+
+(3) Wu, L.; Wang, Y.; Chuang, K.; Wu, F.; Wang, Q.; Lin, W.; Jiang, H. A brief review
+    of dynamic mechanical metamaterials for mechanical energy manipulation. Materials
+    Today 2021, 44, 168–193.
+
+(4) Jiao, P.; Mueller, J.; Raney, J. R.; Zheng, X.; Alavi, A. H. Mechanical metamaterials
+    and beyond. Nature Communications 2023, 14, 6004.
+
+(5) Kloster, K.; Haghighat, E.; Gutierrez, C.; TeVault, C.; Chen, R.; Wong, W.;
+    Fielding,   G.;   Zheng,     W.;   Freeman,   K.;    Nelaturi,   S.   Building   Carbon’s
+    metamaterials     library.    2022;    https://www.carbon3d.com/resources/blog/
+    building-carbons-metamaterials-library.
+
+(6) Quan, H.; Zhang, T.; Xu, H.; Luo, S.; Nie, J.; Zhu, X. Photo-curing 3D printing
+    technique and its challenges. Bioactive materials 2020, 5, 110–115.
+
+(7) Katal, G.; Tyagi, N.; Joshi, A. Digital light processing and its future applications.
+    International journal of scientific and research publications 2013, 3, 2250–3153.
+
+(8) Curtarolo, S.; Hart, G. L.; Nardelli, M. B.; Mingo, N.; Sanvito, S.; Levy, O. The high-
+    throughput highway to computational materials design. Nature materials 2013, 12,
+    191–201.
+
+(9) Miracle, D. B.; Li, M.; Zhang, Z.; Mishra, R.; Flores, K. M. Emerging capabilities for the
+    high-throughput characterization of structural materials. Annual Review of Materials
+    Research 2021, 51, 131–164.
+
+
+
+
+                                             21
+(10) Li, M.; Ferguson, Z.; Schneider, T.; Langlois, T. R.; Zorin, D.; Panozzo, D.; Jiang, C.;
+     Kaufman, D. M. Incremental potential contact: intersection-and inversion-free, large-
+     deformation dynamics. ACM Trans. Graph. 2020, 39, 49.
+
+(11) Kirchdoerfer, T.; Ortiz, M. Data-driven computational mechanics. Computer Methods
+     in Applied Mechanics and Engineering 2016, 304, 81–101.
+
+(12) Bar-Sinai, Y.; Hoyer, S.; Hickey, J.; Brenner, M. P. Learning data-driven discretizations
+     for partial differential equations. Proceedings of the National Academy of Sciences 2019,
+     116, 15344–15349.
+
+(13) Kochkov, D.; Smith, J. A.; Alieva, A.; Wang, Q.; Brenner, M. P.; Hoyer, S. Ma-
+     chine learning–accelerated computational fluid dynamics. Proceedings of the National
+     Academy of Sciences 2021, 118, e2101784118.
+
+(14) Brunton, S. L.; Kutz, J. N. Data-driven science and engineering: Machine learning,
+     dynamical systems, and control ; Cambridge University Press, 2022.
+
+(15) Raissi, M.; Perdikaris, P.; Karniadakis, G. E. Physics-informed neural networks: A
+     deep learning framework for solving forward and inverse problems involving nonlinear
+     partial differential equations. Journal of Computational physics 2019, 378, 686–707.
+
+(16) Haghighat, E.; Raissi, M.; Moure, A.; Gomez, H.; Juanes, R. A physics-informed deep
+     learning framework for inversion and surrogate modeling in solid mechanics. Computer
+     Methods in Applied Mechanics and Engineering 2021, 379, 113741.
+
+(17) Karniadakis, G. E.; Kevrekidis, I. G.; Lu, L.; Perdikaris, P.; Wang, S.; Yang, L. Physics-
+     informed machine learning. Nature Reviews Physics 2021, 3, 422–440.
+
+(18) Zheng, L.; Karapiperis, K.; Kumar, S.; Kochmann, D. M. Unifying the design space
+     and optimizing linear and nonlinear truss metamaterials by generative modeling. Nature
+     Communications 2023, 14, 7563.
+
+
+                                              22
+(19) Ha, C. S.; Yao, D.; Xu, Z.; Liu, C.; Liu, H.; Elkins, D.; Kile, M.; Deshpande, V.;
+     Kong, Z.; Bauchy, M.; others Rapid inverse design of metamaterials based on pre-
+     scribed mechanical behavior through machine learning. Nature Communications 2023,
+     14, 5765.
+
+(20) Ma, W.; Cheng, F.; Xu, Y.; Wen, Q.; Liu, Y. Probabilistic representation and inverse
+     design of metamaterials based on a deep generative model with semi-supervised learning
+     strategy. Advanced Materials 2019, 31, 1901111.
+
+(21) Bastek, J.-H.; Kumar, S.; Telgen, B.; Glaesener, R. N.; Kochmann, D. M. Inverting
+     the structure–property map of truss metamaterials by deep learning. Proceedings of the
+     National Academy of Sciences 2022, 119, e2111505119.
+
+(22) Tran, A.; Tran, M.; Wang, Y. Constrained mixed-integer Gaussian mixture Bayesian
+     optimization and its applications in designing fractal and auxetic metamaterials. Struc-
+     tural and Multidisciplinary Optimization 2019, 59, 2131–2154.
+
+(23) Sanchez-Gonzalez, A.; Godwin, J.; Pfaff, T.; Ying, R.; Leskovec, J.; Battaglia, P. Learn-
+     ing to simulate complex physics with graph networks. International conference on ma-
+     chine learning. 2020; pp 8459–8468.
+
+(24) Lino, M.; Cantwell, C.; Bharath, A. A.; Fotiadis, S. Simulating continuum mechanics
+     with multi-scale graph neural networks. arXiv preprint arXiv:2106.04900 2021,
+
+(25) Han, X.; Gao, H.; Pfaff, T.; Wang, J.-X.; Liu, L.-P. Predicting physics in mesh-reduced
+     space with temporal attention. arXiv preprint arXiv:2201.09113 2022,
+
+(26) Guo, K.; Buehler, M. J. A semi-supervised approach to architected materials design
+     using graph neural networks. Extreme Mechanics Letters 2020, 41, 101029.
+
+(27) Pfaff, T.; Fortunato, M.; Sanchez-Gonzalez, A.; Battaglia, P. W. Learning mesh-based
+     simulation with graph networks. arXiv preprint arXiv:2010.03409 2020,
+
+
+                                             23
+(28) Fortunato, M.; Pfaff, T.; Wirnsberger, P.; Pritzel, A.; Battaglia, P. Multiscale mesh-
+     graphnets. arXiv preprint arXiv:2210.00612 2022,
+
+(29) Chen,    R.   Enabling   Custom     Mechanical    Responses    Using   Spatially   Vary-
+     ing     Lattices.   2022;        https://www.carbon3d.com/resources/whitepaper/
+     enabling-custom-mechanical-responses-using-lattices.
+
+(30) Jiang, C.; Schroeder, C.; Teran, J.; Stomakhin, A.; Selle, A. The material point method
+     for simulating continuum materials. ACM SIGGRAPH 2016 Courses. New York, NY,
+     USA, 2016.
+
+(31) Lu, L.; Jin, P.; Pang, G.; Zhang, Z.; Karniadakis, G. E. Learning nonlinear operators via
+     DeepONet based on the universal approximation theorem of operators. Nature machine
+     intelligence 2021, 3, 218–229.
+
+(32) Kovachki, N.; Li, Z.; Liu, B.; Azizzadenesheli, K.; Bhattacharya, K.; Stuart, A.; Anand-
+     kumar, A. Neural operator: Learning maps between function spaces. arXiv preprint
+     arXiv:2108.08481 2021,
+
+(33) Li, Z.; Kovachki, N.; Azizzadenesheli, K.; Liu, B.; Bhattacharya, K.; Stuart, A.; Anand-
+     kumar, A. Neural operator: Graph kernel network for partial differential equations.
+     arXiv preprint arXiv:2003.03485 2020,
+
+(34) Goswami, S.; Bora, A.; Yu, Y.; Karniadakis, G. E. Machine Learning in Modeling and
+     Simulation: Methods and Applications; Springer, 2023; pp 219–254.
+
+(35) Li, Z.; Kovachki, N. B.; Choy, C.; Li, B.; Kossaifi, J.; Otta, S. P.; Nabian, M. A.;
+     Stadler, M.; Hundt, C.; Azizzadenesheli, K.; others Geometry-informed neural operator
+     for large-scale 3d pdes. arXiv preprint arXiv:2309.00583 2023,
+
+(36) Brandstetter, J.; Worrall, D.; Welling, M. Message passing neural PDE solvers. arXiv
+     preprint arXiv:2202.03376 2022,
+
+
+                                             24
+(37) Hennigh, O.; Narasimhan, S.; Nabian, M. A.; Subramaniam, A.; Tangsali, K.; Fang, Z.;
+     Rietmann, M.; Byeon, W.; Choudhry, S. NVIDIA SimNet™: An AI-accelerated multi-
+     physics simulation framework. International conference on computational science. 2021;
+     pp 447–461.
+
+
+
+
+                                            25
+

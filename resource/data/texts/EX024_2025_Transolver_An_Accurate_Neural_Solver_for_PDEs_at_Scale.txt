@@ -1,0 +1,1194 @@
+                                        Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+
+                                         Huakun Luo * 1 Haixu Wu * 1 Hang Zhou 1 Lanxiang Xing 1 Yichen Di 1 Jianmin Wang 1 Mingsheng Long 1
+
+
+                                                                 Abstract                                    2005) have been widely explored, whose typical solving pro-
+                                                                                                             cess is first discretizing PDEs into computation meshes and
+                                              Although deep models have been widely explored                 then approximating solution on discretized meshes (Gross-
+                                              in solving partial differential equations (PDEs),              mann et al., 2007). In real applications, such as simulating a
+arXiv:2502.02414v2 [cs.LG] 7 Feb 2025
+
+
+
+
+                                              previous works are primarily limited to data only              driving car or aircraft during takeoff, it will take several days
+                                              with up to tens of thousands of mesh points, far               or even months for calculation, and the simulation accuracy
+                                              from the million-point scale required by industrial            is highly affected by the fitness of discretized computation
+                                              simulations that involve complex geometries. In                mesh (Solanki et al., 2003; Elrefaie et al., 2024). To speed
+                                              the spirit of advancing neural PDE solvers to real             up this process, deep models have been explored as efficient
+                                              industrial applications, we present Transolver++,              surrogates of numerical methods, known as neural PDE
+                                              a highly parallel and efficient neural solver that             solvers (Wang et al., 2023). Training from pre-collected
+                                              can accurately solve PDEs on million-scale ge-                 simulation data, neural solvers can learn to approximate the
+                                              ometries. Building upon previous advancements                  mapping between input and output of numerical methods
+                                              in solving PDEs by learning physical states via                and directly infer new samples in a flash (Li et al., 2021),
+                                              Transolver, Transolver++ is further equipped with              posing a promising direction for industrial simulation.
+                                              an extremely optimized parallelism framework
+                                              and a local adaptive mechanism to efficiently cap-             Usually, industrial applications involve large and complex
+                                              ture eidetic physical states from massive mesh                 geometries, requiring the model to capture intricate physics
+                                              points, successfully tackling the thorny challenges            processes underlying geometries efficiently. Although pre-
+                                              in computation and physics learning when scaling               vious works have made some progress in handling complex
+                                              up input mesh size. Transolver++ increases the                 geometries (Li et al., 2023b; Hao et al., 2023) and attempted
+                                              single-GPU input capacity to million-scale points              to speed up model efficiency, they are still far from real ap-
+                                              for the first time and is capable of continuously              plications, especially in handling large geometries. Specif-
+                                              scaling input size in linear complexity by increas-            ically, as illustrated in Figure 1(a), existing models fail to
+                                              ing GPUs. Experimentally, Transolver++ yields                  scale up beyond 400k points, while real applications typi-
+                                              13% relative promotion across six standard PDE                 cally involves million-scale mesh points or even more. Note
+                                              benchmarks and achieves over 20% performance                   that, as aforementioned, the fineness of computation meshes
+                                              gain in million-scale high-fidelity industrial simu-           is the foundation of simulation accuracy. As the comparison
+                                              lations, whose sizes are 100× larger than previous             of car mesh shown in Figure 1(b), limited mesh size will
+                                              benchmarks, covering car and 3D aircraft designs.              seriously sacrifice the precision of the geometry, where the
+                                                                                                             originally streamlined surface becomes rough and uneven.
+                                                                                                             This will further limit the simulation accuracy of physics
+                                                                                                             processes, especially for aerodynamic applications (Elrefaie
+                                        1. Introduction
+                                                                                                             et al., 2024). Thus, the capability of handling large geome-
+                                        Extensive physics processes can be precisely described by            tries is indispensable for practical neural PDE solvers.
+                                        partial differential equations (PDEs) (Wazwaz, 2002; Evans,          As the latest progress in neural PDE solver architectures,
+                                        2010), such as air dynamics of driving cars or internal stress       Transolver (Wu et al., 2024) proposes to learn intrinsic phys-
+                                        of buildings. Accurately solving these PDEs is essential to          ical states underlying complex geometries and apply the at-
+                                        industrial manufacturing (Kopriva, 2009; Roubı́ček, 2013).          tention mechanism among learned physical states to capture
+                                        However, it is hard and usually impossible to obtain the             intricate physics interactions, which frees model capacities
+                                        analytic solution of PDEs. Thus, numerical methods (Ŝolı́n,         from unwieldy mesh points and achieves outstanding perfor-
+                                          *
+                                            Equal contribution 1 School of Software, BNRist, Tsinghua        mance in car and airfoil simulations. Although Transolver
+                                        University. Huakun Luo <luohk24@mails.tsinghua.edu.cn>. Cor-         demonstrates favorable capability in handling complex ge-
+                                        respondence to:Mingsheng Long<mingsheng@tsinghua.edu.cn>.            ometries, its maximum input size remains limited to 700k
+                                                                                                             points (Figure 1(a)), and its experiment data is much simpler
+                                        Preliminary Work.
+
+                                                                                                         1
+                                 Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+ (a) Maximum points on a single A100 GPU                               (b) Scale of benchmarks adopted by different studies
+ GPU Memory Usage (GB)
+
+
+
+
+                                                                                                         10-100x
+
+
+
+                                                                                              2x
+
+
+
+
+                                      #Points                                                              #Meshes
+
+Figure 1. (a) Comparison of model capability in handling large geometries. We plot the GPU memory change of each model when
+increasing input mesh points. The upper bound on a single A100 40GB GPU is depicted in the dotted line. (b) Comparison of experiment
+benchmarks. Transolver++ experiments on high-fidelity tasks with up to 2.5 million points, which is 100× larger than previous works.
+
+than real applications. Building on the essential step made                    2. Related Work
+by Transolver, we attempt to advance it to million-scale or
+                                                                               2.1. Neural PDE Solver
+even larger geometries in pursuing practical neural solvers.
+                                                                               Traditional numerical methods for solving PDEs often re-
+When scaling Transolver to million-scale high-fidelity PDE-
+                                                                               quire high computational costs to achieve accurate solu-
+solving tasks, we observe its bottlenecks in physics learning
+                                                                               tions (Solanki et al., 2003). Recently, deep learning methods
+and computation efficiency. Firstly, as Transolver highly
+                                                                               have demonstrated remarkable potential as efficient surro-
+relies on the learned physical states, massive mesh points
+                                                                               gate models for solving PDEs due to their inherent non-
+may overwhelm their learning process, resulting in homoge-
+                                                                               linear modeling capability, known as neural PDE solvers.
+neous physical states and model degeneration. Secondly, it
+is observed that even deep representations of million-scale                    As a typical paradigm, operator learning has been widely
+points without considering intermediate calculations will                      studied for solving PDEs by learning the mapping between
+consume considerable GPU memory, which is strictly con-                        input functions and solutions. FNO (Li et al., 2020a) first
+strained by total resources on a single GPU. This drives us                    proposes to approximate integral in the Fourier domain for
+to elaboratively optimize the model architecture and unlock                    PDE solving. Subsequently, Geo-FNO (Li et al., 2021) ex-
+the power of multi-GPU parallelism. Thus, in this paper,                       tends FNO to irregular meshes by transforming them into
+we present Transolver++, which upgrades Transolver with                        regular grids in the latent space. To further enhance the
+an extremely optimized parallelism framework and a local                       capabilities of FNO, U-FNO Wen et al. (2022) and U-NO
+adaptive mechanism to efficiently capture eidetic physical                     Rahman et al. (2023) are presented by leveraging U-Net
+states from massive mesh points. Based on the co-design                        (Ronneberger et al., 2015) to capture multiscale properties.
+with model architecture, our parallelism framework signifi-                    Considering the high dimensionality of real-world PDEs,
+cantly reduces the communication overhead and achieves                         LSM (Wu et al., 2023) applies spectral methods in a learned
+linear scalability with resources without sacrificing perfor-                  lower-dimensional latent space to approximate input-output
+mance. As a result, Transolver++ achieves consistent state-                    mappings. Afterward, LNO (Wang & Wang, 2024) adopts
+of-the-art on six standard PDE datasets and successfully ex-                   the attention mechanism to effectively map data from geo-
+tends Transolver to high-fidelity car and aircraft simulation                  metric space to latent space for complex geometries.
+tasks with million-scale points. Here are our contributions:
+                                                                               Recently, Transformers (Vaswani et al., 2017) have achieved
+              • To ensure reliable modeling for complex physical inter-        impressive progress in extensive fields and have also been
+                actions, we introduce Transolver++ with eidetic states,        applied to solving PDEs, where the attention mechanism
+                which can adaptively aggregate information from mas-           has been proven as a Monte-Carlo approximation for global
+                sive mesh points to distinguishable physical states.           integral (Kovachki et al., 2023). However, standard atten-
+                                                                               tion suffers from quadratic complexity. Thus, many mod-
+              • We present an efficient and highly parallel implemen-
+                                                                               els like Galerkin (Cao, 2021), OFormer (Li et al., 2023c)
+                tation of Transolver++ with linear scalability and mini-
+                                                                               and FactFormer (Tran et al., 2023) propose different effi-
+                mal overhead across GPUs, affording mesh size of 1.2
+                                                                               cient attention mechanisms. Among them, GNOT (Hao
+                million on a single GPU while maintaining accuracy.
+                                                                               et al., 2023) utilizes well-established linear attention, like
+              • Transolver++ achieves a 13% relative gain averaged             Reformer or Performer (Kitaev et al., 2020; Choromanski
+                from six standard benchmarks and over 20% improve-             et al., 2021), and separately encodes geometric information,
+                ment on high-fidelity million-scale industrial datasets,       achieving favorable performance. However, linear attention
+                covering practical car and 3D aircraft design tasks.           often suffers from degraded performance as an approxima-
+
+                                                                           2
+                       Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+tion of standard attention (Qin et al., 2022). Moreover, these        3. Revisiting Transolver
+Transformer-based methods treat input geometries as a se-
+quence of mesh points and directly apply attention among              Before Transolver++, we would like to briefly introduce
+mesh points, which may fall short in geometric learning               Physics-Attention, the key design of Transolver (Wu et al.,
+and computation efficiency. As a significant advancement              2024), and discuss its scaling issues for million-scale inputs.
+in PDE solving, Transolver (Wu et al., 2024) introduces               Given meshes with N nodes, to capture intrinsic physics
+the Physics-Attention mechanism that groups massive mesh              interactions under unwieldy mesh points, Physics-Attention
+points into multiple physical states and applies attention            will first assign C-channel input points x = {xi }N  i=1 ∈
+among states, thereby enabling more effective and intrinsic           RN ×C to M physical states s = {sj }M j=1  ∈ R M ×C
+                                                                                                                            based
+modeling of complex physical correlations. However, it still          on the slice weights w = {wi }N    ∈  R N ×M
+                                                                                                                    learned  from
+                                                                                                     i=1
+faces challenges in degenerated physics learning and a high           inputs, and each wi ∈ R1×M represents the possibility that
+computation burden under million-scale geometries. These              xi belongs to each state. Specifically, physical states are
+challenges will be well addressed in our paper.                       aggregated from all point representations based on learned
+In addition to Transformers, graph neural networks (GNNs)             slice weights, which can be formalized as:
+(Hamilton et al., 2017; Gao & Ji, 2019; Pfaff et al., 2021) are
+                                                                         Slice weights: w = Softmax (Linear(x)/τ0 )
+also inherently suitable to process unstructured meshes by                                           (P            )M
+explicitly modeling the message passing among nodes and                                                 N
+                                                                                               M        i=1 wij xi
+                                                                                                                                 (1)
+edges. GNO (Li et al., 2020b) first implements neural op-                Physical states: {sj }j=1 =  PN                ,
+erator with GNN. Later, GINO (Li et al., 2023a) combines                                                 i=1 wij    j=1
+GNO with Geo-FNO to encode the geometry information.
+                                                                      where τ0 is the temperature constant. Next, the canonical
+Recently, 3D-GeoCA (Deng et al., 2024) integrates pre-
+                                                                      attention mechanism is applied to learned physical states to
+trained 3D vision models to achieve a better representation
+                                                                      capture underlying physics interactions:
+learning of geometries. However, prone to geometric insta-
+bility (Klabunde & Lemmerich, 2023), GNNs can lead to                                                           ⊤
+                                                                                                                 qk
+unstable results and may be insufficient in capturing global              q, k, v = Linear(s), s′ = Softmax √           v.     (2)
+                                                                                                                   C
+physics interactions, especially when handling large-scale
+unstructured meshes (Morris et al., 2023).                            Finally, Physics-Attention employs the deslice operation
+                                                                      to map updated states s′ back toPmesh space using slice
+                                                                                                         M
+2.2. Parallelism of Deep Models                                       weights, i.e. x′ = {x′i }N
+                                                                                               i=1 = {
+                                                                                                                  ′ N
+                                                                                                         j=1 wij sj }i=1 . By re-
+                                                                      placing standard attention in Transformer (Vaswani et al.,
+Despite processing large-scale geometries being crucial in            2017) with Physics-Attention, we can obtain the Transolver.
+industrial design, this problem has not been explored in
+previous research. This paper breaks the computation bot-             Although Transolver successfully reduces canonical com-
+tleneck by leveraging the parallelism framework, which is             putation complexity from O(N 2 ) to O(M 2 ) by learning
+related to the following seminal works. Towards general               physical states (M is a constant and usually set as 32 or 64
+needs in handling the high GPU memory usage caused by                 in practice), Transolver still face the following challenges
+large-scale inputs, several parallel frameworks have been             when scaling input size to million-scale, i.e. N ≥ 106 .
+proposed, such as tensor parallelism (Shoeybi et al., 2019)
+                                                                      Homogeneous physical states Eq. (1) shows that physical
+and model parallelism (Huang et al., 2019). However, these
+                                                                      states are highly affected by slice weights w. If w tends to
+methods are highly model-dependent and request significant
+                                                                      be uniform, attention in Eq. (2) will degenerate to average
+communication overhead (Zhuang et al., 2023). Another di-
+                                                                      pooling, losing the physics modeling capability. As shown
+rection is to optimize attention mechanisms. Ring attention
+                                                                      in Figure 2(b), we find that Transolver may generate less
+(Liu et al., 2023), inspired by FlashAttention (Dao et al.,
+                                                                      distinguishable weights in some cases, especially in large-
+2022), uses a ring topology between multi-GPUs, achiev-
+                                                                      scale meshes, leading to homogeneous physical states.
+ing quadratic communication complexity with respect to
+mesh points. Besides, DeepSpeed-Ulysses (Jacobs et al.,               Efficiency bottleneck Although Physics-Attention cost
+2023) splits the deep representation along the channel di-            is nearly constant when scaling the input, the feedforward
+mension and employs the All2All communication approach,               layer to embed million-scale points by xi will consume huge
+reducing complexity to linear. Despite these improvements,            GPU memory, forming Transolver’s stability bottleneck.
+the communication volume remains excessive. In contrast,
+Transolver++ leverages its unique physics-learning design
+and presents a highly optimized parallelism framework tai-            4. Transolver++
+lored to PDE solving, enabling minimal communication                  To tackle the scaling issues of Transolver in physics learning
+overhead and allowing for meshes of million-scale points.             and computation efficiency, we present Transolver++, which
+
+                                                                  3
+                             Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+                                                                                                                                                  Slow-changing             Transolver++
+            +                                                                                                                                         region
+                                      Linear
+
+
+
+
+                                                                                         Transolver
+                                                                Slice    Geometry                                                                                               Transolver
+       Feed-Forward                                            Weights Representations                                                                                                 slice
+                                      Deslice
+       LayerNorm
+                             Slice                                                                                                                                                         1200
+                            Weights       Broadcast
+            +                                                   Rep-Slice
+                              Attention among
+
+
+
+
+                                                                                         Transolver++
+     Physics-Attention         Eidetic States                        s                                                                                                                     600
+           with                           Aggregate
+      Eidetic States                                           Ada-Temp
+                                 Eidetic Slice                                                                                             Transolver++
+                                                                                                                                                                                           0
+                                                                                                                                                       Transolver
+       LayerNorm                                      Heads                                                                                                          Fast-changing
+                                      Linear
+                                                                Geometry                                                                                     slice      Region
+                                                              Representations
+  (a) Physics-Attention with Eidetic States                                                  (b) Slice Weights Visualization            (c) Physical Quantity Change Ratio
+
+Figure 2. (a) Overall design of Transolver++ block. Blocks highlighted in red represent modifications compared to the original Transolver.
+(b) Visualization of slice weights. Transolver++ learns more diverse and eidetic physical states. (c) Visualizations of physical quantity
+change ratio (difference between each point and its neighbors) and slice weights learned by models. The lighter color means faster change.
+
+can effectively avoid attention degeneration by learning                                                    the state distribution based on each point’s local properties.
+eidetic physical states and successfully break the efficiency
+bottleneck with a highly optimized parallelism framework.                                                   Slice reparameterization As mentioned above, we try
+                                                                                                            to learn eidetic physical states and assign mesh points to
+4.1. Physics-Attention with Eidetic States                                                                  physical states with a possibility w. In the canonical design
+                                                                                                            of Transolver, it uses Softmax to form a categorical distribu-
+As aforementioned, if Physics-Attention is based on ho-                                                     tion across states. However, simply generating a categorical
+mogeneous physical states, it will degenerate to average                                                    distribution is not enough, as we have not completely mod-
+pooling, which will damage the model’s performance. Thus,                                                   eled the assignment process from points to certain physical
+as the authors mentioned in Transolver (Wu et al., 2024),                                                   states. Considering that direct sampling via Argmax is non-
+they adopt the softmax function in calculating slice weights                                                differentiable, we propose to adopt the Gumbel-Softmax
+in Eq. (1), which can alleviate the indistinguishable states                                                (Jang et al., 2017) to perform differentiable sampling from
+to some extent by guaranteeing peakier distribution (Wu                                                     the discrete categorical distribution, which is accomplished
+et al., 2022). However, we still observe the degeneration                                                   with the following reparameterization technique:
+phenomenon when the model depth increases, as shown
+in Figure 2(b), which may result from the excessive focus                                                                                 
+                                                                                                                                            Linear(x) − log(− log ϵ)
+                                                                                                                                                                      
+on global information. Note that in industrial applications,                                                Rep-Slice(x, τ ) = Softmax                                   ,
+                                                                                                                                                         τ
+the model’s capability of learning subtle physics is essen-                                                                                                          (4)
+tial, which may highly affect the evaluation in industrial                                                  where τ ∈ RN ×1 is the local adaptive temperature and ϵ =
+design (Elrefaie et al., 2024), as a small diversion device                                                 {ϵi }N
+                                                                                                                 i=1 , ϵi ∼ U(0, 1). Here log(− log ϵi ) ∼ Gumbel(0, 1),
+can drastically change the wind drag of driving cars.                                                       where Gumbel is a type of generalized extreme value dis-
+To capture detailed physics phenomena, we propose to learn                                                  tribution. Replacing Transolver’s slice weights w in Eq. (1)
+eidetic states by augmenting Transolver’s state learning with                                               by our new design in Eq. (4), Transolver++ is able to learn
+a local-adaptive mechanism and slice reparameterization to                                                  eidetic physical states under complex geometries, offering
+carefully control the learned slice weight distribution.                                                    the possibility to handle much larger-scale datasets.
+                                                                                                            As shown in Figure 2(c), the slice weights in Transolver++
+Local adaptive mechanism As shown in Figure 2(b),
+                                                                                                            can perfectly adapt to the intricate physics fields on com-
+modeling the distribution of each mesh point using a non-
+                                                                                                            plex geometries. Specifically, regions with slow-changing
+parametric approach has been proven to be impractical (Ye
+                                                                                                            physics quantities are assigned to one certain eidetic state as
+et al., 2024). Thus, we introduce a local adaptive mech-
+                                                                                                            these areas are governed by one pure physical state. In con-
+anism that incorporates local information as a pointwise
+                                                                                                            trast, regions with fast-changing physics quantities exhibit a
+adjustment to the physics learning process. Specifically, we
+                                                                                                            multimode distribution across physics states, reflecting that
+change the sharpness of the state distribution by learning to
+                                                                                                            these areas are influenced by a mixture of multiple states.
+adjust the temperature τ0 in the Softmax function, namely
+                                N                                               N
+  Ada-Temp: τ = {τi }i=1 = {τ0 + Linear(xi )}i=1 , (3)                                                      4.2. Parallel Transolver++
+                   N ×1
+where τ ∈ R         and a higher temperature forms a more                                                   To break the GPU memory bottleneck caused by feedfor-
+uniform distribution, while a lower temperature makes the                                                   ward layers of million-scale point representations, we design
+distribution more concentrated on crucial states. Through a                                                 a highly optimized framework for PDE solving, which is
+learnable linear projection layer, we can dynamically adjust                                                based on the unique physics-learning design of Transolver.
+
+                                                                                                        4
+                                      Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+ (a) Comparison with other parallel methods                                                                                  (b) Scalability of Transferred Package
+                                                                       #GPU                                     #GPU
+                               #GPU
+                        #GPU-1                                  #GPU-1                                     #GPU-1
+                                                                                                           ….
+
+
+
+
+                                                                                                                              Total Transferred Package (GB)
+                        ….                                      ….
+
+                                                                                                      ….
+
+           GPU 1                                     GPU 1                                     GPU 1
+
+    Transformer                              Transformer                               Transolver++
+       Block                                    Block                                      Block
+                                                                                                                    states
+                                                                                  Lx
+
+
+
+
+                                                                                                   …
+                                                                                                           ….
+   Lx                   ….                  Lx                  ….
+
+
+    Transformer                              Transformer   ….                          Transolver++ ….
+                   ….                                           Q, K
+       Block            K, V                    Block                                      Block
+                                                                 V                                                                                                            0.25MB
+
+    Transformer          transferred         Transformer
+                                                                transferred            Transolver++        transferred                                                  ……
+                               2                                                           Block
+       Block                         2          Block
+                                = O(N )                                  = O(N)                                 = O(K)
+          ring attention                         DeepSpeed-Ulysses                           Transolver++                                                      #mesh points
+
+Figure 3. (a) Comparison with other parallel methods. Tailored to the unique physics learning design, our method only communicates
+physical states with an all-reduce operation. (b) Scalability of the communication overhead to the number of mesh points with 32 GPUs.
+Our parallel method stands out by only transferring 0.25MB of data, which does not scale with the size of input mesh points.
+
+Parallelism formulation Through careful analysis, we ob-                                              Algorithm 1 Parallel Physics-Attention with Eidetic States
+serve that in addition to the point-wise feedforward layer, the
+                                                                                                           Input: Input features x(k) ∈ RNk ×C on the k-th GPU.
+computation of eidetic states within Physics-Attention can
+                                                                                                           Output: Updated output features x′(k) ∈ RNk ×C .
+be efficiently distributed across multiple GPUs.P Specifically,
+                                                    N                                                      // drop f to save 50% memory.
+operations in Eq. (1), such as the weighted sum i=1 wij xi
+                                      PN                                                                   Compute      , x(k) ← Project(x(k) )
+                                                                                                                      f (k)
+and the normalization denominator i=1 wij , can be easily                                                  Compute τ    (k)
+                                                                                                                            ← τ0 + Ada-Temp(x(k) )
+dispatched to multiple GPUs and calculated separately in                                                   Compute weights w(k) ← Rep-Slice(x(k) , τ (k) )
+parallel. Thus, we first separate the input mesh into multiple                                                                        (k)     PNk (k)
+                                                                                                           Compute weights norm wnorm ← i=1          wi
+GPUs for parallel computing and only communicate when                                                                                                   (k)
+calculating attention among eidetic states.                                                                Reduce slice norm wnorm ← AllReduce(wnorm ) O(M )
+                                                                                                                                             (k)T (k) (k)
+                                                                                                           Compute eidetic states s(k) ← w wxnorm   f 
+Suppose that the initial separation splits input mesh into
+                                                                                                           Reduce eidetic states s ← AllReduce(s(k) )       O(M C)
+#gpu GPUs and the integral representation x ∈ RN ×C
+                                                                                                           Update eidetic states s′ ← Attention(s)
+is split into {x(1) , · · · , x(#gpu) }, where x(k) ∈ RNk ×C
+                                                                                                           Deslice back to x′(k) ← Deslice(s′ , w(k) )
+and Nk denotes the number of mesh points dispatched
+                                                                                                           Return x′(k)
+to the k-th GPU. Correspondingly, the point-wise slice
+weights w ∈ RN ×M is also separated into #gpu compo-
+                                                                                                      in communication overhead of O(N ). Attention-optimized
+nents {w(1) , · · · , w(#gpu) } with w(k) ∈ RNk ×M . For clar-
+                                                                                                      methods like RingAttention leverage the FlashAttention
+ity, we treat both multi-node-multi-GPU and single-node-
+                                                                                                      concept to distribute the outer loop using a ring topology,
+multi-GPU configurations as a unified case. The calculation
+                                                                                                      which results in O(N 2 ) communication complexity, while
+of eidetic states sj in Eq. (1) can be equivalently rewritten
+                                                                                                      DeepSpeed-Ulysses, similar to tensor parallelism, partitions
+into the following parallelism formalization:
+                                                                                                      the data along feature dimensions and yields an O(N ) com-
+          PN1          (1) (1)         PN#gpu (#gpu) (#gpu)                                           munication volume. However, all of the above methods are
+                  i=1 wij xi ⊕ · · · ⊕   i=1 wij    xi
+                                                                                                      not feasible when handling million-scale meshes as the com-
+  sj =               PN1 (1)             PN#gpu (#gpu)
+                       i=1 wij ⊕ · · · ⊕   i=1 wij                                                    munication overhead shown in Figure 3(b) is unacceptable.
+                                                         (5)
+                                                                                                      In parallel Transolver++, each GPU computes two partial
+where ⊕ denotes the AllReduce operation (Patarasuk &
+                                                                                                      sums of size O(M C) and O(M ) separately, which are then
+Yuan, 2009), which aggregates the results from all processes.
+                                                                                                      synchronized across GPUs and cause a total communication
+In practice, the k-th GPU first independently computes its
+                                   PNk (k) (k)                                                        volume of O(#gpu × M (C + 1)), invariant to input size.
+partial sums for the numerator ( i=1     wij xi ) and de-
+              PNk (k)
+nominator ( i=1 wij ) of Nk points. Next, these partial                                               Further speedup Also, we found that Transolver’s code
+results are synchronized across GPUs to compute the eidetic                                           implementation is somewhat over-parameterized. Specifi-
+states sj , highlighted by blue-marked steps in Algorithm 1.                                          cally, Transolver projects the data onto both x and f , where
+                                                                                                      x is used to generate slice weights, and f is combined with
+Overhead analysis Consider the input x ∈ RN ×C with                                                   weights to generate physical states. This repetitive design
+N mesh points and C channels. To handle large model                                                   brings double memory costs. In this paper, we find that
+parameters in linear layers, tensor parallelism partitions the                                        eliminating f (marked gray in Algorithm 1) can simply and
+model parameters along the channel dimension. It reduces                                              successfully increase the single-GPU input point capacity
+the memory consumption linearly but introduces an increase                                            to 1.2 million, without sacrificing the model’s performance.
+
+                                                                                               5
+                                               Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+(a)    Benchmarks              Elasticity                Plasticity            Airfoil                      Pipe              NS2d                Darcy
+
+
+
+
+ (b)
+       Relative Error (1e-2)
+
+
+
+
+                                                                                         -10.2%                    -12.9%
+                                             -18.8%                                                                                                       -12.3%
+                                                                                                                                     -13.4%
+
+                                                                      -15.3%
+
+
+
+
+Figure 4. (a) Visualization of standard benchmarks covering a wide range of physics scenarios, from solid physics to fluid dynamics. (b)
+Relative errors on standard benchmarks of the top-4 models selected based on overall performance. Full results can be found in Table 5.
+
+5. Experiments                                                                                    (2019), and MeshGraphNet (2021). Transolver is the previ-
+                                                                                                  ous state-of-the-art model. During experiments, we found
+We extensively evaluate Transolver++ on six standard bench-                                       that some neural operators designed for grids perform poorly
+marks and two industrial-level datasets with million-scale                                        for large-scale irregular meshes. Therefore, we only report
+meshes, covering both physics and design-oriented metrics.                                        their performance on standard benchmark datasets.
+Benchmarks As summarized in Table 1, our experiments                                              5.1. Standard Benchmarks
+include both standard benchmarks and industrial simula-
+tions, which cover a broad range of mesh sizes. Specifi-                                          Setups As shown in Figure 4(a), we compare the latest
+cally, the standard benchmarks include Elasticity, Plasticity,                                    state-of-the-art neural PDE solvers with Transolver++ on
+Airfoil, Pipe, NS2d, and Darcy, which are widely used                                             six standard datasets covering a wide range of physics sce-
+in previous studies (Wu et al., 2024). To further evaluate                                        narios. For a fair comparison, we keep all model parameters
+the model’s efficacy in real applications, we also perform                                        within a fixed range. Specifically, in Transolver++, we set
+experiments on industrial design tasks, where we utilized                                         the model’s depth as eight layers, and the feature dimension
+DrivAerNet++ (Elrefaie et al., 2024) for car design and a                                         is 128 or 256, depending on the scale of the data. The num-
+newly simulated AirCraft dataset for 3D aircraft design. In                                       ber of slices is chosen from {32, 64} to trade-off between
+addition to the error of predicted physics fields, we also                                        computational cost and model performance.
+measure the model performance for design by calculating
+drag and lift coefficients from predicted physics fields.                                         Results As presented in Figure 4(b), Transolver++ yields
+                                                                                                  over 13% improvement w.r.t. the dataset-specific second-
+Table 1. Summary of experimental datasets, where #Mesh denotes                                    best baseline averaged from all six standard benchmarks,
+the size of mesh points in each sample.                                                           showing the efficacy of our proposed methods in handling
+                                                                                                  complex geometries. To highlight the comparison, we only
+ T YPE                                      B ENCHMARKS           G EO T YPE   #M ESH
+                                                                                                  present top-3 baselines and Transolver++ in Figure 4, which
+                                               NS2 D             S TRUCTURE     4,096             are chosen based on the overall performance. Full results
+                                                P IPE            S TRUCTURE    16,641             for other baselines are provided in Table 5 of the Appendix.
+ S TANDARD                                    DARCY              S TRUCTURE     7,225
+ B ENCHMARKS                                  A IRFOIL           S TRUCTURE    11,271             It is worth noticing that Transolver and Transolver++ signif-
+                                            P LASTICITY          S TRUCTURE     3,131             icantly outperform other models in Elasticity, whose geome-
+                                            E LASTICITY        UNSTRUCTURE       972
+                                                                                                  try is recorded as an unstructured point cloud. Going beyond
+ I NDUSTRIAL      A IR C RAFT                                                  ∼300 K             Transolver, Transolver++ further boosts performance by
+                                                               UNSTRUCTURE
+ A PPLICATIONS D RIVA ER N ET ++                                               ∼2.5M
+                                                                                                  learning eidetic physical states. As shown in Figure 2, Tran-
+                                                                                                  solver++ can learn more diverse slice partitioning, thereby
+Baselines We widely compare Transolver++ against more                                             enabling more accurate physics learning. More analyses on
+than 20 advanced baselines, covering various types of                                             learned physical states can also be found in Appendix C.
+approaches. These baselines include 12 neural opera-
+tors, such as Galerkin (2021), LNO (2024), and GINO
+                                                                                                  5.2. PDEs on Large Geometries
+(2023a), some of which are specifically designed for irreg-
+ular meshes; 4 Transformer-based PDE solvers, including                                           Setups To evaluate the performance in practical applica-
+OFormer (2023c), FactFormer (2023d), GNOT (2023), and                                             tions, we conduct experiments on two industrial datasets
+Transolver (2024); and 4 graph-neural-network-based meth-                                         with million-scale meshes: DrivAerNet++ (Elrefaie et al.,
+ods: GraphSAGE (2017), PointNet (2017), Graph U-Net                                               2024) and Aircraft. The latter is newly presented by us,
+
+                                                                                           6
+                          Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+
+Table 2. Comparison on large geometries benchmarks. Relative L2 of the surrounding area (Volume) and surface (Surf ) physics as well as
+                                                                                                 2      2
+drag and lift coefficient (CD , CL ) is recorded, along with their coefficient of determination RD and RL . The closer R2 is to 1, the better.
+
+                                       D RIVA ERNET ++ F ULL                 D RIVA ERNET ++ S URF                     A IR C RAFT
+   M ODEL
+                                                                                       2                                   2
+                                      VOLUME ↓            S URF ↓        CD ↓         RL ↑      S URF ↓       CL ↓        RL ↑       S URF ↓
+   G RAPH SAGE (2017)                    0.328             0.284         0.282       0.859       0.294        0.040       0.988       0.109
+   P OINT N ET (2017)                    0.285             0.478         0.301       0.831       0.237        0.095       0.982       0.169
+   G RAPH U-N ET∗ (2019)                 0.241             0.260         0.272       0.876       0.193        0.063       0.953       0.161
+   M ESH G RAPH N ET∗ (2021)             0.529             0.422         0.260       0.870       0.209        0.038       0.993       0.113
+   GNO∗ (2020 A )                        0.510             0.664         0.252       0.882       0.196        0.031       0.991       0.129
+   G ALERKIN∗ (2021)                     0.234             0.274         0.267       0.792       0.235        0.069       0.879       0.118
+   G EO -FNO∗ (2022)                     0.718             0.892         0.288       0.831       0.291        0.243       0.903       0.395
+   GINO (2023 A )                        0.586             0.638         0.323       0.725       0.220        0.047       0.983       0.133
+   GNOT∗ (2023)                          0.174             0.171         0.158       0.901       0.167        0.033       0.991       0.093
+   LNO∗ (2024)                           0.180             0.203         0.208       0.855       0.195        0.091       0.992       0.137
+   3D-G EO CA∗ (2024)                    0.389             0.224         0.205       0.883       0.175        0.022       0.993       0.097
+   T RANSOLVER∗ (2024)                   0.173             0.167         0.061       0.931       0.145        0.037       0.994       0.092
+   T RANSOLVER ++ (O URS )               0.154            0.146          0.036       0.997      0.110        0.014        0.999      0.064
+   R ELATIVE P ROMOTION                  11.0%            12.6%          41.0%         -        24.1%        36.3%          -        30.4%
+    ∗ These models cannot directly handle million-scale meshes as the model input. Thus, to enable comparison, we split the input mesh
+    of these models into several pieces, independently infer them, and concatenate separately inferred outputs as their final results.
+
+
+                   Drag                                                      Table 3. Ablations on AirCraft. Relative L2 and R2 of lift coeffi-
+                                                   Lift                      cient are both recorded. Ada-Temp refers to Eq. (3), Reparameter
+                                                                             is for Eq. (4) and Speedup represents removing f in Algorithm 1.
+
+                                                                                                                          A IR C RAFT
+                                                                                 M ETHOD                                       2
+                                                                                                                  CL ↓       RL   ↑   S URF↓
+                                                                                 T RANSOLVER                      0.037     0.994    0.092
+                              Wind                             Wind              + A DA -T EMP                    0.020     0.995    0.080
+                                                                                 + A DA -T EMP, S PEEDUP          0.018     0.995    0.075
+           (a) DrivAerNet++                 (b) AirCraft
+                                                                                 + A DA -T EMP, R EPARAMETER      0.016     0.998    0.069
+Figure 5. Car and aircraft design to predict drag and lift coefficient           T RANSOVLER ++ (O URS )          0.014     0.999    0.064
+under extremely complex geometries with million-scale meshes.
+                                                                             meshes scales up. These failures of our baselines further
+which is of high quality and simulated by aerodynamicists.                   highlight the challenge of physics learning on million-scale
+To fully evaluate the model performance under different                      geometries, while Transolver++ provides a practical solu-
+scales, we split DrivAerNet++ into two scales, one only                      tion, advancing an essential step to industrial applications.
+with surface pressure (∼700k mesh points in each sample)
+and the other with full physics fields (2.5M mesh points).                   As shown in Figure 6(b), our model has a lower relative error
+                                                                             in most cases and excels in capturing the intrinsic physics
+Results Table 2 demonstrates that Transolver++ achieved                      variations in those regions with drastic changes, while other
+consistent state-of-the-art in all datasets with an average                  models tend to generate an over-smooth prediction, validat-
+promotion of over 20%. In DrivAerNet++, our model is                         ing the effectiveness of learning eidetic states.
+capable of handling 2.5 million meshes within 4 A100 GPUs
+and surpassing all other models by relative promotion of                     5.3. Model Analysis
+11.0% and 12.6% on volume and surface field separately. In
+the surface field, our model still shows a prominent lead of                 In addition to model comparisons, we also conduct a series
+24.1% in DrivAerNet++ Surface and 30.4% in AirCraft.                         of analysis experiments to provide an in-depth understand-
+                                                                             ing of our model and the necessity of large geometries.
+We also observe that GNNs often degenerate quickly when
+handling large-scale meshes due to their geometric insta-                    Ablations We conducted elaborative ablations on every
+bility (Klabunde & Lemmerich, 2023). Additionally, Geo-                      component of Transolver++. As shown in Table 3, intro-
+FNO also performs poorly across nearly all datasets, as it                   ducing the local adaptive mechanism significantly improves
+attempts to map irregular meshes to uniform latent grids, a                  performance, which validates our motivation to learn eidetic
+task that becomes especially difficult when the number of                    states. With speed-up optimization and reparameterization
+
+                                                                         7
+                                   Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+                                                                  (b.1) AirCraft Pressure Coefficient                                                                                                            (c.1) Efficiency Analysis
+                                                                                                                                                                                                      0.1
+  Transolver
+
+
+
+
+                                                                                                                                                                                                               Running Time(s)
+                                                                                                                                                                                                      0.0
+
+
+
+                                                                                                                                                                                                      -0.1
+                                                                     Transolver++ Error
+                                                                          -0.100   -0.0500   0.00       Transolver Error
+                                                                                                             0.0500   -0.100   0.100   -0.0500   0.00     GNOT Error
+                                                                                                                                                           0.0500
+                                                                                                                                                                    -0.100
+                                                                                                                                                                             0.100
+                                                                                                                                                                                     -0.0500   0.00   0.0500             0.100
+
+
+
+
+                                                                  (b.2) DrivAernet++ Surface Pressure
+                                                                                                                                                                                                                     (c.2) Why we need large geometries
+  Transolver++
+
+
+
+
+                                                                                                                                                                                                      200
+
+
+
+
+                                                                                                                                                                                                               Relative L2
+                                                                                                                                                                                                       0
+
+
+
+                                                                                                                                                                                                      -200
+
+                                                                  Transolver++ Error                     Transolver Error                                    GNOT Error
+                                                                                                                                                                                                                                        #train_mesh
+
+                  (a) Visualization of Slices Distribution         (b) Case Study of Industrial Datasets                                                                                                                         (c) Statistics Analysis
+
+Figure 6. (a) Visualization of slice weight distributions. Transolver++ demonstrates a more diverse pattern than Transolver. (b) Error
+map of top-3 models on DrivAerNet++ and AirCraft. Transolver++ outperforms other models and captures some subtle variations. (c)
+Statistics analysis of efficiency in terms of running time and model performance under different scales of input geometries.
+                                                                                                                                                        (a) Data                                                                     (b) Parameters
+Table 4. KL-divergence between learned slice weights and uniform
+distribution in different layers on Elasticity. We choose {1, 3, 5,
+
+
+                                                                                                    Relative L2
+7} layers and a higher value means a more diverse distribution.
+
+                                        L AYER N UMBER
+                 M ODEL                                                   AVG
+                                   1       3       5          7
+   T RANSOLVER                  0.056     5.599     3.474    0.383       3.885
+ T RANSOLVER ++                 2.122     8.193     5.583    1.473       5.297                                                                    #training cases                                                                        #layers
+
+                                                                                                    Figure 7. Evaluation of the model scalability in terms of data size
+techniques, the model achieves its best performance, fully                                          and parameter size. Our default setting is 150 cases and 4 layers.
+demonstrating the effectiveness of our proposed design.
+                                                                                                    tion. While previous models (Li et al., 2021) claim to be
+Slice Analysis As shown in Figure 6(a), Transolver++
+                                                                                                    resolution-invariant and aim to apply directly to large-scale
+can extract more diverse physical states than Transolver in
+                                                                                                    geometries, our experiments in Figure 6 (c.2) show that
+million-scale meshes, enabling fine modeling for complex
+                                                                                                    without training on large meshes, the model will fall short
+physics fields of driving cars. More visualization can be
+                                                                                                    in the fine-grained physics modeling, resulting in an insuffi-
+found in Appendix C. Moreover, in Table 4, we also calcu-
+                                                                                                    cient and limited performance, which further necessitates
+late the KL divergence between learned slice weights and
+                                                                                                    the capability of handling larger geometries.
+uniform distribution in different layers. These statistical re-
+sults further demonstrate that Transolver++ can learn more                                          Scalability We evaluate the scalability of Transolver++
+diverse and varying slice distribution across all the layers.                                       across different numbers of training samples and model pa-
+Efficiency analysis In addition to GPU memory (Fig-                                                 rameters of different sizes by altering the number of layers.
+ure 1), we also measured the running time of different mod-                                         From Figure 7, we can find that our model can consistently
+els on DrivAerNet++ datasets in Figure 6 (c.1). To ensure a                                         benefit from large data and large models, revealing its poten-
+fair comparison, all models’ parameter sizes are well aligned                                       tial to be the backbone of PDE-solving foundation models.
+in our experiments and we only compare Transolver++ with
+Transformer-based methods here, since GNNs struggle to                                              6. Conclusion
+handle million-scale meshes. We can find that Transolver++
+strikes a favorable balance between performance and effi-                                           In pursuit of practical neural solvers, this paper presents
+ciency, outperforming most models in terms of speed. More-                                          Transolver++, which enables the first success in accu-
+over, at the same size of input mesh points, our method ex-                                         rately solving PDEs discretized on million-scale geometries.
+hibits the lowest memory usage, highlighting its efficiency                                         Specifically, we upgrade the vanilla Transolver by introduc-
+in handling large-scale data without sacrificing accuracy.                                          ing eidetic states and a highly optimized parallel framework,
+                                                                                                    empowering Transolver++ with better physics learning and
+Why we need large geometries From the car mesh com-                                                 computation efficiency. As a result, our model achieves
+parison in Figure 1(b), we can observe that large geome-                                            significant advancement in industrial design tasks, demon-
+tries differ significantly from smaller-scale ones in terms of                                      strating favorable efficiency and scalability, which can serve
+details, which directly affects the accuracy of the simula-                                         as a neat backbone of PDE-solving foundation models.
+
+                                                                                             8
+                       Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+References                                                           Kopriva, D. A. Implementing spectral methods for par-
+                                                                       tial differential equations: Algorithms for scientists and
+Cao, S. Choose a transformer: Fourier or galerkin. In
+                                                                       engineers. Springer Science & Business Media, 2009.
+  NeurIPS, 2021.
+Choromanski, K., Likhosherstov, V., Dohan, D., Song, X.,             Kovachki, N., Li, Z., Liu, B., Azizzadenesheli, K., Bhat-
+  Gane, A., Sarlós, T., Hawkins, P., Davis, J., Mohiuddin,            tacharya, K., Stuart, A., and Anandkumar, A. Neural
+  A., Kaiser, L., Belanger, D., Colwell, L. J., and Weller, A.         operator: Learning maps between function spaces with
+  Rethinking attention with performers. ICLR, 2021.                    applications to pdes. JMLR, 2023.
+
+Dao, T., Fu, D., Ermon, S., Rudra, A., and Ré, C. Flashat-          Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhat-
+  tention: Fast and memory-efficient exact attention with              tacharya, K., Stuart, A., and Anandkumar, A. Neural
+  io-awareness. NeurIPS, 2022.                                         operator: Graph kernel network for partial differential
+                                                                       equations. arXiv preprint arXiv:2003.03485, 2020a.
+Deng, J., Li, X., Xiong, H., Hu, X., and Ma, J. Geometry-
+  guided conditional adaption for surrogate models of large-         Li, Z., Kovachki, N. B., Azizzadenesheli, K., liu, B., Bhat-
+  scale 3d PDEs on arbitrary geometries. In IJCAI, 2024.               tacharya, K., Stuart, A., and Anandkumar, A. Fourier
+                                                                       neural operator for parametric partial differential equa-
+Elrefaie, M., Morar, F., Dai, A., and Ahmed, F. Drivaer-               tions. In ICLR, 2021.
+  net++: A large-scale multimodal car dataset with com-
+  putational fluid dynamics simulations and deep learning            Li, Z., Kovachki, N. B., Choy, C., Li, B., Kossaifi, J., Otta,
+  benchmarks. arXiv preprint arXiv:2406.09624, 2024.                   S. P., Nabian, M. A., Stadler, M., Hundt, C., Azizzade-
+                                                                       nesheli, K., and Anandkumar, A. Geometry-informed
+Evans, L. C. Partial differential equations. American Math-            neural operator for large-scale 3d PDEs. In NeurIPS,
+  ematical Soc., 2010.                                                 2023a.
+Gao, H. and Ji, S. Graph u-nets. In ICML, 2019.
+                                                                     Li, Z., Kovachki, N. B., Choy, C., Li, B., Kossaifi, J., Otta,
+Grossmann, C., Roos, H.-G., and Stynes, M. Numerical                   S. P., Nabian, M. A., Stadler, M., Hundt, C., Azizzade-
+  treatment of partial differential equations. Springer, 2007.         nesheli, K., et al. Geometry-informed neural operator for
+                                                                       large-scale 3d pdes. arXiv preprint arXiv:2309.00583,
+Hamilton, W., Ying, Z., and Leskovec, J. Inductive repre-              2023b.
+  sentation learning on large graphs. NeurIPS, 2017.
+                                                                     Li, Z., Meidani, K., and Farimani, A. B. Transformer for
+Hao, Z., Ying, C., Wang, Z., Su, H., Dong, Y., Liu, S.,                partial differential equations’ operator learning. TMLR,
+  Cheng, Z., Zhu, J., and Song, J. Gnot: A general neural              2023c.
+  operator transformer for operator learning. ICML, 2023.
+                                                                     Li, Z., Shu, D., and Farimani, A. B. Scalable transformer
+Huang, Y., Cheng, Y., Bapna, A., Firat, O., Chen, D., Chen,
+                                                                       for pde surrogate modeling. NeurIPS, 2023d.
+  M., Lee, H., Ngiam, J., Le, Q. V., Wu, Y., et al. Gpipe:
+  Efficient training of giant neural networks using pipeline         Li, Z.-Y., Kovachki, N. B., Azizzadenesheli, K., Liu, B.,
+  parallelism. NeurIPS, 2019.                                          Bhattacharya, K., Stuart, A., and Anandkumar, A. Neural
+                                                                       operator: Graph kernel network for partial differential
+Jacobs, S. A., Tanaka, M., Zhang, C., Zhang, M., Song,
+                                                                       equations. arXiv preprint arXiv:2003.03485, 2020b.
+  S. L., Rajbhandari, S., and He, Y. Deepspeed ulysses:
+  System optimizations for enabling training of extreme              Li, Z.-Y., Huang, D. Z., Liu, B., and Anandkumar,
+  long sequence transformer models. arXiv preprint                     A. Fourier neural operator with learned deforma-
+  arXiv:2309.14509, 2023.                                              tions for pdes on general geometries. arXiv preprint
+Jang, E., Gu, S., and Poole, B. Categorical reparameteriza-            arXiv:2207.05209, 2022.
+  tion with gumbel-softmax. In ICLR, 2017.                           Liu, H., Zaharia, M., and Abbeel, P. Ring attention with
+Kingma, D. P. and Ba, J. Adam: A method for stochastic                 blockwise transformers for near-infinite context. arXiv
+  optimization. In ICLR, 2015.                                         preprint arXiv:2310.01889, 2023.
+
+Kitaev, N., Kaiser, L., and Levskaya, A. Reformer: The               Liu, X., Xu, B., and Zhang, L. HT-net: Hierarchical
+  efficient transformer. In ICLR, 2020.                                transformer based operator learning model for multiscale
+                                                                       PDEs. arXiv preprint arXiv:2210.10890, 2022.
+Klabunde, M. and Lemmerich, F. On the prediction instabil-
+  ity of graph neural networks. In Machine Learning and              Loshchilov, I. and Hutter, F. Decoupled weight decay regu-
+  Knowledge Discovery in Databases, Cham, 2023.                        larization. In ICLR, 2019.
+
+                                                                 9
+                        Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+Morris, E., Shen, H., Du, W., Sajjad, M. H., and Shi, B.                 Wazwaz, A. M. Partial differential equations : methods and
+ Geometric instability of graph neural networks on large                  applications. 2002.
+ graphs. arXiv preprint arXiv:2308.10099, 2023.
+                                                                         Wen, G., Li, Z., Azizzadenesheli, K., Anandkumar, A.,
+Patarasuk, P. and Yuan, X. Bandwidth optimal all-reduce al-               and Benson, S. M. U-fno–an enhanced fourier neural
+  gorithms for clusters of workstations. Journal of Parallel              operator-based deep-learning model for multiphase flow.
+  and Distributed Computing, 2009.                                        Advances in Water Resources, 2022.
+
+Peterson, L. E. K-nearest neighbor. Scholarpedia, 2009.                  Wu, H., Wu, J., Xu, J., Wang, J., and Long, M. Flowformer:
+                                                                          Linearizing transformers with conservation flows. In
+Pfaff, T., Fortunato, M., Sanchez-Gonzalez, A., and                       ICML, 2022.
+  Battaglia, P. Learning mesh-based simulation with graph
+  networks. In ICLR, 2021.                                               Wu, H., Hu, T., Luo, H., Wang, J., and Long, M. Solving
+                                                                          high-dimensional pdes with latent spectral models. In
+Qi, C. R., Su, H., Mo, K., and Guibas, L. J. Pointnet: Deep               ICML, 2023.
+  learning on point sets for 3d classification and segmenta-
+  tion. In CVPR, 2017.                                                   Wu, H., Luo, H., Wang, H., Wang, J., and Long, M. Tran-
+                                                                          solver: A fast transformer solver for pdes on general
+Qin, Z., Han, X., Sun, W., Li, D., Kong, L., Barnes, N., and              geometries. In ICML, 2024.
+  Zhong, Y. The devil in linear transformer. arXiv preprint
+  arXiv:2210.10340, 2022.                                                Xiao, Z., Hao, Z., Lin, B., Deng, Z., and Su, H. Improved
+                                                                           operator learning by orthogonal attention. In ICML, 2024.
+Rahman, M. A., Ross, Z. E., and Azizzadenesheli, K. U-no:
+  U-shaped neural operators. TMLR, 2023.                                 Ye, T., Dong, L., Xia, Y., Sun, Y., Zhu, Y., Huang, G., and
+                                                                           Wei, F. Differential transformer, 2024. URL https:
+Ronneberger, O., Fischer, P., and Brox, T. U-net: Convolu-                 //arxiv.org/abs/2410.05258.
+  tional networks for biomedical image segmentation. In
+  MICCAI, 2015.                                                          Zhuang, Y., Zheng, L., Li, Z., Xing, E., Ho, Q., Gonzalez,
+                                                                           J., Stoica, I., Zhang, H., and Zhao, H. On optimizing
+Roubı́ček, T. Nonlinear partial differential equations with               the communication of model parallelism. Proceedings of
+  applications. Springer Science & Business Media, 2013.                   Machine Learning and Systems, 5, 2023.
+Shoeybi, M., Patwary, M., Puri, R., LeGresley, P., Casper,
+  J., and Catanzaro, B. Megatron-lm: Training multi-
+  billion parameter language models using model paral-
+  lelism. arXiv preprint arXiv:1909.08053, 2019.
+
+Solanki, K., Daniewicz, S., and Newman Jr, J. Finite ele-
+  ment modeling of plasticity-induced crack closure with
+  emphasis on geometry and mesh refinement effects. En-
+  gineering Fracture Mechanics, 2003.
+
+Ŝolı́n, P. Partial differential equations and the finite element
+   method. John Wiley & Sons, 2005.
+
+Tran, A., Mathews, A., Xie, L., and Ong, C. S. Factorized
+  fourier neural operators. In ICLR, 2023.
+
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones,
+  L., Gomez, A. N., Kaiser, L. u., and Polosukhin, I. Atten-
+  tion is all you need. In NeurIPS, 2017.
+
+Wang, H., Fu, T., Du, Y., Gao, W., Huang, K., Liu, Z.,
+ Chandak, P., Liu, S., Van Katwyk, P., Deac, A., et al.
+ Scientific discovery in the age of artificial intelligence.
+ Nature, 2023.
+
+Wang, T. and Wang, C. Latent neural operator for solving
+ forward and inverse pde problems. In NeurIPS, 2024.
+
+                                                                    10
+                        Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+A. Full Results on Standard Benchmarks
+Due to the space limitation of the main text, we present the full results of model performance on standard benchmarks here,
+as a supplement to Figure 4. As shown in Table 5, Transolver++ demonstrates superior performance across six standard PDE
+benchmarks, achieving the lowest relative L2 error in all PDE-solving tasks with an averaged relative promotion of 13%.
+For models marked with an asterisk (*), we carefully reproduced the results by running the models more than three times
+and enabled fair and reliable comparison by maintaining the model parameter counts within a closely comparable range
+with other models. Specifically, we adjust LNO and reduce its default dimension from 256 to 192 in elasticity, as its
+parameter count is already three times larger than the other largest models. As discussed in previous studies (Wu et al., 2024),
+Transformer-based models usually benefit from large parameter sizes. This approach minimizes the potential influence of
+parameter variations and highlights the performance improvements achieved by our method under similar computation costs.
+
+Table 5. Model performance on six standard PDE benchmarks is evaluated using the relative L2 error. The result marked with an asterisk
+(*) indicates a reproduced outcome, where the parameter counts and configurations of the baseline methods are carefully aligned to ensure
+a fair comparison. “/” means that the baseline cannot apply to this benchmark.
+
+                                                                              R ELATIVE L2
+   M ODEL
+                                      E LASTICITY          P LASTICITY         A IRFOIL          P IPE         NS2 D         DARCY
+   FNO (2021)                               /                   /                  /              /           0.1556         0.0108
+   U-FNO (2022)                          0.0239              0.0039             0.0269         0.0056         0.2231         0.0183
+   GEO -FNO (2022)                       0.0229              0.0074             0.0138         0.0067         0.1556         0.0108
+   U-NO (2023)                           0.0258              0.0034             0.0078         0.0100         0.1713         0.0113
+   F-FNO (2023)                          0.0263              0.0047             0.0078         0.0070         0.2322         0.0077
+   LSM (2023)                            0.0218              0.0025             0.0059         0.0050         0.1535         0.0065
+   LNO* (2024)                           0.0069              0.0029             0.0053         0.0031         0.0830         0.0063
+   G ALERKIN (2021)                      0.0240              0.0120             0.0118         0.0098         0.1401         0.0084
+   HT-N ET (2022)                           /                0.0333             0.0065         0.0059         0.1847         0.0079
+   OF ORMER (2023 C )                    0.0183              0.0017             0.0183         0.0168         0.1705         0.0124
+   GNOT (2023)                           0.0086              0.0336             0.0076         0.0047         0.1380         0.0105
+   FACT F ORMER (2023 D )                   /                0.0312             0.0071         0.0060         0.1214         0.0109
+   ONO (2024)                            0.0118              0.0048             0.0061         0.0052         0.1195         0.0076
+   T RANSOLVER (2024)                    0.0064              0.0013             0.0053         0.0033         0.0900         0.0058
+   T RANSOLVER ++ (O URS )               0.0052              0.0011             0.0048         0.0027         0.0719         0.0049
+   R ELATIVE P ROMOTION                  18.8%               15.3%              10.2%          12.9%          13.4%          12.3%
+
+
+B. Implementation Details
+In this section, we provide detailed descriptions of the benchmarks, baseline methods, and implementation setups to ensure
+reproducibility and facilitate comparisons.
+
+B.1. Benchmarks
+We evaluate our method on six standard PDE benchmarks, including Elasticity, Plasticity, Airfoil, Pipe, NS2D, and Darcy,
+as well as two industrial datasets, DrivAerNet++ and AirCraft. These benchmarks cover a wide range of physics simulation
+tasks, varying in complexity and geometry, and serve as a comprehensive benchmarks for assessing the effectiveness of
+neural PDE solvers as shown in Table 6. Here are the details of these datasets.
+
+Elasticity This benchmark is generated by the simulations of the stress field in a hyper-elastic solid body under tension,
+which is governed by a stress-strain relationship using the Rivlin-Saunders material model (Li et al., 2022). Each case
+involves a unit cell of 972 points with a void in the middle , clamped at the bottom edge and subjected to tension on the top.
+Elasticity contains a total of 1200 samples, with 1000 for training and 200 for testing.
+
+Plasticity This benchmark is generated by the simulation of a plastic forging problem, where a block is impacted by a
+frictionless die moving at a constant speed (Li et al., 2022). An elastoplastic constitutive model is adopted to model this
+physical system with 900 training and 80 testing samples. The input is the external force on every mesh with the shape of
+101 × 31, and the output is the time-dependent deformation and mesh grid over 20 timesteps.
+
+                                                                   11
+                        Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+
+Table 6. Details of different benchmarks, including geometric type, number of mesh points, as well as the type of input and output, etc.
+The split of the dataset is also provided to ensure reproducibility, which is listed in the order of (training samples, test samples).
+
+ T YPE                B ENCHMARK            #D IM       #M ESHES           #I NPUT                  #O UTPUT                S PLIT
+                     E LASTICITY            2D             972            S TRUCTURE            I NNER S TRESS           (1000, 200)
+                     P LASTICITY         2D + T IME       3131         E XTERNAL F ORCE      M ESH D ISPLACEMENT          (900, 80)
+ S TANDARD             A IRFOIL             2D            11271           S TRUCTURE            M ACH N UMBER            (1000, 200)
+ B ENCHMARK              P IPE              2D            16641           S TRUCTURE               V ELOCITY             (1000, 200)
+                    NAVIER -S TOKES      2D + T IME       4096            VELOCITY                  VELOCITY             (1000, 200)
+                        DARCY               2D            7225         P OROUS M EDIUM              PRESSURE             (1000, 200)
+ I NDUSTRIAL                                             ∼700 K          S TRUCTURE           S URFACE P RESSURE          (190, 10)
+                    D RIVA ER N ET ++        3D
+ A PPLICATIONS                                           ∼2.5M           S TRUCTURE         P RESSURE & V ELOCITY         (190, 10)
+                       A IR C RAFT           3D          ∼300 K          S TRUCTURE              6 Q UANTITIES            (140, 10)
+
+
+Airfoil This benchmark is generated from simulations of transonic flow over an airfoil, governed by Euler’s equations (Li
+et al., 2022). The whole field is discretized to unstructured meshes in the shape of 221 × 51 as the input and the output is
+the corresponding Mach number on these meshes. The dataset includes 1000 training samples and 200 test samples that are
+based on the initial NACA-0012 shape.
+
+Pipe This benchmark consists of simulations of incompressible flow in a pipe, governed by the Navier-Stokes equation
+with viscosity ν = 0.005 (Li et al., 2022). The pipe has a length of 10 and a width of 1, with its centerline parameterized by
+cubic polynomials determined by five control nodes. The dataset also contains 1000 training and 200 testing samples, whose
+inputs are the mesh point locations 129 × 129 and outputs are the horizontal velocity field.
+
+Navier-Stokes This benchmark consists of simulations of the 2D Navier-Stokes equations in vorticity form on the unit
+torus (0, 1)2 (Li et al., 2021). The objective is, given the past velocity, to predict future velocity for 10 steps on discretized
+meshes in the shape of 64 × 64. The inputs are the velocity for the past 10 steps, while the outputs provide the future
+velocity for 10 timesteps. The dataset also includes 1000 samples for training and 200 for testing.
+
+Darcy This benchmark consists of simulations of the steady-state Darcy Flow in two dimensions, governed by a second-
+order elliptic equation on the unit square (Li et al., 2022). The input is the structure of the porous medium and the output is
+the corresponding fluid pressure. The dataset contains 1000 training samples and 200 testing samples, generated using a
+second-order finite difference scheme on 421 × 421 uniform grids and later downsampled to 85 × 85.
+
+DrivAerNet++ This benchmark (Elrefaie et al., 2024) is a large and comprehensive dataset for aerodynamic car design,
+featuring high-fidelity computational fluid dynamics (CFD) simulations. It includes over 8,000 car designs with various
+configurations of wheel and underbody design. To ensure efficiency while maintaining diversity, we select 200 representative
+cases from these designs. Notably, in our experiments, DrivAerNet++ is then divided into two subsets with different levels
+of resolution. The first subset, as shown in Table 6, only consists of surface meshes, where each mesh point is characterized
+by its 3D position (x, y, z), surface normal vector (ux , uy , uz ), and signed distance function (SDF). The output for this
+subset is the surface pressure on these meshes. The second subset provides a full 3D pressure and velocity field, significantly
+increasing the dataset’s complexity, with the number of mesh points reaching approximately 2.5 million and requiring the
+model to predict surface pressure, velocity and pressure of the surrounding area. The dataset consists of 190 training samples
+and 10 test samples, offering a rigorous benchmark for evaluating aerodynamic modeling at different levels of fidelity.
+
+AirCraft This benchmark includes simulations of over 30 aircraft designs under 5 different incoming flow conditions,
+varying in Mach number, angle of attack, and sideslip angle. Unlike commonly used aerodynamics datasets such as Airfoil,
+the AirCraft dataset discretizes each aircraft into approximately 300,000 3D mesh points, offering a significantly higher
+resolution for capturing complex aerodynamic phenomena. Each mesh point is characterized by its spatial coordinates
+(x, y, z) and surface normal vector, serving as the input. These high-fidelity computational fluid dynamics (CFD) simulations,
+conducted by aerodynamicists in an aircraft design institution, ensure precise and realistic aerodynamic modeling. The
+dataset requires predicting six key physical quantities: pressure coefficient Cp , fluid density ρ, velocity components (u,
+v, w), and pressure p. With 140 training cases and 10 test cases, this dataset presents intricate aerodynamic interactions,
+making it a rigorous benchmark for assessing model scalability and accuracy.
+
+                                                                  12
+                        Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+B.2. Metrics
+To comprehensively evaluate model performance across different datasets and prediction tasks, we adopt relative L2 error as
+the primary evaluation metric. For large-scale datasets, we evaluate both field and coefficient predictions separately. And
+we further introduce R-squared (R2 ) score as an additional metric to assess the accuracy of coefficient predictions. In this
+section, we would explain how these metrics are applied to different dataset categories in detail.
+
+B.2.1. S TANDARD B ENCHMARKS
+For standard benchmark datasets, model performance is assessed using the relative L2 error, which directly measures the
+difference between the predicted output and the ground truth. Given an output field ŷ predicted by the model and the ground
+truth y, the relative L2 error is computed as:
+                                                                      ∥ŷ − y∥2
+                                                    Relative L2 =               .                                                 (6)
+                                                                        ∥y∥2
+This metric on standard benchmarks is reported in the Table 5, providing a direct comparison across different models.
+
+B.2.2. L ARGE -S CALE DATASETS
+Field and Coefficient Errors For large-scale datasets, we decompose the relative L2 error into two components to gain
+deeper insights into model performance. Since large-scale datasets often involve both surface and volume (refers to the
+surrounding area) data, we separately compute the relative L2 error for surface fields and volume fields. This distinction
+allows us to evaluate how well the model captures different types of physical information. In addition to predicting field
+values, some datasets require models to infer physical coefficients that characterize the feature of the system. The relative
+L2 error is also applied to these coefficients to measure prediction accuracy.
+For example, in AirCraft, lift coefficient is calculated to measure the aerodynamic lift force on the body of an aircraft, which
+is a key metric to assess the lift performance of an aircraft under a certain flow condition. The lift coefficient is defined as:
+                                                            Z 
+                                                      1                            
+                                           CL = 1 2             −pn · l̂ + τ n · l̂ dS,                                       (7)
+                                                   2 ρv∞ A S
+
+where p is the pressure field on the surface, n is the unit normal vector of the surface, l̂ is the unit vector in the lift direction,
+τ is the shear stress tensor and S is the surface of the aircraft.
+Also in car design, drag coefficient is a crucial metric to quantify the aerodynamic drag force on the body of a vehicle, which
+can be used to improve fuel efficiency and the performance of vehicles. The drag coefficient is defined as:
+                                                            Z 
+                                                     1                             
+                                          CD = 1 2              −pn · d̂ + τ n · d̂ dS,                                     (8)
+                                                  2 ρv∞ A S
+
+where p is the surface pressure, n is the unit normal vector of the surface, d̂ is the unit vector in the drag direction, τ is the
+shear stress tensor and S is the surface of the vehicle.
+
+R-squared Score for Coefficient Predictions To further evaluate the model’s ability to predict physical coefficients, we
+introduce the R-squared (R2 ) score as an additional metric. The R2 score is computed as:
+                                                               (yi − ŷi )2
+                                                            P
+                                                  2
+                                                 R = 1 − Pi               2
+                                                                            ,                                         (9)
+                                                              i (yi − ȳ)
+
+where ŷi is the i-th of the predicted coefficients, yi is the i-th ground truth, and ȳ is the mean of the ground truth values. An
+R2 score closer to 1 indicates better model performance, while lower values suggest less accurate predictions. This metric
+measures how well the model learns the physical quantitiy fields among all samples.
+
+B.3. Baselines and Implementations
+We conduct extensive comparisons between Transolver++ and over 20 state-of-the-art baselines, encompassing a diverse
+range of methods for solving partial differential equations (PDEs). These baselines include typical neural operators,
+
+                                                                 13
+                         Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+Table 7. Implementation details of Transolver++ including training and model configuration. Training configurations are identical to
+previous methods (Wu et al., 2024; Hao et al., 2023; Deng et al., 2024; Elrefaie et al., 2024) and shared in all baselines. Lv and Ls refer
+to the loss on volume (surrounding area) and surface physics fields respectively.
+
+                          T RAINING C ONFIGURATION (S HARED IN ALL BASELINES )                       M ODEL C ONFIGURATION
+B ENCHMARKS
+                             L OSS     E POCHS I NITIAL LR O PTIMIZER BATCH S IZE L AYERS L H EADS C HANNELS C S LICES M
+E LASTICITY                                                                       8                                  128            64
+P LASTICITY                                                                       8                                  128            64
+A IRFOIL                  R ELATIVE                             A DAM W           4                                  128            64
+                                         500        10−3                                       8          8
+P IPE                         L2                                 (2019)           4                                  128            64
+NAVIER –S TOKES                                                                   8                                  256            32
+DARCY                                                                             4                                  128            64
+D RIVA ER N ET ++ F ULL Lv + Ls                                  A DAM
+D RIVA ER N ET ++ S URF   Ls             200        10−3         (2015)           1            4          8          256            32
+A IR C RAFT             Lv + Ls
+
+
+
+Transformer-based PDE solvers, and graph neural networks (GNNs) and are tested under the same training configurations
+as shown in Table 7. To ensure a rigorous comparison, we obtain the open-source implementations of these models and
+carefully verify their consistency with the original papers before training.
+
+B.3.1. S TANDARD B ENCHMARKS
+We try to be as loyal to the original settings of baselines as possible. However, when the model parameters count is too
+large to conduct a fair comparison, we would change either the number of blocks or the hidden dimension to ensure a fair
+comparison. As we mentioned before, Transformer-based models usually benefit from large parameter sizes (Wu et al.,
+2024). Thus, the alignment of parameter size is essential to control the variable and highlight the performance difference
+caused by architecture design. Here are detailed implementations.
+Specifically, we adjust LNO and reduce its default dimension from 256 to 192 in elasticity, as its parameter count is already
+three times larger than the other largest models, while other models’ settings remain unchanged.
+Besides, we carefully review the original papers of these baseline models to make sure that they are fully tuned on their
+hyper-parameters. For all the models whose data settings align exactly with ours, such as FNO (Li et al., 2021), Geo-FNO
+(Li et al., 2022), GNOT (Hao et al., 2023), OFormer (Li et al., 2023c), Transolver (Wu et al., 2024), we directly adopt the
+results reported in their respective publications. For other models, we refer to the results presented in LSM (Wu et al., 2023)
+and Transolver (Wu et al., 2024), as these works have conducted comprehensive and rigorous hyper-parameter tuning to
+ensure a fair and reliable comparison.
+
+B.3.2. I NDUSTRIAL A PPLICATIONS
+For DrivAerNet++ and AirCraft datasets, most of the baseline models are unable to handle million-scale meshes directly. To
+address this, we subsample the dataset to 50k meshes point and reconstruct the meshes using K-Nearest Neighbors (KNN)
+(Peterson, 2009) method to preserve essential geometric relationships.
+Specifically during training, we apply a random subsampling strategy at the beginning of each epoch and reconstruct meshes
+for only once in each case to maintain consistency of the total step count compared to other baselines capable of handling
+million-scale meshes. For testing, we perform a complete subsampling operation, obtaining multiple partial predictions
+across different subsampled sets. These predictions are then aggregated and concatenated to reconstruct the full output for
+each test case. The relative L2 error is subsequently computed on the concatenated predictions, and the final results are
+reported in Table 2. Furthermore, lift and drag coefficient are also computed based on the reconstructed outputs following
+their respective formulations in Eq. (8) and Eq. (9).
+In terms of model configurations, each model has been extensively tuned on their hyperparameters, especially graph neural
+networks (GNNs) for their extreme instability (Klabunde & Lemmerich, 2023) when dealing with million-scale meshes. To
+minimize human bias, we employ a standardized tuning strategy by systematically changing the hidden dimension from
+{64, 128, 256, 512}, the number of layers from {2, 4, 6, 8, 10} along with tuning model-specific hyperparameters. During
+this process, we observe that almost all GNNs experienced geometric instability (Morris et al., 2023) when applied to the
+
+                                                                    14
+                         Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+DrivAerNet++ Full dataset with approximately 2.5 million mesh points per case. Out of all baselines, Transolver achieves
+the second-best performance, benefiting from its Slice-Deslice mechanism, which improves its stability and scalability,
+while Transolver++ surpasses it by introducing eidetic physical states and a parallelism framework that can directly handle
+million-scale meshes with enhanced efficiency. In Transolver++, we set the number of slices to 32 and its channels to 256
+with 4 layers of Transolver++ block to balance efficiency and performance. And we only need to adopt parallelism to
+Transolver++ for the DrivAerNet++ Full benchamrk on only 4 A100 GPUs at most.
+
+C. More Visualizations
+As a supplement to Figure 6 of the main text, in this section, we will provide detailed visualization of the eidetic physical
+states of Transolver++ as well as case study showcases on different datasets.
+
+C.1. Eidetic States Visualization
+Here, for simplicity and clarity, we present visualizations of the eidetic physical states on four representative benchmarks:
+DrivAerNet++ Surf, Airplane, Airfoil, and Elasticity. We further compare these states with those learned by Transolver,
+demonstrating the effectiveness of our approach in capturing eidetic states under complex physical geometries. All
+visualizations are extracted from the final layer of each model to provide a direct comparison of their learned representations.
+ DrivAerNet++ Surf
+
+
+
+
+                              Transolver                                                           Transolver++(Ours)
+
+Figure 8. Visualizations of 32 physical or eidetic states learned in the final layer of models on DrivAetNet++ Surface. Transolver and
+Transolver++ are both plotted for a clear comparison. The lighter color means a higher weight in the corresponding physical state.
+ AirCraft
+
+
+
+
+                              Transolver                                                           Transolver++(Ours)
+
+Figure 9. Visualizations of 32 physical or eidetic states learned in the final layer of models on AirCraft. Transolver and Transolver++ are
+both plotted for a clear comparison. The lighter color means a higher weight in the corresponding physical state.
+
+C.2. Case Studies
+In addition to the Figure 6 in the main text, here we provide more showcase comparisons in Figure 14, 15 and 16. Specifically,
+we compare our model with the strong baselines in the respective datasets, where Transolver is selected for the comparison
+in standard benchmarks and both Transolver and GNOT are compared in industrial datasets.
+
+
+
+
+                                                                    15
+                      Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+Transolver++
+
+
+
+
+                Figure 10. Visualizations of 64 learned eidetic states of the final layer in Transolver++ on Airfoil.
+Transolver
+
+
+
+
+                Figure 11. Visualizations of 64 learned physical states of the final layer in Transolver on Airfoil.
+
+
+
+
+               Figure 12. Visualizations of 64 learned eidetic states of the final layer in Transolver++ on Elasticity.
+
+
+
+
+                    Figure 13. Visualizations of 64 learned states of the final layer in Transolver on Elasticity.
+
+
+                                                                 16
+                                          Transolver++: An Accurate Neural Solver for PDEs on Million-Scale Geometries
+
+
+
+                   Ground Truth                   Transolver++ Prediction         Transolver Prediction                      GNOT Prediction
+                                                                                                                                                           0.1
+
+
+
+                                                                                                                                                           0
+
+
+
+                                                                                                                                                           -0.1
+
+
+                                                                                                                                                           0.1
+
+
+
+                      AirCraft                                                                                                                             0
+                    Error Map
+
+                                                                                                                                                           -0.1
+
+
+            Figure 14. Showcase comparison with Transolver and GNOT on AirCraft. A lighter color in the error map indicates a better performance.
+
+
+
+                    Ground Truth                   Transolver++ Prediction            Transolver Prediction                   GNOT Prediction
+
+449.
+                                                                                                                                                           500
+                                  452.                              450.                               454.
+
+
+
+
+                                                                                                                                                           -600
+-674.                             -625.
+                                                                    -626.                              -628.
+
+
+
+                                                                                                                                                           -1700
+
+
+-1.80e+03
+                                  -1.70e+03
+                                  100.                              100.
+                                                                    -1.70e+03
+                                                                                                       -1.71e+03
+                                                                                                       100.                                                100
+
+
+
+               DrivAerNet++ Surface                                                                                                                        0
+                      Error Map
+                                  0.00                              0.00                               0.00
+
+
+
+
+                                                                                                                                                           -100
+
+                                  -100.                                                                -100.
+                                                               -100.
+            Figure 15. Showcase comparison with Transolver and GNOT  on DrivAerNet++ Surface. A lighter error map means better performance.
+
+
+
+                 Ground Truth    Transolver++ Prediction Transolver Prediction          Ground Truth           Transolver++ Prediction Transolver Prediction
+
+
+
+
+                    Elasticity                                                            Airfoil
+                   Error Map                                                            Error Map
+
+
+
+
+            Figure 16. Showcase comparison with Transolver on Elasticity and Airfoil. A lighter color in the error map indicates a better performance.
+
+
+                                                                                 17
+

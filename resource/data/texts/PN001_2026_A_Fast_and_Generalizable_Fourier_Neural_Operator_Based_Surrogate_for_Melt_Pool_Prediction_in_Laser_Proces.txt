@@ -1,0 +1,1229 @@
+Journal of Intelligent Manufacturing
+https://doi.org/10.1007/s10845-026-02917-0
+
+
+
+
+A fast and accurate fourier neural operator-based surrogate for
+melt-pool prediction in laser processing
+Alix Benoit1 · Toni Ivas1 · Mateusz Papierz2 · Asel Sagingalieva2 · Alexey Melnikov2 · Elia Iseli1
+
+Received: 6 February 2026 / Accepted: 17 June 2026
+© The Author(s) 2026
+
+
+
+
+Abstract
+High-fidelity simulations of laser welding capture complex thermo-fluid phenomena, including phase change, free-surface
+deformation, and keyhole dynamics, but their computational cost limits large-scale process exploration and real-time use.
+In this work, we present the Laser Processing Fourier Neural Operator (LP-FNO), a Fourier Neural Operator (FNO)-based
+surrogate model that learns the parametric solution operator of laser processing from multiphysics simulations generated with
+FLOW-3D WELD® . Through a reformulation of the transient problem in a reference frame moving with the laser and the
+application of temporal averaging, the system is recast into a quasi-steady setting suitable for operator learning, even in the
+stable keyhole welding regime. The proposed LP-FNO maps process parameters to three-dimensional temperature fields and
+melt-pool boundaries across a broad process window spanning conduction and keyhole regimes using the non-dimensional
+normalized enthalpy formulation. The model achieves an average temperature relative error of approximately 2.5% and
+intersection-over-union scores for melt-pool segmentation above 0.9. Compared with a fully connected coordinate network,
+U-Net, and DeepONet, LP-FNO provides the strongest overall accuracy–efficiency trade-off for the present task, while
+retaining the resolution-invariant evaluation capability characteristic of FNOs. We demonstrate that an LP-FNO model trained
+on coarse-resolution data can be evaluated on finer grids, yielding accurate super-resolved predictions in mesh-converged
+conduction regimes, whereas discrepancies in keyhole regimes reflect unresolved dynamics in the coarse-mesh training data.
+These results indicate that LP-FNO provides an efficient surrogate modeling framework for laser welding, enabling prediction
+of full three-dimensional fields and phase interfaces over wide parameter ranges in just tens of milliseconds, up to a hundred
+thousand times faster than traditional finite-volume multiphysics simulations.
+
+Keywords Laser melting · Physics-informed neural networks · Fourier neural operator · Multi-physics simulation
+
+
+Introduction                                                      in geometrically constrained regions. However, laser weld-
+                                                                  ing involves strong multi-physics effects like transient heat
+Welding has long been a fundamental manufacturing process         transfer, fluid flows in the melt-pool, phase changes, free
+across many industrial sectors. Among the available tech-         surface deformations, to name a few. The many influencing
+niques, laser welding has gained particular importance due        parameters create a strong need for fast and accurate numer-
+to its ability to process dissimilar materials, deliver highly    ical simulations to understand and optimize the quality of
+localized and precisely controlled heat input, operate at high    these processes.
+speeds, and enable non-contact, easily automated processing          Traditionally, methods such as the Finite Volume Method
+                                                                  (FVM) and the Finite Element Method (FEM) have been
+                                                                  used, which provide accurate solutions and have become
+B Elia Iseli                                                      robust and widely used in industry (Michaleris, 2014;
+    elia.iseli@empa.ch
+                                                                  Mukherjee et al., 2017, 2018). They can yield tempera-
+1   Laboratory for Advanced Materials Processing, Swiss Federal   ture fields, melt pool shapes, solidification patterns, and
+    Laboratories for Materials Science and Technology,            other characteristics which can then be validated experi-
+    Feuerwerkerstrasse, Thun 3603, BE, Switzerland
+                                                                  mentally. However, these methods can be extremely slow
+2   Terra Quantum AG, Kornhausstrasse, St. Gallen 9000, SG,       and computationally expensive, especially with fine meshes,
+    Switzerland
+
+
+                                                                                                                    123
+                                                                                                   Journal of Intelligent Manufacturing
+
+
+strong melt-pool gradients, deep vapor depressions (key-           strength of NOs is that once trained, they can give near instan-
+holes), long tracks and multiple passes (Moreira et al., 2025).    taneous, physically consistent predictions of complete fields
+This computational cost can become especially problematic          across wide parameter ranges. Such a model would be invalu-
+for process control, or for situations with many parameter         able for applications such as laser welding, where real-time
+changes involved such as process optimization and uncer-           process control through a digital twin (DT), rapid process
+tainty quantification. There exist some simplified models          finding and optimization could strongly benefit or even only
+such as diffusion only models which can have faster run-           be enabled by this approach.
+times, but usually they have to compromise physical accuracy          There has already been some work done in this direction.
+and can only be used for a limited set of conditions. These        In (Manav et al., 2025) a neural network is presented to infer
+models frequently employ a simplified approach within the          temperature field, gradients, and melt-pool shape, but only
+framework of thermal-only models. This method approxi-             on a 2D slice. In (Liu et al., 2024) an example is given of
+mates the complex effects of melt pool convection by using an      an FNO-based digital twin for Laser Powder Bed Fusion (L-
+effective thermal conductivity (De & DebRoy, 2004; Saldi et        PBF) process control. The underlying model however does
+al., 2013; Kamara et al., 2011), while still suffering from the    not consider fluid dynamics or surface deformation. In (Safari
+same problems as aforementioned models. Therefore there            & Wessels, 2025) DeepONet and PINNs are used to simulate
+is a strong need for fast surrogate models which can retain        multi-track L-PBF processes, but only conduction is consid-
+high fidelity to the physical process of laser welding and can     ered. And finally, (Yaseen et al., 2023) combined FNO and
+be used in a broad range of varying process parameters.            DeepONet for modeling bead volume (volume of deposited
+    With the recent advances in Machine Learning (ML), work        material) and maximum melt-pool temperatures in Direct
+has been done to fill this gap through ML-based surrogate          Energy Deposition (DED) processes, but likewise focuses
+models (Li et al., 2021; Raissi et al., 2019; Karniadakis et       on the conduction regime, consistent with the intended DED
+al., 2021). One approach has been to incorporate the under-        scope.
+lying physics into either the architecture of neural networks,        Taken together, these studies demonstrate the potential
+or into their loss functions, creating physics informed neural     of machine-learning surrogates and neural operators for
+networks (PINNs). PINNs have successfully been applied to          laser-based manufacturing, but they do not address the com-
+some welding and additive manufacturing (AM) problems.             bination of challenges considered here. Methods restricted
+For example (Ko et al., 2024) gives an overview of some of         to two-dimensional slices cannot represent the full three-
+the recently published AM related work using PINNs, how-           dimensional melt-pool and keyhole geometry. Thermal-only
+ever it remains largely confined to the conduction (no vapor       or conduction-regime models neglect melt-pool hydrody-
+depressions) regime. Furthermore, a major drawback of stan-        namics, recoil-pressure-driven free-surface deformation, and
+dard PINNs is that they are typically trained to approximate       the strong laser absorption changes associated with key-
+the solution of a single PDE instance, that is for fixed parame-   hole formation. Similarly, models that predict only global
+ters, geometry, boundary/initial conditions. As a result, when     quantities, such as melt-pool volume or maximum melt-pool
+one changes the PDE parameters, geometry or boundary               temperature, do not provide spatially resolved temperature
+conditions, the network generally must be retrained (or at         fields or phase-interface geometries. As a result, existing
+least substantially adapted). Additionally, PINNs can be dif-      approaches either reduce the dimensionality of the prob-
+ficult to optimize (balancing multiple loss terms, dealing         lem, simplify the underlying physics, or remain confined to
+with multi-scale phenomena, dynamic/time-dependent prob-           conduction-dominated regimes. The main gap is therefore
+lems, stiff residuals) which limits their scalability to complex   the lack of a fast surrogate model that can predict full three-
+multi-physics or large parameter space settings (Li et al.,        dimensional fields and interfaces across both conduction and
+2024; Torres and Niepert, 2025).                                   stable keyhole welding regimes while retaining the essential
+    Instead of trying to approximate the solution of a PDE         thermo-fluid dynamic features of high-fidelity simulations.
+instance directly with a neural network, one can approximate          In this work, we present the Laser Processing Fourier Neu-
+the PDE family operator which maps input functions defining        ral Operator (LP-FNO), an FNO-based model for predicting
+the PDE family (boundary conditions, material parameters,          melt-pool characteristics in laser processing by considering
+arbitrary coefficients, etc.) to corresponding solution fields.    heat and fluid dynamics. Training data are generated from
+Such a model is called a neural operator (NO). Crucially,          high-fidelity thermo-fluid simulations of single-track laser
+NOs are trained on many different PDE solution fields, and         scans on Ti-6Al-4V, spanning a broad process window in
+can therefore generalize to new parameter sets or geometries       laser power and scan speed. The dataset covers multiple
+without retraining. Currently there exist various NO archi-        welding regimes, ranging from conduction modes to sta-
+tectures, such as DeepONet, Fourier NO (FNO), Graph NO             ble keyhole welding. To enable efficient operator learning,
+(GNO) and Convolutional NO (CNO) (Lu et al., 2021; Li              the problem is reformulated in a reference frame moving
+et al., 2021; Kovachki et al., 2023; Raonic et al., 2023). The     with the laser, allowing the governing dynamics to be treated
+
+
+123
+Journal of Intelligent Manufacturing
+
+
+in a quasi-steady setting. Once trained, the proposed LP-        et al., 2026). In particular on Ti-6Al-4V L-PBF processes
+FNO directly maps process parameters to three-dimensional        in Bayat et al. (2019); Chen et al. (2023b); Ransenigo et
+temperature fields and melt-pool geometries in a fraction        al. (2022); Wu et al. (2018) and in bulk Ti-6Al-4V welding
+of a second, up to a hundred thousand times faster than          in Bayat et al. (2024). In the VoF formulation, each com-
+the corresponding FVM simulation. To assess the benefit of       putational cell is assigned a metal volume fraction α (also
+the FNO architecture, LP-FNO is compared against several         referred to as metal-gas interface) representing the fraction
+neural surrogates, including a fully connected coordinate net-   of metal within each computational cell, with α = 1 in the
+work, a U-Net, and two DeepONet variants. The comparison         metal phase, α = 0 in the gas phase, and intermediate val-
+shows that LP-FNO provides the most favorable accuracy–          ues at the interface; this field is used as an important output
+efficiency trade-off for the present dataset, particularly for   to reconstruct the melt pool geometry. Thermal and fluid
+melt-pool segmentation and super-resolved inference. To the      dynamics are coupled via temperature-dependent Marangoni
+best of our knowledge, this is the first surrogate model-        convection and evaporation-induced recoil pressure, while
+ing approach that spans conduction and keyhole welding           laser energy absorption variations due to evolving keyhole
+regimes while treating keyhole dynamics within a quasi-          geometry are accounted for using a ray-tracing approach.
+steady operator-learning framework via time averaging. We        Thermophysical properties are taken from the FLOW-3D®
+employ a parameter sampling strategy based on normalized         database, with the surface tension set to 1.65 J/m2 and
+enthalpy (Hann et al., 2011), which provides a physically        a temperature coefficient of -2.4 × 10−4 (Formal Scien-
+motivated parameterization for covering the different weld-      tific Notation) (Katinas & Shin, 2020). The computational
+ing regimes evenly.                                              domain is defined as a 0.9 mm × 0.4 mm × 0.3 mm rectangu-
+                                                                 lar cuboid (length, width, height), discretized with a uniform
+                                                                 Cartesian mesh of 10 µm resolution. A pressure boundary
+Methodology                                                      condition with 1 atm was used on the top surface, and on
+                                                                 every other boundary, a temperature of 300 K was imposed.
+Physical Model and Data Generation                               Laser scanning is modeled as a Gaussian laser source of
+                                                                 radius 50 µm moving along the length direction. The simu-
+In this work Ti-6Al-4V was used as material. The intro-          lation results are written at every time step of 5 µs. The total
+duction of non-dimensional parameter variation (see below)       simulation time is set based on the scan speed such that the
+however was used as a first step towards model generalization    laser travels exactly 0.6 mm. The reference change and time
+not limited to a single material.                                averaging processes are described in Section Case specific
+Simulation Software.                                             processing.
+   The first step to build our surrogate FNO model is to         Process Parameter Variations.
+choose high-fidelity simulations as ground truth to train         While in principle any process or material parameter could
+the model. The laser melting process was simulated using         be varied, we choose to vary laser scan speed Vscan and
+a coupled multi-physics framework implemented in the             laser power P with ranges Vscan ∈ [0.1, 1] m2 and P ∈
+commercial software FLOW-3D WELD® 2025R1 (Flow                   [40, 190] W, in order to cover the different melting regimes,
+Science, Inc, 2025). Evaporation is modeled through the          lack of fusion (LoF), conduction melting and keyhole.
+added recoil pressure source term in the Navier–Stokes
+equations, an approach commonly used in previous stud-
+ies (Svenungsson et al., 2015; Aggarwal et al., 2024) because                         ηP
+                                                                 H∗ =                                                       (1)
+it substantially reduces computational cost (Flint et al.,                ρ (C p Tm + L) π D σ 3 Vscan
+2023) compared to fully compressible multiphase formula-
+tions (Zenz et al., 2024), while retaining sufficient accuracy       To decide how to sample the points within these ranges we
+for predicting melt pool dynamics. FLOW-3D WELD®                 first introduce the concept of normalized enthalpy (Hann et
+solves the Navier–Stokes equations with free-surface track-      al., 2011). Normalized enthalpy H ∗ is a non-dimensional
+ing using the Volume of Fluid (VoF) method, incorporating        number that describes the keyhole formation threshold,
+surface tension, recoil pressure, and heat transfer with phase   defined in Equ. 1 with values from Table 1. What is mainly
+change. While experimental measurements could in princi-         important for us is that H ∗ ∝ √VP . In order to have simi-
+                                                                                                    scan
+ple be used as ground truth, this study relies exclusively on    lar representation for both keyhole and conduction regimes,
+simulation data. FLOW-3D WELD® simulation data is used           we sample our data on an equally spaced grid in H ∗ and P,
+as ground truth as FLOW-3D® has already been extensively         and derive the corresponding Vscan from Equation 1. We then
+validated experimentally in both industrial and academic         select validation, and testing samples (used to evaluate super-
+contexts (Hemmasian et al., 2022; Ahn et al., 2025; Fulco        resolution accuracy) so as to span all H ∗ values, to make sure
+                                                                 all regimes from LoF to keyhole are accounted for, as shown
+
+
+                                                                                                                      123
+                                                                                                 Journal of Intelligent Manufacturing
+
+
+Table 1 Parameters used for
+                                   Symbol                       Value                                  Description
+normalized enthalpy evaluation.
+(*) Parameter taken at             η                            0.35                                   Absorptivity
+T = 298 K . (**) Parameter
+taken at Tsolidus = 1873 K         ρ                            4420 kgm−3                             Density (*)
+                                   Cp                           750 J kg−1 K−1                         Specific heat capacity (**) at
+                                   Tm                          1573 K                                 Temperature rise to melting
+                                   D                            8.1 × 10−6 m2 s−1                      Thermal diffusivity (**)
+                                   σ                            50 µm                                  Beam radius (1/e2 )
+                                   L                            3.45 × 105 J kg−1                      Latent Heat of Fusion
+                                   P                            40–190 W                               Laser power range
+                                   Vscan                        0.1–1 m s−1                            Scan speed range
+
+
+Fig. 1 Process-space coverage
+of high-fidelity simulation data
+generated with FLOW-3D
+WELD. The dataset spans laser
+power P ∈ [40 W, 190 W] and
+scan speed
+Vscan ∈ [0.1 ms−1 , 1.0 ms−1 ],
+and is constructed on a grid
+uniform in normalized enthalpy
+H ∗ and power. Markers denote
+the training, validation, and
+super-resolution test sets used
+for neural operator learning
+
+
+
+
+in Figure. 1. An example of a conduction regime simulation         a = (P, Vscan , H ∗), which is constant in space. The bound-
+is shown in Fig. 8 and a keyhole regime in Fig. 9.                 ary conditions g are described in the previous section.
+                                                                      The operator P : U × A → F denotes the differen-
+                                                                   tial operator defining the PDE, with U, A, and F taken as
+The Fourier Neural Operator
+                                                                   Banach spaces equipped with appropriate norms. Under stan-
+                                                                   dard well-posedness assumptions, the PDE admits a unique
+The classical Fourier Neural Operator architecture is used,
+                                                                   solution for each admissible parameter field a.
+which is described for modeling the laser melting, in the
+                                                                   Solution Operator.
+following section. One can see an overview diagram of the
+                                                                       This setting induces a solution operator
+LP-FNO in Figure 2.
+Mathematical Setting.
+   A class of steady (time-independent) partial differential       G † : A → U, a → u,                                           (3)
+equations posed on a bounded domain D ⊂ Rd is assumed.
+The problem is written in operator form as follows:
+                                                                   which maps the PDE parameters directly to the correspond-
+                                                                  ing solution. The goal of operator learning is to approximate
+    P(u, a) = 0, in D,                                             G † from data, rather than learning a solution for a fixed
+                                                          (2)
+    u = g,          on ∂ D,                                        instance of a.
+                                                                   For our case.
+where u ∈ U denotes the unknown solution field and a ∈ A              In this work, the governing equations are the Navier-
+represents a set of input parameters, typically corresponding      Stokes equations, and the heat equation with added laser
+to spatially varying coefficients, source terms, or material       source in the laser frame of reference, along with the VoF
+properties of the PDE. In our case u is the concatenation          equation (Flint et al., 2023).
+of temperature field T , the volume fraction α, and the liq-
+uid fraction f (T ) (computed from T , defined in Section          ∂α
+Case specific processing) and the variable parameter field is         + ∇ · (αU) = 0,                                             (4)
+                                                                   ∂t
+
+123
+Journal of Intelligent Manufacturing
+
+
+Where α is the volume fraction and U is the velocity field        linear map, and the second term implements a learned
+(not explicitly computed in our case). We look for stationary     integral operator through the Fourier transform F. This
+solutions of the equations, as part of our quasi-steady state     second term corresponds to a global convolution with a
+assumption.                                                       translation-invariant kernel; in Fourier space, such a convolu-
+   The FNO is employed to learn an approximation of the           tion becomes multiplication by a mode-dependent operator.
+solution operator G † that is resolution-invariant and defined    Mode truncation and learnable spectral weights.
+directly at the operator level, enabling generalization across    For a discretized field v , the Fourier transform yields
+different resolutions of the domain discretization. The exact     coefficients v (k) indexed by wave-vectors k. In practice,
+description of the governing equations is not necessary as        the Fourier-space operator R is implemented as a block-
+they are learned implicitly by the neural operator through        diagonal operator, where each retained Fourier mode k is
+the parameter-solution pairs during training.                     associated with a learnable matrix R (k) acting on the chan-
+Discretized operator learning problem.                            nel dimension. In the FNO, only a fixed set of low-frequency
+   In practice, the parameter field a(x) and the correspond-      modes is retained:
+ing solution field u(x) are observed on a grid (the FNO can                   
+be extended to non-cartesian meshes (Li et al., 2023), but                      R (k) v (k), k ∈ Km ,
+                                                                  v +1 (k) =                                                  (9)
+we still do the classical formulation here). Let Dh denote a                    0,              otherwise,
+discretization of D with n points (e.g., n = n x n y n z for a
+structured mesh in 3D), then the training dataset is given by     where Km denotes the retained index set (e.g. the first
+pairs:                                                            m 1 × · · · × m d modes). The truncation reflects the empirical
+                                                                observation that many PDE solution operators are well-
+                             N
+  a ( j) | Dh , u ( j) | Dh         ,                      (5)    approximated by their low-frequency content, while higher
+                              j=1                                 frequencies are either weakly excited or dominated by dis-
+                                                                  cretization noise. Computationally, the cost per layer scales
+where each pair corresponds to one quasi-steady simula-
+                                                                  as O(n log n) due to the FFT, while the learnable spectral
+tion instance. The learning task is to construct a parametric
+                                                                  multiplication acts only on O(m 1 · · · m d ) modes.
+operator Gθ such that Gθ (a) ≈ G † (a), and such that the
+                                                                  Input/output maps and physical fields.
+approximation remains meaningful when evaluated on a
+                                                                  The lifting map P and projection map Q are typically imple-
+different discretization Dh (i.e., generalization across res-
+                                                                  mented as pointwise multilayer perceptrons (MLPs). This
+olutions).
+                                                                  design keeps the network compatible with variable grid sizes,
+Architecture overview. The FNO approximates G † using a
+                                                                  which means that the same parameters are reused at each spa-
+composition of L operator layers acting on a latent field. The
+                                                                  tial location, and the Fourier mixing step is defined through
+construction is typically expressed as
+                                                                  FFTs on the current grid. For multi-physics settings, multiple
+Gθ = Q ◦ K(L) ◦ · · · ◦ K(1) ◦ P,                          (6)    input channels (e.g. power, scan speed, normalized enthalpy,
+                                                                  and grid coordinates in our case) may be concatenated into
+where P denotes an input “lifting” map into a higher-             a(x), while multiple output channels may be predicted jointly
+dimensional channel space, K( ) are Fourier layers, and Q is      (e.g. temperature, volume fraction, and liquid fraction in our
+an output projection back to the physical quantity of interest.   case).
+An initial latent representation is then formed by                Handling of boundaries.
+                                                                  In the current implementation, boundary conditions are not
+v0 (x) = P(a(x), x),                                       (7)    imposed as explicit hard constraints inside the FNO; instead,
+                                                                  their effect is learned from simulation data generated with
+where x = (x, y, z) denotes the spatial coordinate.               those boundary conditions. The FNO receives normalized
+Fourier layer as global convolution.                              coordinate channels together with process parameters, so
+Each Fourier layer is designed to mix information over the        the network can learn location-dependent behavior near
+entire domain efficiently, which is important for problems        domain boundaries. No separate boundary-loss term, such as
+where long-range coupling is present. The update at layer         a Dirichlet boundary, Neumann boundary, or surface-specific
+is written point-wise in physical space as                        boundary condition is imposed during the forward pass.
+                                                                  The configured zero padding extends the computational grid
+                                                             with a halo of zeros before the spectral convolution/Fourier
+v +1 (x) = σ        W v (x) + F −1 ◦ R ◦ F [v ] (x) , (8)         transform. This padding is used to reduce the artificial peri-
+                                                                  odic wrap-around inherent to Fourier transforms: without
+  where σ denotes a nonlinearity (GELU (Hendrycks &               padding, opposite sides of the physical domain are implicitly
+Gimpel, 2016) in our case), W is a learned point-wise             adjacent in spectral space, whereas the padded halo provides
+
+
+                                                                                                                      123
+                                                                                                     Journal of Intelligent Manufacturing
+
+Fig. 2 Architecture of LP-FNO
+forward pass
+
+
+
+
+a buffer region so learned global convolutions are less likely       Resolution invariance in practice.
+to couple unrelated boundaries directly. The padded values           The resolution-invariant behavior of the FNO is a conse-
+should therefore be interpreted as a numerical device for the        quence of (i) the point wise maps P and Q that do not depend
+spectral operator, not as a physical zero boundary condition;        on grid size and (ii) the Fourier mixing defined by a fixed set
+predictions are learned on the original physical domain. The         of retained modes (m 1 , . . . , m d ) rather than a fixed number
+top surface pressure boundary is not treated differently from        of grid points. As a result, the learned spectral weights R (k)
+fixed-temperature boundaries in the present FNO model. In            for a specific mesh resolution can be applied on another mesh
+fact, for the current temperature/phase runs, pressure bound-        resolution, provided the retained Fourier indices are repre-
+ary conditions enter only indirectly through the training data       sentable on the evaluation grid. For non-periodic domains or
+produced by the CFD solver; the FNO itself predicts T and α          non-periodic boundary conditions, padding or other bound-
+and applies the same spectral architecture and padding uni-          ary treatments are applied before computing the FFT so that
+formly across all spatial boundaries.                                the spectral convolution remains numerically stable. In our
+Training objective.                                                  case, while we have a periodic domain on some sides, most
+Training is performed using supervised pairs (a ( j) , u ( j) ) by   are equal to 300 K for the temperature field, the top side
+minimizing the empirical risk function:                              breaks periodicity; we thus employ a zero padding of size 9
+                                                                     around our domain boundary.
+      1
+          N                       2
+min             Gθ a ( j) − u ( j)   ,                       (10)    Other tested Architectures
+ θ    N                           Uh
+          j=1
+
+                                                                     To assess the contribution of the FNO architecture, we
+where · Uh denotes a discretized norm (in our case L 2               compare LP-FNO against four additional neural surrogate
+norm over grid points). When multiple fields are predicted,          architectures: a fully connected coordinate neural network, a
+there are multiple ways to aggregate them, the most simple           U-Net (Ronneberger et al., 2015), and two DeepONet (Lu et
+being a weighted sum. We opt for the ReLoBRaLo (Bischof              al., 2021) variants with either a fully connected or Fourier-
+& Kraus, 2025) aggregator, which was specifically designed           feature trunk.
+for PINNs.
+
+
+
+
+123
+Journal of Intelligent Manufacturing
+
+
+Fully Connected Coordinate-based Neural Network.                    where (a = (P, Vscan , H ∗ )), (bk (a)) are the branch-network
+The fully connected neural network (FC-NN) treats the sur-          outputs, and (tk (x)) are the trunk-network outputs. In this
+rogate modeling problem as a pointwise regression task.             sense, DeepONet represents a mapping from input conditions
+Each spatial location x = (x, y, z) is converted into an            to a continuous spatial field, rather than predicting an entire
+independent training sample by concatenating its normal-            grid through convolutional or spectral layers. This provides
+ized coordinates with the global process parameters, such           a useful comparison with LP-FNO, since both architectures
+as laser power P, scan speed Vscan , and normalized enthalpy        aim to learn an operator, but DeepONet evaluates the solution
+H ∗ . The resulting input vector is passed through a multilayer     pointwise through a branch–trunk factorization.
+perceptron with skip connections to predict the target fields           Two DeepONet variants are considered. In the fully
+at that spatial point,                                              connected trunk variant (DPN-FCT), the coordinate trunk
+                                                                    is implemented as a standard multilayer perceptron. This
+                           
+û(x) = Nθ x, P, Vscan , H ∗ ,                              (11)    tests whether the DeepONet factorization itself is benefi-
+                                                                    cial for the present laser-processing surrogate task without
+                                                                    imposing an explicit spectral coordinate basis. In the Fourier-
+where û(x) denotes the predicted field values, including tem-
+                                                                    trunk variant (DPN-FourierT), the coordinate input is first
+perature and phase-related quantities. This model provides a
+                                                                    transformed using Fourier feature embeddings before being
+direct measure of how much of the solution structure can
+                                                                    passed through the trunk network. This enriches the coor-
+be learned from local coordinates and process parameters
+                                                                    dinate representation with periodic basis functions and can
+alone. Because the FC-NN is evaluated pointwise, the pre-
+                                                                    improve the representation of high-frequency or rapidly vary-
+diction at each spatial location depends only on the local
+                                                                    ing spatial structure. In both cases, the branch network
+coordinates and global process parameters provided as input.
+                                                                    remains responsible for encoding the global process con-
+Spatial coherence is therefore learned only implicitly through
+                                                                    dition, while the trunk network determines how the learned
+the shared network parameters and the supervised loss over
+                                                                    operator is evaluated over space.
+many sampled points, rather than being enforced explicitly
+                                                                        These architectures therefore span three distinct modeling
+through convolutional neighborhoods, spectral mixing, or
+                                                                    strategies. The FC-NN tests purely pointwise coordinate-
+other field-level coupling mechanisms.
+                                                                    conditioned regression, the U-Net tests convolutional grid-
+U-Net.
+                                                                    based field prediction, and the DeepONet variants test
+The U-Net architecture retains the data in structured grid
+                                                                    pointwise operator learning with either learned or Fourier-
+form and learns a direct field-to-field mapping using a con-
+                                                                    enriched coordinate bases. Their comparison with LP-FNO
+volutional encoder–decoder architecture (Ronneberger et al.,
+                                                                    isolates the benefit of using spectral operator layers that act on
+2015). In contrast to the pointwise FC-NN, the U-Net pro-
+                                                                    the full field and mix information globally in Fourier space.
+cesses the full spatial domain simultaneously and can exploit
+                                                                    Super-resolution capabilities of the different architectures.
+local spatial correlations through convolutional filters. The
+                                                                    The theoretical ability to perform super-resolution differs
+encoder progressively compresses the grid representation
+                                                                    across these architectures. The U-Net is the most directly
+into increasingly abstract latent features, while the decoder
+                                                                    tied to the training discretization, since its convolutional
+reconstructs the output fields at the original resolution. Skip
+                                                                    encoder–decoder structure maps one fixed grid representa-
+connections between corresponding encoder and decoder
+                                                                    tion to another and does not define an intrinsic continuous or
+levels preserve fine-scale spatial information during recon-
+                                                                    resolution-invariant operator. By contrast, the FC-NN and
+struction. Nevertheless, the U-Net remains fundamentally
+                                                                    DeepONet architectures can, in practice, be evaluated at
+grid-based: its learned representation is tied to the discretiza-
+                                                                    arbitrary spatial coordinates and can therefore produce pre-
+tion used during training and does not provide the same
+                                                                    dictions on a finer grid than the one used during training. For
+resolution-invariant operator formulation as LP-FNO.
+                                                                    the FC-NN, this corresponds to coordinate-based regression:
+DeepONet.
+                                                                    each queried point is evaluated using its coordinates and the
+The DeepONet architectures use an operator-learning archi-
+                                                                    global process parameters, while spatial coherence is learned
+tecture with separate branch and trunk networks (Lu et al.,
+                                                                    only implicitly through the shared network weights rather
+2021). The branch network encodes non-coordinate condi-
+                                                                    than through explicit convolutional, spectral, or field-level
+tioning information, here given by the process parameters,
+                                                                    interactions. For DeepONet, this corresponds to pointwise
+while the trunk network encodes the spatial coordinate at
+                                                                    evaluation of a learned operator through the branch–trunk
+which the solution is queried. Their latent representations are
+                                                                    factorization: the branch network encodes the process param-
+combined to evaluate the predicted solution field pointwise,
+                                                                    eters, while the trunk network evaluates the output field at
+              p                                                     queried spatial coordinates. Thus, DeepONet does provide a
+û(x; a) =         bk (a) tk (x),                           (12)    form of discretization-independent operator evaluation, but
+             k=1
+                                                                    it does not process the full output grid through explicit field-
+
+
+                                                                                                                          123
+                                                                                                 Journal of Intelligent Manufacturing
+
+Fig. 3 Conduction regime
+(P = 70 W,
+Vscan = 0.298 ms−1 ). Temporal
+evolution of the mean absolute
+temperature difference in the
+laser reference frame.
+Quasi-static behavior appears
+around index tk = t30 for
+non-averaged data, and in
+averaged data from tk = t50 .
+Time averaging is defined in
+Equation 14
+                                                (a) No temporal averaging               (b) Averaging over a 30-step window
+
+Fig. 4 Keyhole regime
+(P = 150 W,
+Vscan = 0.542 ms−1 ). Temporal
+evolution of the mean absolute
+temperature difference in the
+laser reference frame. Temporal
+averaging suppresses
+high-frequency interface
+fluctuations, revealing
+quasi-static behavior once the
+laser has traveled a sufficient
+distance. Time averaging is
+defined in Equation 14                          (a) No temporal averaging               (b) Averaging over a 30-step window
+
+
+
+level convolutional or spectral interactions during inference.    yielding a total elapsed time of m x/V . This approach
+The FNO super-resolution mechanism is different: the same         aligns with treating the laser’s travel distance as the effec-
+learned spectral operator, parameterized by retained Fourier      tive evolution parameter, since simulations are run until a
+modes rather than by grid points, is applied to the full field    specified distance is reached rather than for a fixed physical
+on the new discretization. This provides a direct form of         time. We subsequently refer to time steps in the laser refer-
+resolution-invariant field-level operator evaluation, although    ence frame through indices as tk = kt, k ∈ N.
+its physical fidelity remains limited by the resolution and       Quasi-steadiness assumption and time averaging.
+convergence of the training data.                                 In the reference frame moving with the laser at constant
+                                                                  speed, temporal variations in the temperature field and melt-
+Case specific processing                                          pool interface were largely confined to small-scale interface
+                                                                  fluctuations, with minimal contribution from large-scale
+In order to use the FNO architecture for laser melting, dif-      melt-pool evolution. To evaluate whether these fields could
+ferent adjustments were made for consistent training.             be treated as quasi-static, we analyzed the temporal differ-
+Reference frame change.                                           ences between consecutive snapshots in the moving frame.
+To transform the data into the reference frame of a laser         This procedure has in particular limitations for deep, highly
+moving at a constant speed Vscan , the temporal sampling is       fluctuating keyhole conditions, which are characterized by
+chosen such that the laser displacement aligns exactly with       large aspect-ratio vapor cavities, pronounced humping of
+the underlying uniform computational grid. Given a spatial        the keyhole walls, possible periodic keyhole collapse, and
+grid with uniform spacing x, the time increment t is there-     the entrainment of gas pockets. These conditions lead to
+fore selected so that the laser travels precisely one grid cell   melt-pool dynamics that are fundamentally transient and
+per time step,                                                    stochastic. Under such conditions, the keyhole geometry
+                                                                  fluctuates on timescales comparable to or shorter than the
+        x                                                        averaging window, meaning that temporal averaging no
+t =         .                                            (13)    longer isolates a slowly varying mean field but instead blurs
+       Vscan
+                                                                  physically meaningful transient events that govern defect for-
+With this choice, the laser position coincides with grid points   mation. In practical laser-processing applications, however,
+at every time step in the moving reference frame, eliminating     such highly fluctuating regimes are typically avoided through
+the need for spatial interpolation. Consequently, if the laser    parameter selection and process control. This makes the more
+traverses a total distance corresponding to m grid cells, only    stable operating conditions–those captured by the model in
+m discrete time steps are retained in the transformed frame,      this work–the primary domain of practical relevance.
+
+
+123
+Journal of Intelligent Manufacturing
+
+
+Table 2 Reference values used for normalization                                 The region where 0 < f < 1 is called the "mushy zone"
+Characteristic parameter                    Symbol            Reference value   (Kurz et al., 2023). In this regime, the solid dendrites and
+                                                                                liquid metal coexist during phase transition like solidification
+Length                                      L                 1 × 10−4 m        or melting, and the fraction of the solid and liquid phases are
+Temperature                                 T                 3000 K            determined by the phase diagram of the substance. In our case
+Velocity                                    V                 1 × 10−1 m s−1    we assume that concentration variations are negligible and
+Power                                       P                 10 W              thermophysical and mechanical properties vary continuously
+Normalized enthalpy                         H                 5.9               with temperature. Although f is a thermodynamic quantity,
+                                                                                in this work it is primarily used as a geometric indicator
+                                                                                of the melt-pool boundary via thresholding at f = 0.5.
+   Figures 3 and 4 show the mean absolute difference                            The melt-pool region is thus defined by α(x) ≥ 0.5 and
+between the temperature field at two successive time steps,                      f (x) ≥ 0.5. During the forward passes of the LP-FNO, f
+ T (tk ) = T (tk ) − T (tk−1 ) , for both conduction and                       is computed from the inferred T field. It is then aggregated to
+keyhole welding regimes. Without temporal averaging, sig-                       the supervised loss for the backward pass in order to put extra
+nificant fluctuations persist in the keyhole regime (Figure                     emphasis on the network to learn the melt-pool boundary
+4a), reflecting the inherently unsteady dynamics of the vapor                   temperatures accurately.
+cavity and the associated melt-pool interface. In contrast, the                 Gas phase α-masking.
+conduction regime exhibits substantially smaller variations,                    As the quantities of interest are confined to the metallic
+indicating a closer proximity to steady behavior.                               domain, and since FLOW-3D WELD® does not explicitly
+   To isolate the large-scale, slowly varying structure of the                  model the gas phase, a smooth masking procedure is applied
+melt pool, a temporal averaging procedure is applied over a                     to suppress fields in the surrounding gas phase. Specifically,
+sliding window, defined as                                                      the continuous volume fraction α(x) ∈ [0, 1] is used to distin-
+                                                                                guish metal from gas, with α < 0.5 indicating regions outside
+                   k                                                            the metal. To preserve differentiability across the metal–gas
+             1
+T̄ (tk ) =               T (ti ),                                       (14)    interface, a smooth interpolation based on the hyperbolic tan-
+             n
+                 i=k−n                                                          gent function is defined:
+
+with n = 30 time steps in the moving frame. After averaging,                             1
+                                                                                g(x) =     [tanh(k (α(x) − 0.5)) + 1] ,                    (16)
+the magnitude of T̄ (tk ) approaches zero in both regimes.                              2
+This demonstrates that, once high-frequency interface oscil-
+lations are filtered out, the temperature field and melt-pool                   where k controls the sharpness of the transition (we use k =
+geometry exhibit only weak residual temporal dependence                         20). The temperature field is then smoothly blended toward
+after the laser has traveled a sufficient distance.                             a fixed value according to
+   These observations justify treating the melt pool as                                                           
+quasi-static in the laser reference frame, provided that an                     T̃ (x) = Tboil + g(x) T (x) − Tboil ,                      (17)
+appropriate temporal averaging is employed.
+Normalization of fields                                                         with Tboil = 3123 K corresponding to the boiling tempera-
+All fields used by the LP-FNO were normalized by divid-                         ture of Ti–6Al–4V. This operation is applied both after the
+ing by a typical reference value, so that they are all on the                   forward pass of the network during inference and during
+same order of magnitude to make learning easier. The used                       pre-processing of the ground-truth data, preventing the intro-
+reference values are indicated in Table 2.                                      duction of spurious sharp gradients at the keyhole interface.
+Computation of liquid fraction.                                                 During training, the mask is applied after 500 training steps,
+The liquid fraction f is the amount of liquid compared to                       so that the model has time to learn the general keyhole shape.
+solid and is defined as follows:                                                In addition, the liquid fraction f and inferred volume frac-
+                  ⎧                                                             tion α̂(x) are masked to zero outside the metal, ensuring that
+                  ⎪
+                  ⎪0,                     T (x) ≤ Ts ,                          they exclusively represent the melt-pool geometry.
+                  ⎨ T (x) − T
+f (T (x)) =
+                                    s
+                                        , Ts < T (x) < Tl ,             (15)    Implementation.
+                  ⎪
+                  ⎪  T − Ts                                                     We implemented the FNO, FC-NN, DeepONet, and U-Net
+                  ⎩ l
+                   1,                     T (x) ≥ Tl .                          models in Python using the PhysicsNeMo (NVIDIA Physic-
+                                                                                sNeMo Contributors, 2023) package from NVIDIA with
+where Ts and Tl are the solidus and liquidus temperatures                       hyper-parameters described in Table 6 in Appendix A, and
+of the metal respectively. For Ti-6Al-4V, Ts = 1873 K and                       trained the model on FLOW-3D WELD® laser welding sim-
+Tl = 1923 K were used, based on the FLOW-3D® database.                          ulations as described in Section Physical Model and Data
+
+
+                                                                                                                                     123
+                                                                                                          Journal of Intelligent Manufacturing
+
+
+Generation. For training we implement the LION optimizer
+from (Chen et al., 2023a). The model hyper-parameters were
+chosen so that the compared models would be approximately
+parameter matched with LP-FNO, and further tuned locally
+to improve accuracy metrics on the validation set.
+K-folds cross validation
+To evaluate the performance of the models, a validation sub-
+set was held out from the full dataset and used exclusively
+for hyperparameter tuning. Owing to the limited number                  Fig. 5 LP-FNO 3D inference result for keyhole regime simulation with
+of samples, the remaining data were evaluated using 8-fold              P = 150 W and Vscan = 0.54 ms−1 . Domain cut in half for visual
+cross validation. For each cross-validation split, the model            clarity. Visualized using ParaView (Ahrens et al., 2005)
+was trained on seven of the eight folds and evaluated on
+the remaining fold. The reported metrics were then averaged             and relative errors are computed as
+across all eight evaluation folds. To test super-resolution we
+used the classical train-validation-test set split from Figure 1                        MAE                             RMSE
+                                                                        RelMAE =               ,      RelRMSE =                ,         (22)
+due to the high computational and storage costs of fine mesh                            μy + ε                          μy + ε
+reference multi-physics simulations. To generate the plots
+in Figure 6, 10, and 11, we used the full dataset with cross-           with a small ε > 0 used for numerical stability.
+validation, as the errors are reported on a per-simulation basis           For the metal volume fraction α and the liquid fraction
+and any difference across validation folds would be readily              f (which effectively defines the melt-pool boundary), the
+apparent. The models converged across all outputs, both in              task can naturally be interpreted as a segmentation problem.
+terms of raw loss and in the test set per fold, which is shown          Therefore additionally the intersection over union (IoU) was
+in Appendix A, Figure 12.                                               investigated. Given a threshold of τ = 0.5, the predicted and
+Metrics for model performance evaluation.                               ground-truth binary masks for sample s can be defined as:
+For evaluating the model performance the mean absolute                                                                                
+error (MAE) was used which is defined as follows:                       M̂ (s) (x) = I ŷ (s) (x) ≥ τ ,       M (s) (x) = I y (s) (x) ≥ τ ,
+                       ⎛                        ⎞                                                                                        (23)
+                  N                          
+      1                ⎝ 1               (s) ⎠
+MAE =                                   e (x) ,                (18)
+      N                 |Dh |                                           and the IoU as follows:
+                s=1              x∈Dh
+                                                                                      N               (s) (x) M (s) (x)
+                                                                              1                     x∈Dh M̂
+as well as the root mean squared error (RMSE),                          IoU =                                          .              (24)
+                                                                              N                    (s)          (s)
+                                                                                     s=1  x∈Dh I M̂ (x) + M (x) ≥ 1
+                          ⎛                               ⎞
+                           
+                   N                                    2 ⎟
+              1           ⎜ 1                                          Relative metrics were not computed for α and f since these
+RMSE =                    ⎝                      e(s) (x) ⎠ .   (19)
+              N              |Dh |                                      fields are already dimensionless and consist largely of 0
+                  s=1                x∈Dh
+                                                                        valued points; thus, they are evaluated primarily through
+                                                                        absolute errors and IoU.
+where y (s) (x) denotes the ground-truth field and ŷ (s) (x) the
+predicted field for sample s ∈ {1, . . . , N } on the discretized
+domain Dh with |Dh | grid points. The point-wise error is               Results and Discussion
+defined as follows:
+                                                                           Once the LP-FNO has been trained, we can generate
+e(s) (x) = ŷ (s) (x) − y (s) (x).                               (20)   the temperature field and melt-pool from any set of pro-
+                                                                        cess parameters within the training range in a fraction of
+In addition to the MAE and the RMSE, corresponding                      a second for any desired mesh resolution. For example, if
+relative metrics were analyzed. For each output field, a nor-           we input the power P = 150 W and laser scanning speed
+malization constant was defined as the global mean of the               Vscan = 0.54 ms−1 , we get the temperature field and melt-
+ground-truth values over the evaluation set,                            pool shown in Figure 5 in around 8 ms for 10 µm resolution
+                                                                        and in around 88 ms for 5 µm resolution. This is more than ten
+                      N                                                 thousand times faster than the FLOW-3D® simulation equiv-
+       1                                                                alent at 10 µm resolution and around one hundred thousand
+μy =                             y (s) (x),                      (21)
+     N |Dh |                                                            times faster than FLOW-3D® at 5 µm resolution.
+                      s=1 x∈Dh
+
+
+123
+Journal of Intelligent Manufacturing
+
+
+Runtime comparison.                                              ceases to be a faithful surrogatev for the instantaneous melt-
+The inference and training runtimes reported in Table 3 show     pool state. Critically, porosity nucleation, spatter ejection,
+that LP-FNO is significantly faster than the tested neural       and the abrupt loss of keyhole stability are inherently non-
+surrogate architectures with comparable trainable parame-        equilibrium phenomena whose signatures are destroyed by
+ter counts. Although the FC-NN and U-Net architectures           the averaging operation, and a quasi-steady surrogate cannot,
+contain approximately three times more trainable parame-         by construction, predict them.
+ters than LP-FNO, their runtimes are substantially more than        The segmentation of the melt-pool ( f ) in Figure 10 and
+three times larger. The two DeepONet architectures, by con-      the metal-gas interface α in Figure 11 in Appendix A, demon-
+trast, have almost the same number of trainable parameters       strate a similar pattern. The same outlier is present and the
+as LP-FNO, making the runtime comparison particularly            high enthalpy, keyhole edge of the map has higher error,
+direct. The corresponding architectures and hyperparame-         except for the melt-pool IoU error. This is expected since the
+ters are summarized in Table 6. The difference is most           melt-pool is larger in the high enthalpy regime, which shrinks
+pronounced for inference on the super-resolved 5 µm grid.        small segmentation errors in comparison to the same error in
+Pointwise architectures, such as FC-NN and DeepONet, must        a small melt-pool. Similar reasoning explains why IoU errors
+evaluate individual spatial locations, whereas grid-based        in Figure 10c and 10d have comparatively large magnitudes,
+models process the full computational domain in a single         especially in the low power and low enthalpy regimes, since
+forward pass, leading to substantially lower inference times     melt-pools in those regimes can be very small, an error of
+on large domains. Moreover, as exemplified by its poor super-    even one voxel makes up a few percents of the total melt-
+resolution accuracy in Table 5, the U-Net architecture is not    pool and is thus amplified.
+intrinsically resolution-invariant. Its 5 µm runtime should      Average metrics for 10 µm mesh.
+therefore not be interpreted as meaningful super-resolved        More generally, Table 4 shows that LP-FNO performs
+inference in the same sense as LP-FNO. Overall, among the        well across all reported metrics. For the temperature field,
+tested surrogate models capable of super-resolved inference,     LP-FNO achieves an average absolute error of 15.7 K, cor-
+LP-FNO is approximately two orders of magnitude faster on        responding to approximately 2.5%, and an RMSE of 33.5 K,
+the 5 µm grid.                                                   corresponding to 5.31%. For the metal–gas interface α, the
+Metrics across different parameter combinations for 10 µm        average absolute error is 0.0024, with an RMSE of 0.0163
+mesh.                                                            and a near-perfect IoU of 0.9992. For the full melt-pool
+To evaluate how well our model performs over different           segmentation, the average absolute error is 0.0020, with an
+parameter combinations, we first consider our metrics as a       RMSE of 0.0327 and an IoU of 0.922. The discrepancy
+heat map over the entire parameter domain using K-folds to       between the α and f IoU values is expected, since the melt-
+identify areas in the map where the model performs partic-       pool region denoted by f is much smaller than the full metal
+ularly well or poorly. We see in Figure 6 that there appears     region denoted by α. Consequently, small absolute segmenta-
+to be one outlier point at P = 50 W, Vscan = 0.122 ms−1 ,        tion errors represent a larger fraction of the melt-pool volume
+which lies at edge of our data in start of conduction-keyhole    and therefore have a stronger effect on the f IoU. The mod-
+transition. Looking more closely at the inference of α on that   erate increase from MAE to RMSE indicates that localized
+point in Figure 7, we see that as this is a transition point,    regions of larger error are present, but that these errors remain
+the model is unsure as to whether this is a keyhole point of     limited and confined to specific regions on the boundaries of
+not, leading to some smearing of the interface. Within this      the process space, as confirmed by Figure 6, Figure 11, and
+region of parameter space, the keyhole geometry is very sen-     Figure 10.
+sitive to process parameters. Combined with the lack of data     Accuracy comparison of different model architectures.
+in the region, this makes accurate predictions harder for ML     The accuracy comparison with the different architectures in
+models, leading to higher errors as seen in Figure 6. Other      Table 4 further indicates that LP-FNO provides the strongest
+than at this point, the model performs quite strongly with       overall performance for the present task. It achieves the low-
+most points on the map having an average temperature error       est temperature errors across all reported temperature metrics
+of 10 K, with the error rising slightly to around 25 K at the    and the best melt-pool segmentation performance, with the
+high enthalpy (low speed, high power) keyhole region of the      highest f IoU and lowest f RMSE. The FC-NN model is
+map, as anticipated due to the increased complexity of these     also surprisingly competitive despite its simpler architecture,
+regions and the lack of training data on the edges of the        particularly for temperature prediction and α reconstruction,
+map. Indeed, if we were to extrapolate the model to normal-      suggesting that a substantial part of the mapping can be
+ized enthalpy levels higher than around 6, we would move         learned from local coordinate and process-parameter infor-
+beyond the onset of unstable keyhole behavior which would        mation. However, LP-FNO remains more consistent across
+be unsuitable for our current quasi-steady formulation. In       the different output fields, especially for the melt-pool bound-
+this high enthalpy region, the time-averaged representation      ary. While FC-NN achieves competitive accuracy for several
+
+
+                                                                                                                       123
+                                                                                                                    Journal of Intelligent Manufacturing
+
+
+Table 3 Comparison of computational runtimes for high-fidelity FLOW-3D® simulations and neural surrogate models.
+Method                                        Data layout                 Training time                    10 μm mesh                       5 μm mesh
+
+FLOW-3D® simulation                           –                           –                                6 min 7 s                        1 h 6 min
+FC-NN inference                               pointwise                   2 h 52 min                       2.21 s                           32.5 s
+DPN-FCT inference                             pointwise                   1 h 5 min                        803 ms                           15.6 s
+DPN-FourierT inference                        pointwise                   1 h 42 min                       385 ms                           7.42 s
+U-Net inference                               grid                        52 min 13 s                      51.1 ms                          861 ms
+LP-FNO inference                              grid                        8 min 20 s                       7.70 ms                          87.9 ms
+
+FLOW-3D® runtimes correspond to transient simulations at power 50 W, scan speed 0.260 ms−1 , and scan distance 0.6 mm. Surrogate runtimes report
+one-time training cost, where available, and per-sample inference time. Inference timings were measured on an Ubuntu 24.04.3 LTS workstation
+with an Intel Core i9-10900X CPU, 125 GiB RAM, and dual NVIDIA TITAN RTX GPUs, although only one GPU was used at a time. FLOW-3D®
+simulations were run on an AMD Ryzen Threadripper 7960X using 16 cores. The fastest times are marked in bold
+
+Table 4 Comparison of model error metrics reported as fold means across 8 folds, excluding the validation set used for hyperparameter tuning.
+Metric                               LP-FNO                   DPN-FCT                     DPN-FourierT                   FC-NN                     U-Net
+
+T abs. mean err. [K]                   15.7                        30.1                         37.3                        19.2                   27.1
+T RMSE [K]                             33.5                        57.0                         64.6                        34.8                   44.6
+T rel. mean err. [%]                   2.49                        4.78                         5.91                        3.05                   4.30
+T rel. RMSE [%]                        5.31                        9.05                         10.26                       5.52                   7.08
+α abs. mean err.                      0.0024                    0.0072                         0.0102                    0.0028                   0.0097
+α RMSE                                0.0163                    0.0233                         0.0254                    0.0158                   0.0257
+α IoU mean                            0.9992                    0.9989                         0.9989                    0.9990                   0.9990
+f abs. mean err.                      0.0020                    0.0110                         0.0132                    0.0029                   0.0028
+f RMSE                                0.0327                    0.0985                         0.1087                    0.0375                   0.0397
+f IoU mean                            0.9216                    0.7016                         0.6629                    0.9044                   0.8966
+Absolute temperature errors are reported in kelvin after multiplying the normalized values by Tr e f = 3000, and relative temperature errors are
+reported in percent. Relative metrics are not reported for α and f because they are already dimensionless. Best values are highlighted in bold;
+lower is better except for IoU mean
+
+Table 5 Comparison of model error metrics on the super-resolution test data evaluated on a 5 µm mesh.
+Metric                              LP-FNO                  DPN-FCT                    DPN-FourierT                  FC-NN                  U-Net
+
+T abs. mean err. [K]                27.7                    32.7                       83.3                          28.2                   2.75 × 104
+T RMSE [K]                          65.5                    67.5                       196                           59.0                   2.67 × 105
+T rel. mean err. [%]                4.58                    5.40                       13.8                          4.67                   4.55 × 103
+T rel. RMSE [%]                     10.8                    11.2                       32.5                          9.75                   4.42 × 104
+α abs. mean err. [-]                0.00361                 0.00630                    0.0109                        0.00525                18.9
+α RMSE [-]                          0.0357                  0.0332                     0.0725                        0.0354                 196
+α IoU mean [-]                      0.998                   0.998                      0.994                         0.998                  0.991
+f abs. mean err. [-]                0.00750                 0.0134                     0.0237                        0.00797                0.0321
+f RMSE [-]                          0.0764                  0.110                      0.149                         0.0776                 0.176
+f IoU mean [-]                      0.768                   0.611                      0.252                         0.758                  0.000930
+Absolute temperature errors are reported in Kelvin, and relative temperature errors are reported in percent. Best values are highlighted in bold; lower
+is better except for IoU mean. For U-Net, the 5 µm evaluation is included only to illustrate the failure of direct resolution transfer for a grid-bound
+architecture; it should not be interpreted as valid super-resolved inference
+
+
+
+
+123
+Journal of Intelligent Manufacturing
+
+Fig. 6 Model error maps over
+the process parameter space.
+The color scale indicates the
+average absolute error for the
+predicted temperature field.
+Solid lines denote approximate
+regime indicators corresponding
+to lack of fusion (blue),
+conduction (green), and unstable
+keyhole (red). White markers
+indicate simulation samples
+used for training and evaluation
+with k-folds cross validation
+                                       (a) Average absolute temperature error (b) Average absolute temperature error
+                                       (Kelvin) as a function of laser power P and (Kelvin) as a function of laser power P and
+                                       normalized enthalpy H *                     scan speed Vscan
+
+Fig. 7 Gas–metal interface (α)
+ground truth and FNO inference
+for an outlier case at P = 50 W
+and Vscan = 0.122 ms−1 , where
+the model exhibits its largest
+deviation. This operating point
+lies close to the transition
+between conduction and keyhole
+regimes, where the model
+exhibits increased uncertainty.
+The model begins to smear a                        (a) Ground truth                                (b) LP-FNO prediction
+small keyhole-like feature in the
+α field, which also leads to
+smearing in the temperature
+field because the model is
+uncertain about the local regime.
+A few additional training data
+points in this region would
+likely greatly reduce this error
+
+temperature and interface metrics, it is substantially slower         on a representative sample with mesh size 5 µm, covering
+at inference, especially on the finer grid. This indicates            all physical regimes from conduction to keyhole depicted by
+that the main advantage of LP-FNO is not only its accu-               the test set points in Figure 1. We do not run K-folds on the
+racy, but its combined accuracy, computational efficiency,            entire grid here due to the high computational and storage
+and resolution-invariant evaluation. These results should not,        costs of fine mesh reference multi-physics simulations. This
+however, be interpreted as a definitive statement that FNOs           super-resolution evaluation should therefore be interpreted
+are universally superior to the tested models. The accuracy           as a dedicated test-set study rather than a full cross-validated
+differences between all the models are relatively small, and          assessment.
+further architecture design or more extensive hyperparameter              We can see the comparison between the coarse and fine
+tuning could plausibly reduce the gap. Nevertheless, under            mesh simulation and inference results for a conduction
+the training protocol, parameter ranges, and model configu-           regime parameter set in Figure 8 and for a keyhole regime set
+rations considered in this study, the FNO-based architecture          in Figure 9. In both cases, the super-resolved FNO inference
+provides the most favorable accuracy–efficiency trade-off.            is essentially a finer representation of the coarse inference
+Super Resolution.                                                     result. This is expected, and as such, the result is as accurate as
+One of the strongest features of FNO is that, as described            the training set was accurate. In other words, the FNO enables
+in Section Resolution invariance in practice, it is resolu-           numerical super-resolution, but it cannot recover physical
+tion independent. We can train FNO on coarse simulation               features that are absent from the coarse-mesh training data.
+data, which is much faster to obtain (time and data size              Hence, we have good agreement in the conduction mode
+grow cubically with mesh refinement), and perform infer-              simulation, since the corresponding coarse and fine FLOW-
+ence of the model on a much finer mesh with runtime that              3D® simulations are close to each other. However, for the
+remains within the same practical real-time range. We eval-           keyhole mode, we see that the fine FLOW-3D® simulation
+uate our model trained on simulations with mesh size 10 µm            is slightly more complex than the coarse counterpart, and
+
+
+                                                                                                                             123
+                                                                                                  Journal of Intelligent Manufacturing
+
+
+hence, the super-resolved FNO inference result cannot fully       lower-fidelity simulations and subsequently fine-tuned on a
+capture the complexity of the fine FLOW-3D® reference sim-        smaller set of high-fidelity simulations.
+ulation. The discrepancy in the keyhole regime is therefore       Possible future extensions.
+primarily attributed to the lack of mesh convergence of the       Other potential immediate extensions of the present frame-
+10 µm training data in this regime, rather than to the neural     work include coupling the LP-FNO predictions to additional
+operator alone.                                                   process-relevant quantities beyond temperature and phase
+    The super-resolution metrics in Table 5 show that the         interfaces. For example, microstructure evolution, cooling
+errors in the super-resolved case are roughly double those        rates, residual stresses, and distortion could be incorporated
+of the non-super-resolved case in Table 4. As discussed, the      either as additional output fields or through a sequential
+discrepancy primarily comes from the lack of mesh conver-         surrogate pipeline linked to dedicated solidification and
+gence for the 10 µm mesh size training data in the keyhole        mechanics models. The same moving-frame and operator-
+regime. Compared with the tested architectures, LP-FNO            learning formulation is also not limited to laser welding,
+provides the strongest overall super-resolution performance,      and could be extended to other moving heat-source pro-
+achieving the lowest temperature mean error, the lowest f         cesses such as laser powder bed fusion, directed energy
+error, and the highest f IoU. The FC-NN model remains             deposition, electron beam welding, or electron beam melt-
+competitive for temperature prediction and even obtains the       ing, provided that suitable high-fidelity training data are
+lowest temperature RMSE, but LP-FNO is more consistent            available. Another important direction is the integration of
+across the temperature, metal–gas interface, and melt-pool        experimental data, for example metallographic melt-pool
+outputs. Moreover, the U-Net architecture is demonstrated         cross-sections or in-situ thermal measurements, to calibrate
+not to be intrinsically resolution-invariant, as reflected by     or fine-tune the simulation-trained surrogate and improve its
+its poor super-resolution accuracy in Table 5. One possible       predictive reliability under real processing conditions. Lastly,
+strategy to improve physical fidelity in all regimes, while       moving beyond the quasi-steady formulation toward tran-
+keeping computational training cost reasonable, would be to       sient neural-operator surrogates would allow highly unstable
+employ a coarse-to-fine training strategy, where FNO is first     keyhole regimes, high-frequency interface fluctuations, pore
+trained on a large set of coarse-mesh simulations, then pro-      formation, and arbitrary nonlinear welding trajectories to
+gressively fine-tuned on finer meshed data for regimes where      be modeled. However, this would constitute a substantially
+training data has not yet reached mesh convergence. Such a        more challenging learning problem due to the increased
+multi-fidelity strategy could preserve the low cost of coarse     dimensionality of the input-output mapping and the greater
+simulations while improving the fidelity of the surrogate in      complexity of the transient thermo-fluid dynamics.
+regimes where fine-mesh effects are physically important.         Long-term methodological outlook.
+Generalization to new materials.                                  Beyond these application-driven extensions, a longer-term
+The LP-FNO framework is, in principle, material-agnostic at       methodological direction concerns the parameter efficiency
+the architectural level; however, the trained model presented     of high-resolution 3D neural operators. An important lim-
+in this work is specific to Ti-6Al-4V, since only this mate-      itation of high-resolution 3D FNO surrogates is that their
+rial was considered in the training data. Generalization to       dominant trainable component, the dense spectral channel-
+other materials would therefore require either retraining or      mixing weights, can become a parameter and memory
+extending the input parameterization to include relevant ther-    bottleneck as the number of retained modes and latent chan-
+mophysical properties, such as density, heat capacity, thermal    nels increases, especially when extending to richer physics
+conductivity, absorptivity, latent heat, and solidus/liquidus     or higher-fidelity meshes. A natural future direction is there-
+temperatures. A rigorous assessment of cross-material gener-      fore to explore parameter-efficient spectral mixing, including
+alization is left for future work. One possible strategy would    hybrid quantum-classical variants where a configurable sub-
+be to define a target class of materials and generate training    set of Fourier-layer channel mixing is produced by a small,
+data spanning the corresponding range of material properties,     mode-shared parametrized quantum circuit rather than many
+including synthetic combinations of properties that do not        independent dense matrices. The motivation for quantum
+necessarily correspond to a specific existing alloy. This would   circuits here is not near-term runtime acceleration, but rep-
+allow the model to learn trends across material-property          resentational efficiency.
+space rather than memorizing isolated material cases. Open
+questions remain regarding the required density of training
+samples and the most efficient way to cover this space while      Conclusion
+minimizing the number of expensive simulations. To reduce
+the computational cost, a multi-fidelity strategy could be        In this work, we presented LP-FNO, a Fourier Neural
+employed, in which the model is first trained on coarse-mesh,     Operator surrogate model for predicting quasi-steady melt-
+                                                                  pool characteristics in laser processing across regimes
+
+
+123
+Journal of Intelligent Manufacturing
+
+Fig. 8 Conduction-regime
+melt-pool mid-point
+cross-section comparison for a
+test case with P = 70.0 W and
+Vscan = 0.298 m s−1 . In contrast
+to the keyhole regime, the
+coarse and fine FLOW-3D®
+solutions are visually similar,
+indicating that mesh
+convergence is effectively
+achieved at 10 µm resolution in
+the conduction regime
+
+
+
+
+Fig. 9 Keyhole-regime
+melt-pool mid-point
+cross-section comparison for a
+test case with P = 150.0 W and
+Vscan = 0.54 ms−1 . The
+fine-resolution FNO result is
+obtained by super-resolving a
+model trained exclusively on
+coarse (10 µm) data. The visible
+discrepancy between coarse and
+fine FLOW-3D solutions
+indicates that mesh convergence
+has not yet been achieved at
+10 µm resolution in the keyhole
+regime. This shows that while
+useful, FNO super-resolution
+can only be as good as its
+training data fidelity
+
+
+
+
+ranging from conduction to stable keyhole welding. High-       steady formulation is best suited to conduction and stable
+fidelity thermo-fluid simulations generated with FLOW-3D       keyhole regimes; highly unstable keyhole collapse, pore for-
+WELD® were used as reference data, and the transient           mation, and strongly transient welding paths would require
+laser-processing problem was reformulated in a moving          a transient surrogate formulation.
+laser frame. By applying temporal averaging after the             The trained LP-FNO achieved accurate predictions of
+melt pool had formed, the problem was recast into a            temperature, metal–gas interface, and melt-pool geometry
+quasi-steady operator-learning setting suitable for predict-   over the investigated Ti-6Al-4V process window, while
+ing three-dimensional temperature fields and phase-interface   reducing inference time from minutes or hours for high-
+geometries directly from process parameters. This quasi-       fidelity simulations to milliseconds. Compared with the
+
+
+                                                                                                                123
+                                                                                                Journal of Intelligent Manufacturing
+
+
+tested FC-NN, U-Net, and DeepONet architectures, LP-FNO              Future work should focus on experimental calibration
+provided the most favorable overall trade-off between accu-       and validation, multi-material training, coupling to addi-
+racy, inference speed, and resolution-invariant evaluation as     tional physics such as microstructure evolution and residual
+seen in Tables 3, 4, and 5. The FC-NN baseline was nev-           stress, extension beyond the quasi-steady formulation toward
+ertheless competitive for several temperature and interface       transient neural-operator surrogates for highly unstable key-
+metrics, indicating that coordinate-based models can cap-         hole regimes and nonlinear welding trajectories, and more
+ture a substantial part of the process-parameter dependence,      parameter-efficient adaptations of the FNO architecture.
+although at significantly higher inference cost on large grids.
+   A key advantage of LP-FNO is its ability to evaluate the
+learned operator on grids finer than those used during train-     Appendix A Extra figures on LP-FNO Conver-
+ing. The super-resolution results show that this capability       gence and Hyperparameters
+is effective when the coarse training data already contain
+the relevant physical structure, as observed in the conduc-
+tion regime. In the keyhole regime, however, discrepancies
+between coarse- and fine-mesh FLOW-3D WELD® simula-
+tions limit the achievable fidelity of super-resolved predic-
+tions. This highlights that neural-operator super-resolution
+is ultimately bounded by the physical fidelity and mesh con-
+vergence of the training data.
+
+
+
+
+Fig. 10 Melt-pool (liquid
+fraction f ) segmentation
+performance across the process
+window. Top row: average
+absolute error. Bottom row: IoU
+error (1-IoU) computed after
+thresholding at f ≥ 0.5.
+Results are shown in two
+parameterizations: (P, Vscan )
+and (P, H ). Good segmentation
+overall, except for one outlier at
+P = 50 W,
+Vscan = 0.122 ms−1 , which lies
+at edge of data in start of
+conduction-keyhole transition
+                                                                    (P-H*)
+
+
+
+
+                                                                   (P-H*)
+
+
+123
+Journal of Intelligent Manufacturing
+
+Fig. 11 Metal–gas interface (α)
+segmentation performance
+across the process window. Top
+row: average absolute error.
+Bottom row: IoU error (1−IoU)
+computed after thresholding at
+α ≥ 0.5. Results are shown in
+two parameterizations: (P, H )
+(left) and (P, Vscan ) (right)
+
+
+
+
+                                       (a) Avg. absolute error for α (P–H )   (b) Avg. absolute error for α (P–Vscan )
+
+
+
+
+                                       (c) IoU error (1−IoU) for α (P–H )     (d) IoU error (1−IoU) for α (P–Vscan )
+
+
+Fig. 12 Training convergence
+metrics for tested architectures
+under 8-fold cross-validation,
+excluding the validation-set
+simulations used for
+hyperparameter tuning.
+Consistent convergence is
+observed across all outputs, with
+LP-FNO showing the fastest
+overall convergence among the
+tested models. The aggregated
+training losses in (a) of the
+pointwise models, namely
+FC-NN and DeepONet, are not
+directly comparable to the
+grid-based models because their
+losses are evaluated on batches
+of sampled points rather than on
+the full simulation grid.
+Therefore, the relative
+downward trend of each curve is
+more informative than the
+absolute aggregated loss value
+
+
+
+
+                                                                                                             123
+                                                                                                                 Journal of Intelligent Manufacturing
+
+
+Table 6 Architecture hyperparameters for tested models. All models use the same normalized input variables, x, y, z, Vscan , P, H ∗ , and predict
+the same output fields, T and α; the liquid fraction f is computed from the predicted temperature field using Equation 15.
+Parameter                      LP-FNO                 DPN-FCT                   DPN-FourierT                 U-Net                      FC-NN
+
+Input representation           grid                   pointwise                 pointwise branch–            grid                       pointwise
+                                                      branch–trunk              trunk
+Main architecture              FNO                    DeepONet                  DeepONet                     Pix2Pix U-Net              FC-NN
+Spatial dimension              3                      3                         3                            3                          3
+FNO layers                     3                      –                         –                            –                          –
+Fourier modes                  [20, 18, 8]            –                         –                            –                          –
+FNO padding                    9                      –                         –                            –                          –
+Decoder / network              3                      32 / 32                   32 / 32                      3 downsam-                 48
+depth                                                                                                        pling, 3 blocks
+Hidden width /                 90                     1024 / 1024               1024 / 1024                  128                        2048
+channels
+Trunk type                     –                      fully connected           Fourier features             –                          –
+Fourier trunk fre-             –                      –                         axis, 0–9                    –                          –
+quencies
+Activation function            GELU                   GELU                      GELU                         –                          GELU
+Skip connections               disabled               enabled                   enabled                      U-Net connec-              enabled
+                                                                                                             tions
+Total parameter                70,801,900             67,250,176                67,311,616                   207,388,418                197,345,282
+count
+Learning rate                  1 × 10−4               3 × 10−5                  3 × 10−5                     1 × 10−5                   1 × 10−5
+Decay rate                     0.96                   0.98                      0.98                         0.95                       0.98
+Training batch size            1                      10000                     10000                        1                          10000
+Maximum training               6000                   6000                      6000                         6000                       6000
+steps
+Loss aggregator                ReLoBRaLo              ReLoBRaLo                 ReLoBRaLo                    ReLoBRaLo                  ReLoBRaLo
+Optimizer                      Lion                   Lion                      Lion                         Lion                       Lion
+Parameters that are not applicable to a given architecture are marked with “–”. For training, all models use the ReLoBRaLo loss aggregator with
+(α, β, τ ) = (0.95, 0.99, 3.0), the Lion optimizer, exponential learning-rate decay with decay steps of 100, 6000 training steps, a moving reference
+frame, a time-averaging window of 30 steps
+
+
+                                                                            unless indicated otherwise in a credit line to the material. If material
+                                                                            is not included in the article’s Creative Commons licence and your
+Acknowledgements We would like to thank Empa and Terra Quantum              intended use is not permitted by statutory regulation or exceeds the
+AG for supporting this work.                                                permitted use, you will need to obtain permission directly from the copy-
+                                                                            right holder. To view a copy of this licence, visit http://creativecomm
+Funding Open Access funding provided by Lib4RI – Library for the            ons.org/licenses/by/4.0/.
+Research Institutes within the ETH Domain: Eawag, Empa, PSI &amp;
+WSL.
+
+Declarations                                                                References
+
+Competing Interests The authors declare that they have no competing         Ahrens, J., Geveci, B., & Law, C. (2005). ParaView: An End-User
+interests.                                                                      Tool for Large-Data Visualization. Elsevier. https://doi.org/10.
+                                                                                1016/B978-012387582-2/50038-1. https://linkinghub.elsevier.
+Open Access This article is licensed under a Creative Commons                   com/retrieve/pii/B9780123875822500381 Accessed 2026-01-27.
+Attribution 4.0 International License, which permits use, sharing, adap-    Ahn, S.-H., Song, I., Bae, J., Jeong, G.-H., Cho, D.-W., & Park, Y.
+tation, distribution and reproduction in any medium or format, as               W. (2025). A novel heat source model for welding and additive
+long as you give appropriate credit to the original author(s) and the           manufacturing: The traveling steady pool approach. Journal of
+source, provide a link to the Creative Commons licence, and indi-               Manufacturing Processes, 153, 471–486. https://doi.org/10.1016/
+cate if changes were made. The images or other third party material             j.jmapro.2025.09.012
+in this article are included in the article’s Creative Commons licence,     Aggarwal, A., Shin, Y. C., & Kumar, A. (2024). Unravelling keyhole
+                                                                                instabilities and laser absorption dynamics during laser irradiation
+
+
+123
+Journal of Intelligent Manufacturing
+
+
+     of Ti6Al4V: A high-fidelity thermo-fluidic study. International         Ko, T., Kim, H., Shin, Y., Kim, D., Lee, Y. H., Hong, J., & Lee, S. H.
+     Journal of Heat and Mass Transfer, 219, Article 124841. https://             (2024). Review of Recent Additive Manufacturing and Welding
+     doi.org/10.1016/j.ijheatmasstransfer.2023.124841                             Research with Application of Physics-Informed Neural Networks.
+Bischof, R., & Kraus, M. A. (2025). Multi-Objective Loss Balancing for            Journal of Welding and Joining,42(4), 357–365. https://doi.org/10.
+     Physics-Informed Deep Learning. Computer Methods in Applied                  5781/JWJ.2024.42.4.3. Accessed 2025-10-22
+     Mechanics and Engineering, 439, Article 117914. https://doi.org/        Kovachki, N., Li, Z., Liu, B., Azizzadenesheli, K., Bhattacharya, K.,
+     10.1016/j.cma.2025.117914. Accessed 2026-01-25.                              Stuart, A., & Anandkumar, A. (2023). Neural Operator: Learning
+Bayat, M., Rothfelder, R., Schwarzkopf, K., Zinoviev, A., Zinovieva, O.,          Maps Between Function Spaces With Applications to PDEs. Jour-
+     Spurk, C., Hummel, M., Olowinsky, A., Beckmann, F., Moosmann,                nal of Machine Learning Research, 24(89), 1–97. http://jmlr.org/
+     J., Schmidt, M., & Hattel, J. H. (2024). Exploring spatial beam              papers/v24/21-1524.html.
+     shaping in laser powder bed fusion: High-fidelity simulation and        Katinas, C., & Shin, Y. C. (2020). Prediction of initial transient
+     in-situ monitoring. Additive Manufacturing, 93, Article 104420.              behavior with stationary heating during laser powder bed fusion
+     https://doi.org/10.1016/j.addma.2024.104420                                  processes. International Journal of Heat and Mass Transfer, 153,
+Bayat, M., Thanki, A., Mohanty, S., Witvrouw, A., Yang, S., Thorborg,             Article 119663. https://doi.org/10.1016/j.ijheatmasstransfer.2020.
+     J., Tiedje, N. S., & Hattel, J. H. (2019). Keyhole-induced porosities        119663
+     in Laser-based Powder Bed Fusion (L-PBF) of Ti6Al4V: High-              Kamara, A. M., Wang, W., Marimuthu, S., & Li, L. (2011). Modelling of
+     fidelity modelling and experimental validation. Additive Manufac-            the Melt Pool Geometry in the Laser Deposition of Nickel Alloys
+     turing, 30, Article 100835. https://doi.org/10.1016/j.addma.2019.            Using the Anisotropic Enhanced Thermal Conductivity Approach.
+     100835                                                                       Proceedings of the Institution of Mechanical Engineers, Part B:
+Chen, X., Liang, C., Huang, D., Real, E., Wang, K., Pham, H., Dong,               Journal of Engineering Manufacture,225(1), 87–99. https://doi.
+     X., Luong, T., Hsieh, C.-J., Lu, Y., & Le, Q. V. (2023). Symbolic            org/10.1177/09544054JEM2129. Accessed 2026-01-26
+     discovery of optimization algorithms. Advances in Neural Infor-         Li, Z., Huang, D. Z., & Liu, B. (2023). Fourier Neural Operator with
+     mation Processing Systems, 36, 49205–49233.                                  Learned Deformations for PDEs on General Geometries. Journal
+Chen, D., Li, G., Wang, P., Zeng, Z., & Tang, Y. (2023). Numerical                of Machine Learning Research, 24(388), 1–26. http://www.jmlr.
+     simulation of melt pool size and flow evolution for laser powder             org/papers/v24/23-0064.html.
+     bed fusion of powder grade Ti6Al4V. Finite Elements in Analysis         Lu, L., Jin, P., & Karniadakis, G. E. (2021). DeepONet: Learning non-
+     and Design, 223, Article 103971. https://doi.org/10.1016/j.finel.            linear operators for identifying differential equations based on the
+     2023.103971                                                                  universal approximation theorem of operators. Nature Machine
+De, A., & DebRoy, T. (2004). A smart model to estimate effective                  Intelligence,3(3), 218–229. https://doi.org/10.1038/s42256-021-
+     thermal conductivity and viscosity in the weld pool. Journal                 00302-5. Accessed 2025-09-04
+     of Applied Physics,95(9), 5230–5240. https://doi.org/10.1063/1.         Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhattacharya, K.,
+     1695593. Accessed 2026-01-26                                                 Stuart, A., & Anandkumar, A. (2021). Fourier neural operator for
+Fulco, E., Coviello, D., & Sargente, D. (2026). Numerical analysis                parametric partial differential equations. In: International Confer-
+     of the effect of stationary laser beam properties on Al-Si coat-             ence on Learning Representations. https://openreview.net/forum?
+     ing mixing in 22MnB5 steel. International Journal of Heat and                id=c8P9NQVtmnO
+     Mass Transfer, 255(2), Article 127899. https://doi.org/10.1016/j.       Liu, N., Li, X., Rajanna, M. R., Reutzel, E. W., Sawyer, B., Rao, P., Lua,
+     ijheatmasstransfer.2025.127899                                               J., Phan, N., & Yu, Y. (2024). Deep neural operator enabled digital
+Flow Science, Inc. (2025). FLOW-3D WELD®. Flow Science, Inc.,                     twin modeling for additive manufacturing. Advances in Computa-
+     Santa Fe, NM, USA. https://flow3d.com                                        tional Science and Engineering,2(3), 174–201. https://doi.org/10.
+Flint, T. F., Robson, J. D., Parivendhan, G., & Cardiff, P. (2023). laser-        3934/acse.2024010. Accessed 2025-11-18
+     beamFoam: Laser ray-tracing and thermally induced state transi-         Li, Z., Zheng, H., Kovachki, N., Jin, D., Chen, H., Liu, B., Aziz-
+     tion simulation toolkit. SoftwareX,21, Article 101299. https://doi.          zadenesheli, K., & Anandkumar, A. (2024). Physics-Informed
+     org/10.1016/j.softx.2022.101299. Accessed 2025-09-16                         Neural Operator for Learning Partial Differential Equations. ACM
+Hendrycks, D., & Gimpel, K. (2016). Gaussian Error Linear Units                   / IMS Journal of Data Science,1(3), 1–27. https://doi.org/10.1145/
+     (GELUs). arXiv Version Number: 5. https://doi.org/10.48550/                  3648506. Accessed 2025-09-04
+     ARXIV.1606.08415 Accessed 2026-01-25                                    Moreira, C. A., Chiumenti, M., Caicedo, M. A., Baiges, J., & Cervera,
+Hann, D. B., Iammi, J., & Folkes, J. (2011). A simple methodol-                   M. (2025). High-fidelity part-scale simulations in metal addi-
+     ogy for predicting laser-weld properties from material and laser             tive manufacturing using a computationally efficient and accurate
+     parameters. Journal of Physics D: Applied Physics,44(44), Arti-              approach. Additive Manufacturing, 104, Article 104748. https://
+     cle 445401. https://doi.org/10.1088/0022-3727/44/44/445401.                  doi.org/10.1016/j.addma.2025.104748. Accessed 2026-01-25.
+     Accessed 2026-01-07                                                     Michaleris, P. (2014). Modeling metal deposition in heat transfer
+Hemmasian, A., Ogoke, O.F., Akbari, P., Malen, J., Beuth, J., &                   analyses of additive manufacturing processes. Finite Elements
+     Barati Farimani, A. (2022). Surrogate Modeling of Melt Pool Ther-            in Analysis and Design,86, 51–60. https://doi.org/10.1016/j.finel.
+     mal Field Using Deep Learning. Social Science Research Network,              2014.04.003. Accessed 2026-01-25
+     Rochester, NY. https://doi.org/10.2139/ssrn.4190835. Accessed           Manav, M., Perraudin, N., Lin, Y., Afrasiabi, M., Perez-Cruz, F., Bam-
+     2026-01-25                                                                   bach, M., & De Lorenzis, L. (2025). MeltpoolINR: predicting
+Kurz, W., Fisher, D.J., & Rappaz, M. (2023). Fundamentals of Solidi-              temperature field, melt pool geometry and their rate of change
+     fication, 5th fully revised edition edn. Foundations of Materials            in laser powder bed fusion. Journal of Intelligent Manufacturing.
+     Science and Engineering, vol. 103. Trans Tech Publications                   https://doi.org/10.1007/s10845-025-02692-4. Accessed 2026-01-
+     Ltd, Bäch, Switzerland. https://doi.org/10.4028/b-v7b35q. https://           08
+     infoscience.epfl.ch/handle/20.500.14299/245295                          Mukherjee, T., Wei, H. L., De, A., & DebRoy, T. (2018). Heat and fluid
+Karniadakis, G. E., Kevrekidis, I. G., Lu, L., Perdikaris, P., Wang, S.,          flow in additive manufacturing-Part I: Modeling of powder bed
+     & Yang, L. (2021). Physics-informed machine learning. Nature                 fusion. Computational Materials Science, 150, 304–313. https://
+     Reviews Physics,3(6), 422–440. https://doi.org/10.1038/s42254-               doi.org/10.1016/j.commatsci.2018.04.022. Accessed 2026-01-25.
+     021-00314-5Accessed 2026-01-25                                          Mukherjee, T., Zhang, W., & DebRoy, T. (2017). An improved predic-
+                                                                                  tion of residual stresses and distortion in additive manufacturing.
+
+
+                                                                                                                                          123
+                                                                                                                 Journal of Intelligent Manufacturing
+
+
+     Computational Materials Science, 126, 360–372. https://doi.org/               transport and flow reversal during cool down on weld pool
+     10.1016/j.commatsci.2016.10.003. Accessed 2026-01-25.                         shapes in laser spot welding of steel. International Journal of
+NVIDIA PhysicsNeMo Contributors. (2023). NVIDIA PhysicsNeMo:                       Heat and Mass Transfer,66, 879–888. https://doi.org/10.1016/j.
+     An open-source framework for physics-based deep learning in sci-              ijheatmasstransfer.2013.07.085. Accessed 2026-01-26.
+     ence and engineering. https://github.com/NVIDIA/physicsnemo              Safari, H., & Wessels, H. (2025). Physics-Informed Surrogates for Tem-
+Ronneberger, O., Fischer, P., & Brox, T. (2015). U-Net: Convolutional              perature Prediction of Multi-Tracks in Laser Powder Bed Fusion.
+     Networks for Biomedical Image Segmentation. In: Navab, N.,                    arXiv. arXiv:2502.01820 [cs]. Accessed 2025-11-18
+     Hornegger, J., Wells, W.M., Frangi, A.F. (eds.) Medical Image            Torres, E., & Niepert, M. (2025). Adaptive physics-informed neural
+     Computing and Computer-Assisted Intervention – MICCAI 2015.                   networks: A survey. Transactions on Machine Learning Research,
+     Lecture Notes in Computer Science, vol. 9351, pp. 234–241.                    Survey Certification.
+     Springer, Cham. https://doi.org/10.1007/978-3-319-24574-4_28             Wu, Y.-C., Hwang, W.-S., San, C.-H., Chang, C.-H., & Lin, H.-J. (2018).
+Raonic, B., Molinaro, R., De Ryck, T., Rohner, T., Bartolucci, F.,                 Parametric study of surface morphology for selective laser melting
+     Alaifari, R., Mishra, S., & Bezenac, E. (2023). Convolutional                 on Ti6Al4V powder bed with numerical and experimental meth-
+     Neural Operators for Robust and Accurate Learning of PDEs. In:                ods. International Journal of Material Forming,11(6), 807–813.
+     Advances in Neural Information Processing Systems (NeurIPS)                   https://doi.org/10.1007/s12289-017-1391-2
+     36. https://doi.org/10.48550/arXiv.2302.01178                            Yaseen, M., Yushu, D., German, P., & Wu, X. (2023). Fast and accurate
+Raissi, M., Perdikaris, P., & Karniadakis, G. E. (2019). Physics-                  reduced-order modeling of a MOOSE-based additive manufac-
+     informed neural networks: A deep learning framework for solving               turing model with operator learning. The International Journal
+     forward and inverse problems involving nonlinear partial differen-            of Advanced Manufacturing Technology,129(7–8), 3123–3139.
+     tial equations. Journal of Computational Physics, 378, 686–707.               https://doi.org/10.1007/s00170-023-12471-1. Accessed 2026-01-
+     https://doi.org/10.1016/j.jcp.2018.10.045. Accessed 2025-09-04.               05
+Ransenigo, C., Tocci, M., Palo, F., Ginestra, P., Ceretti, E., Gelfi, M., &   Zenz, C., Buttazzoni, M., Florian, T., Armijos, K. E. C., Vázquez, R.
+     Pola, A. (2022). Evolution of Melt Pool and Porosity During Laser             G., Liedl, G., & Otto, A. (2024). A compressible multiphase mass-
+     Powder Bed Fusion of Ti6Al4V Alloy: Numerical Modelling and                   of-fluid model for the simulation of laser-based manufacturing
+     Experimental Validation. Lasers in Manufacturing and Materials                processes. Computers & Fluids, 268, Article 106109. https://doi.
+     Processing, 9(4), 481–502. https://doi.org/10.1007/s40516-022-                org/10.1016/j.compfluid.2023.106109
+     00185-3
+Svenungsson, J., Choquet, I., & Kaplan, A. F. (2015). Laser welding
+     process-a review of keyhole welding modelling. Physics procedia,         Publisher’s Note Springer Nature remains neutral with regard to juris-
+     78, 182–191. https://doi.org/10.1016/j.phpro.2015.11.042                 dictional claims in published maps and institutional affiliations.
+Saldi, Z. S., Kidess, A., Kenjereš, S., Zhao, C., Richardson, I. M.,
+     & Kleijn, C. R. (2013). Effect of enhanced heat and mass
+
+
+
+
+123
+

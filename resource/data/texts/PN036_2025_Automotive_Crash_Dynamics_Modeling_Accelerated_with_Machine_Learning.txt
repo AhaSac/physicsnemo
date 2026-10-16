@@ -1,0 +1,928 @@
+                Automotive Crash Dynamics Modeling Accelerated with Machine Learning
+
+                                                                                                           Mohammad Amin Nabian
+                                                                                                                                       NVIDIA
+
+                                                                                                                         Sudeep Chavare
+                                                                                                                               General Motors
+
+                                      Deepak Akhare , Rishikesh Ranade , Ram Cherukuri and Srinivas Tadepalli
+                                                                                                                                       NVIDIA
+
+Abstract                                                                  imperative. Crashworthiness, defined as the ability of a vehicle's
+                                                                          structure to protect its occupants during an impact, is a primary driver
+                                                                          of the design and validation process. This focus is enforced by
+Crashworthiness assessment is a critical aspect of automotive design,
+                                                                          stringent government regulations and amplified by consumer safety
+traditionally relying on high-fidelity finite element (FE) simulations
+                                                                          rating programs, which have created a competitive landscape where
+that are computationally expensive and time-consuming. This work
+                                                                          occupant protection is a key market differentiator. The engineering
+presents an exploratory comparative study on developing machine
+                                                                          challenge of crashworthiness is profoundly complex, extending
+learning-based surrogate models for efficient prediction of structural
+                                                                          beyond simple structural strength. It involves the orchestrated
+deformation in crash scenarios using the NVIDIA PhysicsNeMo
+                                                                          management of kinetic energy during a collision, where specialized
+framework. Given the limited prior work applying machine learning to
+                                                                          components like crumple zones are meticulously designed to deform
+structural crash dynamics, the primary contribution lies in
+                                                                          in a controlled manner, absorbing impact energy and decelerating the
+demonstrating the feasibility and engineering utility of the various
+                                                                          vehicle to mitigate forces transferred to the occupant survival space.
+modeling approaches explored in this work. We investigate two state-
+of-the-art neural network architectures for modeling crash dynamics:
+MeshGraphNet, a graph neural network that is widely employed in           The design of these safety-critical systems is an inherently iterative
+physics-based simulations, and Transolver, a transformer-based            process. Engineers must evaluate a multitude of design variants,
+architecture with a physics-aware attention mechanism designed to         exploring the effects of geometric modifications, material selections,
+maintain linear computational complexity with respect to geometric        and component thicknesses on key performance indicators such as
+scale. Additionally, we examine three strategies for modeling transient   structural deformation, occupant compartment intrusion, and vehicle
+dynamics: Time-Conditional, where the temporal state is directly          deceleration profiles [1]. Each design choice represents a compromise
+parameterized by time; the standard Autoregressive approach, which        between safety, weight, cost, and manufacturability, necessitating a
+recursively propagates predictions through time; and a stability-         high volume of evaluations to converge on an optimal solution [2, 3].
+enhanced Autoregressive scheme incorporating rollout-based training
+to improve prediction accuracy and long-term temporal consistency.        High-Fidelity Finite Element Simulations
+The models are evaluated on a comprehensive Body-in-White (BIW)
+crash dataset comprising 150 detailed FE simulations using LS-            For several decades, the primary tool for virtual crashworthiness
+DYNA. The dataset represents a structurally rich vehicle assembly         assessment has been high-fidelity Finite Element Analysis (FEA) [4].
+with over 200 components, including 38 key components featuring           FEA revolutionized automotive design by providing a virtual
+variable thickness distributions to capture realistic manufacturing       alternative to the prohibitively expensive and time-consuming process
+variability. Each model utilizes the undeformed mesh geometry and         of building and destructively testing physical prototypes. The finite
+component characteristics as inputs to predict the spatiotemporal         element method operates by discretizing a complex vehicle structure
+evolution of the deformed mesh during the crash sequence. Evaluation      into a mesh of smaller, simpler elements. By solving the fundamental
+results show that the models capture the overall deformation trends       equations of motion and material behavior for each element, FEA can
+with reasonable fidelity, demonstrating the feasibility of applying       provide a detailed, full-field prediction of the dynamic, non-linear
+machine learning to structural crash dynamics. Although not yet           events that unfold during a crash, including large plastic deformations,
+matching full FE accuracy, the models achieve orders-of-magnitude         buckling, and component interactions [5].
+reductions in computational cost, enabling rapid design exploration
+and early-stage optimization in crashworthiness evaluation.               The historical development of FEA for crash simulation reflects a
+                                                                          continuous pursuit of higher fidelity, driven by advances in
+The code for this work is available at:                                   computational power. Early, simplified approaches using spring-mass
+                                                                          models gave way to sophisticated continuum models employing
+https://github.com/NVIDIA/physicsnemo/tree/main/examples/structu          millions of shell and solid elements to represent a full vehicle with
+ral_mechanics                                                             remarkable geometric detail. This evolution was critically enabled by
+                                                                          the development of explicit time integration solvers, which are well-
+Introduction                                                              suited to handle the highly transient, non-linear dynamics
+                                                                          characteristic of impact events, including complex contact and
+                                                                          material folding phenomena that implicit solvers struggled with [4, 6].
+In the modern automotive industry, the assurance of vehicle safety is
+not merely a design consideration but a fundamental engineering
+Page 1 of 17
+
+10/16/2025
+Today, FEA stands as the undisputed gold standard for virtual vehicle       carefully selected, time-consuming simulations to performing
+validation.                                                                 comprehensive, near-instantaneous exploration of the entire design
+                                                                            space [9].
+Limitations of Traditional Methods
+                                                                            This shift represents more than a mere increase in speed; it is a
+While FEA was developed to overcome the bottleneck of physical              fundamental change in the methodology of scientific computation,
+testing, the relentless increase in vehicle complexity, material            moving from a physics-first to a data-first approach. An FEA solver's
+diversity, and safety requirements has ironically transformed high-         "knowledge" is encoded in the mathematical formulation of physical
+fidelity FEA itself into a significant computational bottleneck in the      laws, such as the conservation of momentum. In contrast, an AI
+modern design cycle. The very detail that makes FEA so powerful is          surrogate's "knowledge" is encoded in the learned weights of a neural
+also the source of its primary limitation: immense computational cost.      network, derived entirely from observing the results of those physical
+A single, full-vehicle crash simulation can demand more than 15 hours       laws as manifested in simulation data. This establishes a new economic
+of computation on a 16-CPU high-performance computing (HPC)                 model for simulation: a significant upfront investment in generating a
+cluster [7]. In the early days of its application, such simulations could   diverse training dataset is amortized over a virtually limitless number
+take months to complete, rendering the results obsolete before they         of subsequent, near-zero-cost predictions. This model is exceptionally
+were even obtained.                                                         well-suited for the early-stage design process, where rapid iteration
+                                                                            and broad exploration are paramount. A Comparative Analysis of FE
+                                                                            simulations and ML models for crashworthiness assessment is
+This computational burden is particularly acute in the early stages of
+                                                                            presented in Table 1.
+design, where the freedom to innovate is greatest and the need for rapid
+feedback is most critical. The cost of FEA scales poorly with model
+                                                                            Table 1: Comparative Analysis       of   Simulation   Methodologies      for
+resolution; for some analyses, the computational complexity can be          Crashworthiness Assessment.
+cubic in the number of nodes, meaning that a desire for higher accuracy
+through mesh refinement leads to an exponential increase in simulation       Metric                  FE Simulation           ML Model
+time. This reality forces a constant and often suboptimal trade-off
+between fidelity and speed. Analysts must make expert judgments              Computation Time        Hours to Days (per      Hours to Days
+about where to apply a fine mesh (e.g., the front crumple zone) and                                  simulation)             (training), Seconds
+where a coarse mesh will suffice (e.g., the rear of the vehicle), a                                                          (per inference)
+process that requires significant manual effort and introduces potential
+inaccuracies. The high cost per simulation severely constrains the           Hardware                HPC Clusters            HPC Clusters
+number of design alternatives that can be explored, stifling innovation      Requirement                                     (training), Single GPU
+                                                                                                                             Workstation
+and extending development timelines.
+                                                                                                                             (inference)
+
+This dynamic illustrates a recurring pattern in engineering: the tool        Design Iteration        Slow; limits            Rapid; enables large-
+developed to solve one generation's bottleneck becomes the bottleneck        Speed                   exploration to a few    scale, automated
+for the next. Physical prototypes were once the limiting factor, leading                             candidate designs       design space
+to the development of FEA. Now, the complexity of modern design                                                              exploration and
+has pushed FEA into that same role, creating a clear and urgent need                                                         optimization
+for the next evolution in simulation technology.
+                                                                             Underlying Principle    Physics-Based:          Data-Driven: Learns
+                                                                                                     Numerically solves      the PDE solution from
+A New Paradigm: AI-Driven Surrogates for                                                             PDEs.                   a simulation dataset.
+Accelerated Simulation                                                       Physical Fidelity       High (Considered        Medium to High
+                                                                                                     Ground Truth for        (Learns to replicate
+In response to the computational challenge posed by FEA, a new                                       virtual testing)        ground truth within
+paradigm is emerging: the use of AI-driven surrogate models. A                                                               engineering
+surrogate model, also known as a metamodel or response surface, is a                                                         tolerances).
+data-driven approximation of a complex, computationally expensive
+function or simulation. Instead of solving the governing physical            Flexibility to New      High: Can be            Low: Requires
+                                                                             Physics or out-of-      implemented directly    retraining or fine-
+equations from first principles for every new design, a surrogate model      distribution samples    into the solver.        tuning on new data.
+learns the underlying input-output mapping directly from data
+generated by a set of high-fidelity simulations. Once trained, these
+models can make predictions in milliseconds to seconds, offering a
+speed-up of several orders of magnitude compared to the original
+                                                                            Surrogate modeling of full-vehicle crash dynamics using machine
+simulation [8].
+                                                                            learning remains a nascent but rapidly emerging research area. Li et al.
+                                                                            [10] proposed Recurrent Graph U-Net (ReGUNet), a graph neural
+The recent confluence of powerful deep learning algorithms and              network surrogate tailored for crashworthiness prediction of vehicle
+scalable computing hardware has catalyzed a revolution in this field.       panel components; this model embeds recurrence to track temporal
+Neural network-based surrogates have demonstrated an extraordinary          evolution and reports less than 1% error on B-pillar intrusion metrics
+capacity to approximate the highly non-linear, high-dimensional             in a side-crash case study. Guennec et al. [11] benchmarked classical
+physics that govern complex engineering systems, from fluid                 reduced-order surrogates against neural field models for crash
+dynamics to structural mechanics. This transformative capability            simulation data, highlighting the trade-offs between model
+allows the engineering workflow to shift from conducting a few,
+Page 2 of 17
+
+10/16/2025
+compactness and expressivity in capturing spatiotemporal                   MeshGraphNet: A high-performance Graph Neural Network (GNN)
+deformations. Meanwhile, Thel et al. [12, 13] introduced the Finite        designed for mesh-based physical simulation. GNNs operate directly
+Element Method Integrated Networks (FEMIN) framework, in which             on the connectivity structure of meshes, representing finite element
+large regions of a crash-simulation mesh were replaced by neural           nodes as graph nodes and edges as connectivity relationships. This
+networks, thereby accelerating simulations while retaining coupling        grants them a powerful relational inductive bias, enabling them to learn
+with the remaining FEM domain. André et al. [14] explored a more           localized physical interactions consistent with underlying mechanics.
+modular approach by embedding a feedforward neural network                 MeshGraphNet’s architecture has demonstrated strong capabilities for
+surrogate for connector (joint) models—e.g. self-piercing rivets and       accurately modeling complex structural interactions while maintaining
+flow-drill screws—in large-scale explicit crash simulations. In the        computational efficiency [18, 19, 20].
+structural-dynamics domain more broadly, Wen et al. [15] proposed a
+GNN + Temporal Convolutional Network (TCN) hybrid to forecast              Predicting Long-Term Dynamic Behavior: Transient
+nonlinear responses of irregular components represented as graphs,         Schemes
+enabling efficient spatiotemporal prediction across complex
+geometries. To our knowledge, the present work is the first to apply a
+fully data-driven surrogate to capture the complete vehicle-level crash    Accurate transient prediction is a core requirement for crash modeling,
+                                                                           as the simulation must faithfully reproduce the entire time history of
+dynamics (i.e. all structural parts interacting over time), rather than
+                                                                           the event while maintaining physical plausibility and stability. We
+focusing solely on panels, joints, or localized subsystems.
+                                                                           systematically evaluate three distinct transient prediction schemes:
+
+Scope of Exploration and Key Contributions                                 Time-Conditional (Non-Autoregressive): In this approach, the
+                                                                           model is trained to predict the system state at an arbitrary time step
+Building on the motivation outlined above — the need to overcome the       directly from the initial state and time condition, without stepping
+computational bottleneck of high-fidelity FEA while retaining              sequentially through intermediate states.
+physical accuracy — this work takes a systematic approach to explore
+the applicability and promise of advanced ML models for automotive         Autoregressive with One-Step Training (AR-OT): Here, the model
+crash modeling, laying the groundwork for future developments in this      learns to predict the state at the next time step given only the current
+rapidly evolving area. By investigating the strengths and limitations of   state. To generate the full sequence, predictions are rolled forward
+state-of-the-art neural architectures and temporal schemes, this study     step-by-step.
+aims to chart a path toward the development of practical, high-fidelity
+ML surrogates that can transform how crashworthiness is evaluated.
+                                                                           Autoregressive with Rollout Training (AR-RT): Here, the stability
+                                                                           challenge is explicitly addressed by training the model over multi-step
+We frame this exploration around two central objectives:                   rollouts rather than isolated one-step predictions. During training, the
+                                                                           model predicts several or the entire steps ahead, with its own outputs
+     •    Capturing geometric and structural interactions —                fed back as inputs. This forces the model to learn to correct its own
+          understanding how different parts of the vehicle structure       accumulated errors, improving stability and robustness for long-term
+          interact under complex loading conditions.                       prediction. AR-RT is computationally more intensive during training
+     •    Predicting long-term dynamic behavior — maintaining              but offers superior fidelity in transient prediction.
+          causality, physical accuracy, and stability over the full
+          course of a crash event.                                         These schemes represent different trade-offs between flexibility,
+                                                                           stability, and computational cost, and comparing them is a core part of
+Achieving these objectives requires targeted exploration of model          this study.
+architectures capable of representing structural physics and temporal
+schemes that ensure robust dynamic prediction.                             Validation
+
+Capturing Geometric and Structural Interactions                            We validate this framework on a full vehicle Body-in-White (BIW)
+                                                                           dataset with variable component thicknesses. The results demonstrate
+We investigate two leading architectures designed for unstructured         that the model can learn the complex relationship between initial
+mesh data, representing complementary approaches to modeling crash         design parameters and the full-field, time-evolving response of the
+dynamics:                                                                  structure, including deformation.
+
+Transolver: A novel attention-based model that approaches the              Implementation using NVIDIA PhysicsNeMo
+problem from a different angle. Rather than operating directly on the
+mesh topology, Transolver learns a latent physical state representation    The ML surrogate models presented in this work have been developed
+of the system and performs attention-based updates within this learned     using the NVIDIA PhysicsNeMo [21], a highly optimized framework
+space. This allows it to overcome the quadratic complexity of standard     for building, training, and deploying physics-ML models.
+Transformers and scale to large problems with irregular domains.           PhysicsNeMo provides an end-to-end infrastructure specifically
+Transolver is designed to capture both local and global dependencies       designed for large-scale simulation-based learning tasks, making it
+in the physical system, making it a promising candidate for high-          well-suited for computationally demanding applications such as
+resolution, large-scale crash simulations where both accuracy and          automotive crash modeling.
+scalability are critical [16, 17].
+
+
+Page 3 of 17
+
+10/16/2025
+Unlike single-model repositories, PhysicsNeMo is a general-purpose         achieving linear complexity with respect to the number of mesh points
+framework that enables experimentation with a wide range of model          and enabling scalability to massive industrial problems.
+architectures—such as graph neural networks, attention-based models,
+and hybrid formulations—within a unified environment. This design          This methodology can be understood as a form of learned, soft-
+eliminates the need to stitch together multiple repositories or            probabilistic domain decomposition. Where engineers might manually
+frameworks, significantly simplifying model development and                partition a complex geometry into regions for parallel computation,
+comparison.                                                                Transolver learns to identify and group regions that behave in a
+                                                                           physically similar manner—for example, areas of high plastic strain,
+Key features of PhysicsNeMo that were leveraged in this study              regions undergoing rigid body motion, or zones experiencing shock
+include:                                                                   wave propagation. By first learning an efficient representation of the
+                                                                           problem domain itself, the model can then focus its capacity on
+     •    Distributed Training: PhysicsNeMo natively supports              learning the complex interactions between these physically meaningful
+          multi-GPU and multi-node training, allowing large models         regions.
+          and high-resolution datasets to be processed efficiently. This
+          capability was critical for training MeshGraphNet and
+          Transolver architectures on full-vehicle Body-in-White
+          datasets with hundreds of thousands of nodes.
+     •    Optimized Network Architectures: The framework
+          provides highly optimized implementations of both graph-
+          based and attention-based neural architectures. These
+          optimizations reduce computational overhead and improve
+          training throughput.
+     •    Data Pipelines: The framework offers flexible data
+          pipelines for efficiently handling large simulation datasets,
+          including support for variable-sized meshes, normalization,
+          graph construction, and streamlines the workflow from raw
+          finite element data to model-ready inputs.
+     •    Modular and Extensible Design: PhysicsNeMo’s modular
+          architecture allows for easy integration of custom
+          components, making it straightforward to experiment with
+          novel architectures, transient schemes, or physics-informed
+          loss functions.
+
+By building on PhysicsNeMo, we were able to implement train the
+models on large-scale crash datasets efficiently and explore multiple
+transient prediction schemes. The framework’s performance
+                                                                           Figure 1. The transolver architecture.
+optimizations and distributed training capabilities were instrumental in
+enabling rapid experimentation and evaluation, laying the foundation       The Physics-Attention Mechanism
+for scalable, production-ready ML surrogates for crash dynamics.
+                                                                           The Physics-Attention mechanism is the core building block of the
+Methodology – Model Architectures                                          Transolver model. It replaces the standard self-attention layer in a
+Transolver                                                                 Transformer and can be broken down into a sequence of four key
+                                                                           operations: slice weight generation, physics-aware token encoding,
+                                                                           attention on tokens, and full-field reconstruction via deslicing.
+The standard Transformer architecture, which uses a self-attention
+mechanism to compute interactions between all pairs of input tokens,
+                                                                           The process begins by treating the FE mesh as a point cloud. Each of
+is computationally prohibitive for typical FE models, which can
+                                                                           the 𝑁 mesh points, described by a feature vector 𝑥! ∈ 𝑅" (encoding
+contain hundreds of thousands or millions of nodes. The complexity of
+                                                                           geometric and physical information like coordinates, material
+canonical attention is quadratic with respect to the number of nodes,
+                                                                           properties, etc.), is processed to determine its affiliation with 𝑀
+making it infeasible for large-scale industrial simulations.
+                                                                           learnable "slices." Each input feature vector 𝑥! is first passed through
+                                                                           an initial linear layer to embed it into a unified feature space. The
+The Transolver architecture [16, 17] overcomes this limitation by          embedded feature of each mesh point is then projected into an M-
+operating on a more foundational idea: learning the intrinsic physical     dimensional vector using a learnable linear layer. A Softmax activation
+states hidden within the discretized geometry. The core innovation is a    is applied to this vector to produce a set of slice weights, 𝑤! ∈ 𝑅# :
+novel Physics-Attention mechanism that first decomposes the
+computational domain into a small, learnable set of "slices"
+representing distinct physical states. It then applies the powerful                                   {𝑤! }&
+                                                                                                           !$% = 𝑆.𝑃(𝑥! )2,                   (1)
+attention mechanism to a compressed representation of these slices,
+known as "physics-aware tokens." This reduces the problem from             where 𝑆 is a Softmax function and 𝑃 is a projection layer. Each
+attending over 𝑁 nodes to attending over 𝑀 tokens, where 𝑀 ≪ 𝑁 ,           component 𝑤!,( of the vector 𝑤! represents the probabilistic degree to
+                                                                           which mesh point 𝑖 belongs to slice 𝑗 . The Softmax function ensures
+Page 4 of 17
+
+10/16/2025
+that ∑# ($% 𝑤!,( = 1 for each point and encourages low-entropy              can iteratively refine its understanding of the physical states and their
+assignments, meaning the model learns to assign points to a small           interactions, leading to a highly accurate approximation of the PDE's
+number of slices with high confidence, promoting the emergence of           solution operator. The model's independence from mesh connectivity
+distinct and informative physical states.                                   and its permutation-invariant nature are the sources of its claimed
+                                                                            "endogenetic geometry-general modeling capacity," suggesting a
+With the slice weights computed for every point, the next step is to        powerful potential to generalize not just to unseen parameters but to
+create a compressed representation of the entire system. This is            unseen geometries and mesh topologies.
+achieved by generating 𝑀 "physics-aware tokens," where each token
+represents the aggregated state of its corresponding slice. The j-th        MeshGraphNet
+token, 𝑍( ∈ R) , is calculated as a normalized, weighted sum of all mesh
+point features:                                                             MeshGraphNet (MGN) [18, 19, 20] is a graph-based neural network
+                                                                            designed to simulate physical systems by directly representing a mesh
+                                  ∑&
+                                   !$% 𝑤!,( 𝑥!                              structure as a graph. The core idea is to leverage message passing
+                           𝑧( =                .                    (2)     between nodes to propagate physical state information — such as
+                                   ∑&
+                                    !$% 𝑤!,(
+                                                                            velocity, pressure, or temperature — across the mesh over time. This
+                                                                            paradigm enables MGN to capture both local and global interactions
+This operation is a critical dimensionality reduction step. The entire      in systems governed by partial differential equations (PDEs).
+state of the system, originally described by 𝑁 high-dimensional
+vectors, is now compactly represented by just 𝑀 physics-aware tokens.
+Crucially, because this aggregation is a sum over all points, the token
+generation process is permutation invariant. The order in which the
+mesh points are processed does not affect the final token
+representation, which is a key property for handling unstructured data
+and generalizing across different mesh discretizations.
+
+Once the system is represented by the sequence of M tokens, a standard
+multi-head self-attention mechanism can be applied. This allows the
+model to learn the intricate, long-range correlations and interactions
+between the different learned physical states.                              Figure 2. The MeshGraphNet architecture.
+
+                                                                            In MeshGraphNet, a mesh is represented as a graph
+Attention: The tokens {𝑧( }#($% are used to compute query (𝑞), key (𝑘),
+and value (𝑣) vectors via linear projections. The attention mechanism                                    𝐺 = (𝑉, 𝐸),                            (6)
+then computes the updated token representations {𝑧(* }#
+                                                      ($% :
+                                                                            where 𝑉is the set of nodes, corresponding to the mesh vertices, 𝐸 is the
+                                                                    (3)     set of edges, corresponding to connections between adjacent vertices.
+                         𝑞, 𝑘, 𝑣 = Linear(𝑧),
+                                                                            Each node 𝑖 ∈ 𝑉is associated with a feature vector
+                       𝑧 * = Softmax(𝐶 𝑞𝑘 T )𝑣.                     (4)
+                                                                                                           ℎ! ∈ ℝ, ,                            (7)
+
+Field Reconstruction (Deslicing): After the attention mechanism has         which encodes relevant physical quantities such as velocity 𝑣! ,
+updated the tokens, the final step is to map this information back to the   pressure 𝑝! , or temperature. Each edge (𝑖, 𝑗) ∈ 𝐸 has a feature vector
+original mesh points to produce a full-field prediction. This "deslicing"
+operation reconstructs the updated feature vector for each mesh point,
+                                                                                                           𝑒!( ∈ ℝ- ,                           (8)
+𝑥!* , as a weighted sum of the updated tokens, using the original slice
+weights 𝑤!,( :
+                                                                            which encodes information about the relationship between nodes 𝑖 and
+                                   #                                        𝑗, such as relative position or distance.
+                           𝑥!* = M 𝑤!,( 𝑧(* .                       (5)
+                                  ($%
+                                                                            The MGN follows an Encode–Process–Decode architecture as shown
+                                                                            in Fig 2. In this framework, an encoder network first maps the raw
+                                                                            node and edge features (e.g., physical quantities and geometric
+This process effectively broadcasts the information learned at the
+                                                                            attributes) into a latent space through independent MLPs. This
+latent-state level back to the full spatial domain, producing the final
+                                                                            encoding step ensures that heterogeneous input features are projected
+output for that layer.
+                                                                            into a unified, high-dimensional representation suitable for message
+                                                                            passing. The processor, implemented as a sequence of message-
+The Transolver Architecture                                                 passing layers, iteratively refines these latent representations by
+                                                                            exchanging information between connected nodes and edges, allowing
+The overall Transolver architecture consists of a stack of these            the network to learn complex spatial dependencies and nonlinear
+Physics-Attention layers. Each layer is typically followed by a feed-       interactions. Finally, a decoder network transforms the processed
+forward network (MLP) and layer normalization, mirroring the design         latent node features back into the target physical quantities—such as
+of a standard Transformer block. By stacking these layers, the model        accelerations, displacements, or fluxes.
+Page 5 of 17
+
+10/16/2025
+Message Passing Mechanism                                                     message-passing layers, and a finer discretization limits the spatial
+                                                                              range of information exchange. To address both the computational cost
+The central mechanism of MeshGraphNet is message passing, which               and limited receptive field, a multi-scale graph is constructed inspired
+enables iterative propagation of information between neighboring              from the X-MeshGraphNet model [19].
+nodes. The process involves three main steps: message computation,
+message aggregation, and node update.                                         First, a point cloud is extracted from the FE mesh nodes, and Farthest
+                                                                              Point Sampling (FPS) is applied to subsample a set of nodes 𝑉7 that are
+For each edge (𝑖, 𝑗), the model computes a message 𝑚!( from node 𝑗            well separated spatially. Unlike random sampling, FPS selects nodes
+to node 𝑖 as:                                                                 directly from the original point cloud rather than generating new ones,
+                                                                              ensuring that all sampled nodes coincide with actual mesh locations.
+                                                                              Next, the k-Nearest Neighbors (KNN) algorithm is used to identify
+                            𝑚!( = 𝜙. (ℎ! , ℎ( , 𝑒!( ),                  (9)   local neighbors and construct edges 𝐸7 . o further enhances long-range
+                                                                              connectivity, an additional subset of nodes is obtained using FPS, and
+where 𝜙. is a learnable neural network function that produces 𝑚!( ∈           KNN is applied again to form extended edges 𝐸77 connecting distant
+ℝ, .                                                                          nodes. The resulting multi-scale graph denoted as 𝐺7 = (𝑉7 , {𝐸7 , 𝐸77 }),
+                                                                              provides a structure that reduces computational overhead while
+The incoming messages to node 𝑖from its neighbors are aggregated. A           increasing each node’s effective receptive field, thereby improving
+common choice is summation:                                                   model efficiency and stability during training. The training can then be
+                                                                              conducted on subsampled multiscale graph, a schematic of which can
+                                                                              be found in Figure 3.
+                            𝑚! = M              𝑚!( ,                  (10)
+                                       (∈𝒩(!)
+
+
+where 𝒩(𝑖)denotes the set of neighbors of node 𝑖. The aggregated
+message 𝑚! contains information from the local neighborhood.
+
+The node’s features are updated based on the aggregated message:
+
+                              ℎ!* = 𝜙4 (ℎ! , 𝑚! ),                     (11)
+
+where 𝜙4 is a learnable neural network function, and ℎ!* is the updated
+feature vector for node 𝑖.
+                                                                              Figure 3. MeshGraphNet with multi-scale graphs.
+
+The above message-passing process is repeated over 𝐿 layers of the
+graph neural network, each with distinct learnable parameters. With           Methodology - Transient Dynamics Schemes
+each layer, information propagates further through the graph, enabling
+nodes to capture interactions from larger neighborhoods.                      This study investigates three distinct training schemes, each
+                                                                              embodying a different approach to modeling time evolution. These
+The update rule at layer 𝑙can be expressed as:                                schemes differ in how they handle causality, error accumulation, and
+                                                                              stability over long prediction horizons. The dataset can be represented
+           (56%)      (5)     (5)               (5)      (5)   (5)            as
+         ℎ!        = 𝜙4 (ℎ! , M                𝜙. (ℎ! , ℎ( , 𝑒!( )),   (12)
+                                      (∈𝒩(!)
+                                                                                                                     :   &
+                                                                                                     𝐷 = [𝜏, ]𝑋89:
+                                                                                                                !
+                                                                                                                   _     `      ,                 (13)
+       (5)    (5)                                        (5)                                                         !$; .$;
+where 𝜙. and 𝜙4 are learnable functions at layer 𝑙, and ℎ! is the
+feature vector of node 𝑖 at layer 𝑙.                                          where, 𝜏 is the thickness, 𝑋89: is the state variable at time 𝑡! , 𝑇 is the
+                                                                                                           !
+                                                                              number of time steps, and 𝑁 is the number of samples. The 𝑋89:            ∈
+After 𝐿 layers of message passing, each node aggregates information                                                                                  !
+                                                                              𝑅&×= is vector representing a point cloud with 𝑁 nodes that coincides
+from all nodes within its 𝐿-hop neighborhood, enabling the model to
+                                                                              with the nodes of the FE mesh. The thickness is provided at each node,
+capture both local and global system dynamics.
+                                                                              therefore 𝜏 ∈ 𝑅& .
+Through this architecture, MeshGraphNet efficiently learns a
+physically consistent update rule for node states, enabling accurate and      Scheme A - Time-Conditional (Non-Autoregressive)
+scalable simulation of complex physical systems such as automotive
+crash events.                                                                 In the Time-Conditional (TC) scheme, the model directly predicts the
+                                                                              system state at any given time step 𝑡! from the initial condition and the
+Multi-scale graph                                                             time itself:
+
+Training the MGN surrogate on a fine mesh with a large number of                                        𝑋8 = ℳ> (𝑋;9: , 𝑡).                       (14)
+nodes and edges is computationally expensive. In such high-resolution
+meshes, each node’s receptive field depends on the number of
+Page 6 of 17
+
+10/16/2025
+                                                               &×?                                              &     ?
+The dataset is modified as 𝐷 = ].𝜏, 𝑋89:       , 𝑡! 2, 𝑋89: _.$; and
+                                             "           !
+                                                                                               ℒCED: = M M ∥ 𝑋89: − 𝑋8% ∥A ,                           (19)
+the training objective minimizes the instantaneous prediction error                                            %
+                                                                                                              .$% -$%
+independently for each time step:
+                                                                             where 𝑋89:
+                                                                                      %
+                                                                                        is the ground truth and 𝑋8% is the model prediction obtained
+                ℒ :@ = M ∥ 𝑋89:
+                             !
+                                − ℳ> (𝑋89:
+                                        "
+                                           , 𝑡! ) ∥A ,               (15)    recursively as 𝑋8!#$ = 𝐹> ⋅ 𝐹> ⋯ 𝐹> (𝑋89: ).
+                                                                                                                    "
+                         B
+                                                                                                                                                       ?
+where 𝑋89:  is the ground truth state at time 𝑡! , 𝑋89: is the initial       Training involves predicting multiple time steps ahead ]𝑋8! _!$% for
+         !                                           "
+condition, and ℳ> denotes the model.                                         given 𝜏 and 𝑋8" , with the model’s own predictions fed back as inputs
+                                                                             for subsequent steps. This explicitly trains the model to handle
+The model is trained to predict the state at any arbitrary time, thereby     propagated errors. To enforce stability and robustness, gradients must
+capturing continuous-time dynamics without explicit temporal                 flow through the entire rollout sequence, analogous to
+recursion. The main advantage of this approach is computational              Backpropagation Through Time (BPTT) in recurrent networks. This
+efficiency and parallelism, since each time step can be trained              ensures that the model learns a robust transition function 𝐹> that
+independently and avoids accumulation of autoregressive errors since         remains effective even under imperfect or perturbed inputs, thereby
+there is no stepwise feedback. However, it fundamentally ignores             minimizing long-term error accumulation rather than optimizing solely
+causal dependencies between states, and thus tends to perform poorly         for one-step accuracy. AR-RT thereby instills a strong temporal
+when extrapolating or forecasting beyond the training time horizon.          inductive bias.
+
+Scheme B - Autoregressive with One-Step Training                             To ensure numerical stability during training, the MGN and Transolver
+                                                                             networks -- denoted as 𝑓> (⋅) -- are formulated to predict the nodal
+                                                                             accelerations 𝑋̈8! rather than the states directly. The temporal evolution
+The Autoregressive scheme with one-step training (AR-OT) focuses
+                                                                             of the system is then reconstructed using standard ODE time-
+on learning the transition function:
+                                                                             integration schemes, which update the nodal positions and velocities
+                                                                             at each time step according to the predicted accelerations, as follows:
+                             𝑋8!#$ = 𝐹> (𝑋89:
+                                           !
+                                              ),                     (16)
+                                                                                     𝑋̇8 $ = Δ𝑡 ⋅ 𝑋̈8! + 𝑋̇8 $ ,          𝑋8!#$ = Δ𝑡 ⋅ 𝑋̇8 $ + 𝑋8! ,   (20)
+where 𝐹> is the learned transition operator.                                            !#
+                                                                                          &
+                                                                                                                !'
+                                                                                                                  &
+                                                                                                                                          !#
+                                                                                                                                            &
+
+
+                                                                                              F(! GF(!'$
+During training, the current state is taken directly from the ground truth   where 𝑋̇8 $ =                 . Therefore, the transition function is
+                                                                                       !'        H8
+data — a technique known as Teacher Forcing. So, the dataset for                         &
+                                             &×?
+training becomes 𝐷 = ].𝜏 𝑋89:      2, 𝑋89:  _      and the objective to
+                                 !       !#$ .$;
+                                                                                𝐹> .𝑋8! , 𝑋8!'$ , 𝜏2 = Δ𝑡 A ⋅ 𝑓> .𝑋8! , 𝑋8!'$ , 𝜏2 + 2𝑋8! − 𝑋8!'$.     (21)
+minimize the one-step prediction error is given as:
+
+                  ℒCD = M ∥ 𝑋89:  − 𝐹> (𝑋89: ) ∥A .                  (17)
+                             B
+                              !#$         !
+                                                                             Case Study: Predicting Deformation in BIW
+                                                                             Crash
+The model learns to predict the next state given the exact ground truth
+state from the previous time step. This approach ensures high per-step
+accuracy and stability during training. However, it suffers from             The Body-in-White (BIW) Dataset
+covariate shift: at inference time, predicted states - rather than ground
+truth states - must be used as inputs. This leads to error accumulation,     The dataset is derived from a high-fidelity finite element model (FEM)
+especially in highly non-linear systems such as crash dynamics, where        of a Body-in-White (BIW) structure, simplified from a public-domain
+small deviations compound rapidly. Without explicit training to handle       model provided by the National Highway Traffic Safety
+these deviations, the model’s rollout performance degrades                   Administration [22]. The BIW model contains approximately 400,000
+significantly over long sequences.                                           nodes and 380,000 elements, preserving key crash-relevant structural
+                                                                             characteristics while reducing computational complexity.
+Scheme C — Autoregressive with Rollout Training
+Autoregressive with Rollout Training (AR-RT) explicitly aligns the
+training objective with the inference scenario by training over multi-
+step trajectories rather than single-step predictions. The model learns
+the transition function
+
+                             𝑋8!#$ = 𝐹> (𝑋8! ),                      (18)
+
+by minimizing the loss computed over a rollout of length 𝐿:
+
+                                                                             Figure 4. Simplified vehicle body used for crash simulation.
+
+Page 7 of 17
+
+10/16/2025
+Crash simulations were performed using Finite Element Analysis                   Results
+(FEA) within LS-DYNA, a solver well suited for nonlinear dynamic
+problems involving large deformations, contact interactions, and
+                                                                                 This section is organized into three parts. In the first part, we present a
+complex material behavior. The vehicle was impacted against a rigid
+                                                                                 comprehensive evaluation of the Transolver architecture trained using
+barrier under a 56 kph frontal crash scenario, consistent with
+                                                                                 the autoregressive rollout (AR-RT) scheme for crash surrogate
+standardized test configurations. The model includes essential
+                                                                                 modeling. This includes quantitative and qualitative analyses of its
+structural features—crumple zones, reinforcements, and energy-
+                                                                                 ability to capture spatiotemporal crash dynamics, assessing
+absorbing members—that capture realistic crash deformation patterns.
+                                                                                 deformation accuracy, stability over time, and the accuracy of
+                                                                                 displacement, velocity and acceleration predictions at key probe
+To balance detail and efficiency, the vehicle body subsystem was used            points.
+in place of the full-vehicle model, with a 10 mm mesh size selected to
+ensure sufficient resolution for localized deformations. Each
+                                                                                 In the second part, we compare the performance of Transolver with
+simulation was run for 120 milliseconds and completed in
+                                                                                 MeshGraphNet under equivalent transient modeling conditions. This
+approximately 10 minutes on General Motors’ HPC cluster.
+                                                                                 comparison highlights the strengths and limitations of each
+                                                                                 architecture in terms of accuracy, stability, and computational
+A Design of Experiments (DoE) was conducted by varying the                       efficiency for predicting complex crash behavior.
+thickness of 33 front-end components within ±20% of their nominal
+values (Figure 5). This yielded 150 unique designs. For each design,
+                                                                                 In the third part, we examine the effects of different transient modeling
+LS-DYNA simulations were executed, providing high-fidelity
+                                                                                 schemes—Time-Conditional, Autoregressive with One-Step Training
+simulations to capture detailed deformation, acceleration responses,
+                                                                                 (AR-OT), and Autoregressive Rollout Training (AR-RT)—within the
+enabling robust data-driven modeling of vehicle crash dynamics and
+                                                                                 Transolver framework. This comparison investigates how the choice
+structural performance. The resulting data is partitioned into training
+                                                                                 of transient scheme influences prediction accuracy, long-term stability,
+(90%), validation (5%), and testing (5%) sets.
+                                                                                 and the ability to capture detailed deformation patterns over the course
+                                                                                 of a crash event.
+
+                                                                                 Due to the significant computational overhead of the rollout training
+                                                                                 scheme, which requires backpropagation through time, we use gradient
+                                                                                 checkpointing. Specifically, our approach checkpoints each timestep
+                                                                                 during rollout, substantially reducing memory usage required for
+                                                                                 training. With this strategy, we can perform training and inference
+                                                                                 across the full set of dataset timesteps. However, to make computation
+                                                                                 tractable across the range of models and approaches presented in this
+                                                                                 study, we limit the number of timesteps to 14, rather than the full 21
+                                                                                 used in the dataset.
+
+                                                                                 Both the Transolver and MeshGraphNet (MGN) models use a cosine
+Figure 5. Parts included in the design space.                                    annealing learning rate schedule, decaying from 10GJ to 10GK , and are
+                                                                                 trained for 8,000 epochs using mixed-precision (AMP) training for
+Figure 6 shows the probe points located at the driver and passenger toe          computational efficiency. MGN employs the ReLU activation
+pans, where acceleration responses were recorded during each crash               function, whereas Transolver uses GELU.
+simulation. These points were selected because the toe pan region is
+highly sensitive to front-structure deformation and provides a reliable          For Transolver, we use 128 latent slices, 6 layers, a hidden dimension
+indicator of the vehicle’s structural integrity and occupant safety              of 256, and 8 attention heads. For MGN, the model consists of 15
+performance during frontal impacts.                                              processor layers with sum aggregation, a hidden dimension of 128, and
+                                                                                 two MLP layers per message-passing operation in the processor. The
+                                                                                 encoder and decoder networks each use two MLP layers as well. The
+                                                                                 computational time per epoch for both Transolver and MGN models
+                                                                                 (using the original mesh) was around 110 seconds using a batch size
+                                                                                 of 1 on 8 H100 GPUs.
+
+                                                                                 Part 1 — Transolver with Autoregressive Rollout Training
+
+                                                                                 We begin by evaluating the performance of the Transolver architecture
+                                                                                 trained using the autoregressive rollout (AR-RT) scheme, which was
+                                                                                 specifically designed to improve long-term prediction stability by
+                                                                                 explicitly training over multi-step trajectories. This approach is
+                                                                                 particularly relevant for crash dynamics, where small errors can
+                                                                                 rapidly accumulate over time.
+
+Figure 6. Probe points to measure the acceleration at the driver and passenger
+Toe Pans.
+Page 8 of 17
+
+10/16/2025
+Figure 7 illustrates the deformation predictions of Transolver-AR-RT        AR-RT, Multiscale MGN-AR-RT maintains close alignment with the
+for Sample #4 in the test dataset. Across all four viewing angles, the      ground-truth displacement trajectories throughout the crash sequence
+predicted deformed mesh closely aligns with the ground truth, with          and performs suboptimally in capturing the finer variations in velocity
+differences concentrated in regions of high deformation gradient. The       and acceleration.
+displacement magnitude differences remain localized and small,
+confirming the model’s ability to preserve physical fidelity over the       Part 3 — Transolver with Other Transient Schemes
+full rollout.
+                                                                            To further examine the impact of transient modeling strategies on
+Figure 8 further quantifies this performance by comparing                   predictive performance, we train and evaluate Transolver under three
+displacement, velocity, and acceleration time histories at the driver and   distinct temporal formulations: Time-Conditional, Autoregressive
+passenger toe pans. Transolver-AR-RT maintains consistent alignment         with One-Step Training (AR-OT), and Autoregressive Rollout
+with ground truth trajectories for displacement throughout the entire       Training (AR-RT). These formulations differ in how temporal
+simulated crash sequence. However, we acknowledge that the                  dependencies are learned and propagated during both training and
+accuracy of velocity predictions — and more significantly,                  inference.
+acceleration predictions — remains suboptimal. We hypothesize that
+this limitation arises from the current loss function, which considers      Figure 16 compares the Transolver predictions obtained using the
+only the deviations between predicted and ground truth displacements.       time-conditional, AR-OT, and AR-RT schemes for Sample #4 in the
+Incorporating additional loss terms that explicitly account for velocity    test dataset. The relative L2 position errors for the time-conditional and
+and acceleration deviations may improve prediction accuracy for these       AR-OT schemes are presented in Figures 17 and 18, respectively. The
+quantities and represents a promising direction for future work.            AR-OT scheme yields noticeably higher L2 position errors compared
+                                                                            to AR-RT, whereas the time-conditional model achieves comparable
+Figures 9 and 10 present analogous results for Sample #103 in the test      accuracy with smaller standard deviation. Figures 19 and 20 further
+dataset, and additional sample results are provided in the Appendix.        compare the displacement, velocity, and acceleration histories at the
+Figure 11 illustrates the cumulative displacement error growth over         driver and passenger toe pans for the time-conditional and AR-OT
+time for Transolver-AR-RT.                                                  schemes, respectively.
+
+Part 2 — MeshGraphNet with Autoregressive Rollout                           Analysis
+Training
+                                                                            The results presented in this study demonstrate that both the Transolver
+Given the strong capability of MGN in capturing local spatial features,     and MGN architectures offer promising pathways for developing
+an MGN model was trained using the same autoregressive rollout (AR-         machine learning–based surrogate models for crash dynamics. Each
+RT) scheme for comparison. The MGN was trained on a graph                   model successfully captures the essential spatiotemporal evolution of
+constructed from a mesh containing 84,862 nodes and 294,6062 edges.         structural deformation and exhibits relatively good agreement with
+To further improve computational efficiency, a Multiscale MGN was           high-fidelity FE simulations.
+also investigated. A reduced-resolution graph was constructed
+containing approximately one-tenth the number of nodes in the               Overall, the Transolver architecture yields slightly higher predictive
+original mesh. This modification reduced the computational time per         accuracy across all evaluated metrics, particularly in long-term
+epoch to 16 seconds.                                                        deformation stability and displacement prediction. Its autoregressive
+                                                                            rollout training (AR-RT) formulation proves especially effective in
+Figure 12 provides a comparison of the frontal deformed mesh                maintaining temporal consistency and preventing the accumulation of
+between MGN with original mesh, MGN with multiscale mesh,                   drift errors over extended trajectories. The transformer-based latent
+Transolver, and the ground truth for Sample #4 in the test dataset. All     representation in Transolver allows for global context aggregation
+the models use the AR-RT scheme. A slight spatial noise is visible in       across the spatial domain, enabling it to capture large-scale
+the MGN predictions compared to Transolver-AR-RT. The Multiscale            deformation patterns more coherently than purely message-passing
+MGN predictions exhibit more spatial noise than those of the other          architectures.
+models. However, this is due to the interpolation error, and it is
+hypothesized that this noise can be mitigated through a corrector or        In contrast, MGN remains a competitive and interpretable baseline,
+super-resolution neural network, which may refine the coarse                excelling at modeling local interactions within the mesh topology.
+predictions and recover high-fidelity structural details.                   Although its predictions display minor spatial noise relative to
+                                                                            Transolver, the overall deformation trends remain physically
+Figure 13 shows the cumulative displacement error growth over time          consistent. The multiscale MGN variant demonstrates a particularly
+for MGN-AR-RT, aggregated over the test samples. The error is               attractive trade-off between computational efficiency and accuracy. By
+noticeably higher than that of Transolver-AR-RT, indicating the             reducing the number of nodes by roughly an order of magnitude, the
+superior predictive accuracy of the Transolver architecture. As shown       training time per epoch decreases from approximately 110 seconds to
+in Figure 14, the cumulative displacement error over time for               just 16 seconds, while maintaining comparable displacement accuracy
+Multiscale MGN-AR-RT remains comparable to that of the original             to the original MGN model. This highlights the potential of
+MGN-AR-RT, demonstrating that similar predictive performance can            hierarchical or coarse-to-fine graph representations for scaling
+be achieved at significantly lower computational cost.                      surrogate crash models to larger or more complex structures.
+Figure 15 compares the displacement, velocity, and acceleration
+histories at the driver and passenger toe pans. Similar to Transolver-
+
+Page 9 of 17
+
+10/16/2025
+Figure 7. [Model: Transolver-AR-RT] Visualization of crash deformation results across four viewing angles (rows) for Sample #4 in the test dataset. Each column
+represents: (1) predicted deformed mesh colored by predicted nodal position magnitude, (2) ground-truth deformed mesh colored by ground truth nodal position
+magnitude, (3) displacement magnitude difference between prediction and ground truth plotted on the ground truth deformed mesh, and (4) component thickness plotted
+on the predicted deformed mesh.
+
+
+
+
+Figure 8. [Model: Transolver-AR-RT] Comparison between the predicted and ground-truth displacement, velocity, and acceleration at the driver and passenger toe pans
+for Sample #4 in the test dataset.
+
+Page 10 of 17
+
+10/16/2025
+Figure 9. [Model: Transolver-AR-RT] Visualization of crash deformation results across four viewing angles (rows) for Sample #103 in the test dataset. Each column
+represents: (1) predicted deformed mesh colored by predicted nodal position magnitude, (2) ground-truth deformed mesh colored by ground truth nodal position
+magnitude, (3) displacement magnitude difference between prediction and ground truth plotted on the ground truth deformed mesh, and (4) component thickness plotted
+on the predicted deformed mesh.
+
+
+
+
+Figure 10. [Model: Transolver-AR-RT] Comparison between the predicted and ground-truth displacement, velocity, and acceleration at the driver and passenger toe
+pans for Sample #103 in the test dataset.
+
+Page 11 of 17
+
+10/16/2025
+                                                                                    Figure 14. [Model: MGN-AR-RT, original mesh] Relative L2 position error for
+Figure 11. [Model: Transolver-AR-RT] Relative L2 position error for the test        the test dataset. Compare this figure directly with Figures 11 and 13.
+dataset.
+
+
+
+
+                                                                                    Figure 15. [Model: MGN-AR-RT, multi-scale] Comparison between the
+                                                                                    predicted and ground-truth displacement, velocity, and acceleration at the
+                                                                                    driver and passenger toe pans for Sample #4 in the test dataset. Compare this
+                                                                                    figure directly with Figure 8.
+
+
+
+
+Figure 12. Comparison of results between MGN with original mesh (top left),
+MGN with multiscale mesh (top right) , Transolver (bottom left), and the
+ground truth (bottom right) for Sample #4 in the test dataset. All the models use
+the AR-RT scheme.
+
+
+
+
+                                                                                    Figure 16. Comparison of Transolver results with time-conditional (top left),
+                                                                                    AR-OT (top right), and AR-RT (bottom left) schemes for Sample #4 in the test
+                                                                                    dataset. Ground truth is shown in bottom right.
+
+
+
+
+Figure 13. [Model: MGN-AR-RT, multimesh] Relative L2 position error for
+the test dataset. Compare this figure directly with Figure 11.
+
+
+
+
+Page 12 of 17
+
+10/16/2025
+                                                                                Figure 20. [Model: Transolver-AR-OT] Comparison between the predicted
+                                                                                and ground-truth displacement, velocity, and acceleration at the driver and
+                                                                                passenger toe pans for Sample #4 in the test dataset. Compare this figure
+                                                                                directly with Figure 8.
+
+Figure 17. [Model: Time-conditional Transolver] Relative L2 position error      The comparison of different transient modeling schemes within the
+for the test dataset. Compare this figure directly with Figure 11.              Transolver framework further reveals important insights. Both the
+                                                                                Autoregressive Rollout Training (AR-RT) and Time-Conditional
+                                                                                schemes achieve accurate and stable predictions. The Time-
+                                                                                Conditional model, while simpler and faster to train, treats each
+                                                                                timestep independently and does not inherently enforce temporal
+                                                                                causality. This limits its physical plausibility, as it lacks explicit
+                                                                                modeling of how prior states influence subsequent deformation
+                                                                                responses. Conversely, AR-RT explicitly enforces causality by
+                                                                                training across multiple timesteps with backpropagation through time.
+                                                                                The Autoregressive One-Step Training (AR-OT) approach, while
+                                                                                offering a balance between efficiency and accuracy, exhibits faster
+                                                                                error accumulation due to the absence of multi-step supervision.
+
+                                                                                In summary, the results confirm that both the Transolver and
+                                                                                MeshGraphNet frameworks are viable architectures for data-driven
+                                                                                crash dynamics modeling. Transolver achieves superior overall
+                                                                                accuracy and stability through its latent transformer-based formulation
+                                                                                and rollout-based temporal training, whereas Multiscale MGN
+Figure 18. [Model: Transolver-AR-OT] Relative L2 position error for the test    provides an efficient alternative with competitive accuracy and a
+dataset. Compare this figure directly with Figure 11.
+                                                                                significantly lower computational footprint. These complementary
+                                                                                findings underscore the potential of combining transformer-based and
+                                                                                graph-based paradigms to develop scalable, physically consistent, and
+                                                                                computationally efficient surrogates for structural crash simulation.
+
+                                                                                Conclusion
+                                                                                This research successfully demonstrates the feasibility and
+                                                                                effectiveness of using ML surrogate models to predict the highly non-
+                                                                                linear, transient dynamics of automotive crash events. The framework
+                                                                                developed in this work accurately predicts the full-field structural
+                                                                                deformation of a complex BIW system. The predictions show strong
+                                                                                qualitative and quantitative agreement with high-fidelity FE
+Figure 19. [Model: Time-conditional Transolver] Comparison between the          simulations. By replacing the iterative numerical solver of traditional
+predicted and ground-truth displacement, velocity, and acceleration at the      FEA with a single feed-forward pass of a trained ML model, the time
+driver and passenger toe pans for Sample #4 in the test dataset. Compare this   for a full crash simulation is reduced from minutes or hours on an HPC
+figure directly with Figure 8.                                                  cluster to seconds on a single GPU workstation.
+
+                                                                                Both the Transolver and MGN architectures are promising for
+                                                                                developing machine learning models for crash dynamics. This study
+                                                                                explored the feasibility of using these approaches, rather than aiming
+                                                                                to find a single "winner" model. The Transolver architecture
+                                                                                demonstrates good predictive accuracy and stability in long-term
+                                                                                deformation and displacement prediction. Its transformer-based latent
+                                                                                representation enables it to aggregate global context across the spatial
+Page 13 of 17
+
+10/16/2025
+domain, allowing it to capture large-scale deformation patterns more        A limitation of the framework is its data dependency; the model's
+cohesively than architectures that rely solely on message passing.          accuracy is tied to the quality and diversity of its training data. Future
+Conversely, the MGN architecture is a competitive and interpretable         work could explore methods like transfer learning or the use of
+alternative that excels at modeling local interactions within a mesh        physics-informed neural networks (PINNs) to reduce this reliance.
+topology. While its predictions may show slight spatial noise               Another open question is the model's ability to generalize to out-of-
+compared to Transolver, the overall deformation trends remain               distribution designs. While it generalizes well to unseen parameter
+physically consistent. The multiscale MGN variant offers an excellent       variations, its capacity to extrapolate to radically different geometries
+balance between efficiency and accuracy, reducing training time per         or materials is a subject for future study.
+epoch from approximately 110 seconds to just 16 seconds while
+maintaining comparable accuracy to the original MGN model.                  Finally, for safety-critical applications, it is essential to provide a
+                                                                            measure of confidence in predictions. The current model is
+The comparison of different transient modeling schemes revealed that        deterministic, but future research should incorporate uncertainty
+both Autoregressive Rollout Training (AR-RT) and the Time-                  quantification techniques, such as Bayesian neural networks, to
+Conditional scheme can achieve accurate and stable predictions.             provide principled confidence bounds.
+However, the AR-RT approach explicitly enforces temporal causality
+by training over multiple time steps with backpropagation through           This work represents a significant step towards a future where hybrid,
+time. In contrast, the Time-Conditional model, which is simpler and         physics-informed AI models combine the speed of deep learning with
+faster to train, treats each time step independently, which limits its      the rigor of first-principles physics, redefining the landscape of
+physical plausibility.                                                      computational engineering.
+
+The immense acceleration in simulation time enabled by this
+framework has the potential to fundamentally change the automotive
+                                                                            References
+design and engineering process. Crashworthiness analysis, which is
+typically a late-stage validation step, can now be integrated into the      1.  Ozcan, Ferhat, and Sezgin Ersoy. "Analysis of the vehicle:
+earliest design phases. This allows engineers to conduct large-scale,           applying finite element method of 3D data." Mathematical
+automated design space exploration, virtually testing thousands of              Models in Engineering 7, no. 4 (2021): 63-69.
+design variants in the time it would take to run a single FEA               2. Li, Zhaokai, Qiang Yu, Xuan Zhao, Man Yu, Peilong Shi, and
+simulation. This capability can lead to the discovery of highly                 Cilei Yan. "Crashworthiness and lightweight optimization to
+optimized designs that effectively balance safety, cost, and                    applied multiple materials and foam-filled front end structure of
+performance. The speed of the surrogate model also enables an                   auto-body." Advances in Mechanical Engineering 9, no. 8 (2017):
+interactive "digital twin" workflow, where engineers can get                    1687814017702806.
+immediate feedback on design changes, fostering a more intuitive and        3. Wang, Tao, Liangmo Wang, Chenzhi Wang, and Xiaojun Zou.
+creative process. Furthermore, the model can serve as a fast-running            "Crashworthiness analysis and multi-objective optimization of a
+component within multi-objective optimization algorithms and                    commercial vehicle frame: A mixed meta-modeling-based
+generative design frameworks, paving the way for a more automated               method." Advances in mechanical engineering 10, no. 5 (2018):
+vehicle development process.                                                    1687814018778480.
+                                                                            4. Liu, Wing Kam, Shaofan Li, and Harold S. Park. "Eighty years of
+                                                                                the finite element method: Birth, evolution, and future." Archives
+Despite these promising results, the framework has several limitations
+                                                                                of Computational Methods in Engineering 29, no. 6 (2022): 4431-
+that point to important areas for future research. The model
+                                                                                4453.
+demonstrates satisfactory accuracy in predicting displacements;
+                                                                            5. Gadekar, G. B., Swati M. Athavale, and P. R. Sajanpawar. Car
+however, its performance in estimating velocity and acceleration at key
+                                                                                crash simulation studies using explicit nonlinear finite element
+probe points remains limited. These quantities are critical indicators of
+                                                                                analysis. No. 990057. SAE Technical Paper, 1999.
+occupant safety and structural impact severity and thus cannot be
+                                                                            6. Chang, J. Michael, Tau Tyan, Marwan El-Bkaily, James Cheng,
+overlooked. A promising direction for future work is to incorporate
+                                                                                Amar Marpu, Qiang Zeng, and Julien Santini. "Implicit and
+velocity and acceleration terms directly into the training loss, thereby
+                                                                                explicit finite element methods for crash safety analysis." SAE
+encouraging the model to learn dynamic consistency and improve its
+                                                                                Transactions (2007): 1025-1037.
+predictive fidelity across all motion derivatives.
+                                                                            7. Wimmer, Peter, Oliver Zehbe, and Lars Schories. "A Physics-
+                                                                                Based Fast-Running Surrogate Model for Crash Pulse
+The current model effectively captures large plastic deformations but           Prediction." In 27th International Technical Conference on the
+does not explicitly represent stress evolution, material fracture,              Enhanced Safety of Vehicles (ESV) National Highway Traffic
+element failure, or fragmentation—phenomena that are critical in                Safety Administration, no. 23-0083. 2023.
+realistic crash scenarios. Future work will focus on incorporating          8. Vurtur Badarinath, Poojitha, Maria Chierichetti, and Fatemeh
+additional training data containing stress and damage information,              Davoudi Kakhki. "A machine learning approach as a surrogate for
+enabling the model to learn these effects explicitly. This enhancement          a finite element analysis: Status of research and application to one
+will enrich the model’s feature space and improve its ability to capture        dimensional systems." Sensors 21, no. 5 (2021): 1654.
+complex failure dynamics with higher physical fidelity. Further,            9. Chierichetti, Maria, Fatemeh Davoudi, Daniel Huang, Poojitha
+extending the framework to predict these events will pose a significant         Vurturbadarinath, and Matthew Linzmeyer. "Surrogated finite
+challenge. It would likely require the model to learn to predict not only       element models using machine learning." In AIAA Scitech 2021
+the state of the nodes but also to dynamically alter the graph's topology       Forum, p. 0309. 2021.
+(i.e., remove edges and nodes) to represent material failure.               10. Li, Haoran, Yingxue Zhao, Haosu Zhou, Tobias Pfaff, and Nan
+                                                                                Li. "A new graph-based surrogate model for rapid prediction of
+
+Page 14 of 17
+
+10/16/2025
+      crashworthiness performance of vehicle panel components."                    pdes on general geometries." arXiv preprint arXiv:2402.02366
+      arXiv preprint arXiv:2503.17386 (2025).                                      (2024).
+11.   Le Guennec, Yves, Thibaut Defoort, Jose Vicente Aguado, and            17.   Luo, Huakun, Haixu Wu, Hang Zhou, Lanxiang Xing, Yichen Di,
+      Domenico Borzacchiello. "Comparing traditional surrogate                     Jianmin Wang, and Mingsheng Long. "Transolver++: An
+      modelling and neural fields for vehicle crash simulation data." In           Accurate Neural Solver for PDEs on Million-Scale Geometries."
+      SIA Simulation numérique 2025. 2025.                                         arXiv preprint arXiv:2502.02414 (2025).
+12.   Thel, Simon, Lars Greve, Maximilian Karl, and Patrick van der          18.   Pfaff, Tobias, Meire Fortunato, Alvaro Sanchez-Gonzalez, and
+      Smagt. "Accelerating crash simulations with Finite Element                   Peter Battaglia. "Learning mesh-based simulation with graph
+      Method Integrated Networks (FEMIN): Comparing two                            networks." In International conference on learning
+      approaches to replace large portions of a FEM simulation."                   representations. 2020.
+      Computer Methods in Applied Mechanics and Engineering 443              19.   Nabian, Mohammad Amin, Chang Liu, Rishikesh Ranade, and
+      (2025): 118046.                                                              Sanjay Choudhry. "X-meshgraphnet: Scalable multi-scale graph
+13.   Thel, Simon, Lars Greve, Bram van de Weg, and Patrick van der                neural networks for physics simulation." arXiv preprint
+      Smagt. "Introducing finite element method integrated networks                arXiv:2411.17164 (2024).
+      (FEMIN)." Computer Methods in Applied Mechanics and                    20.   Fortunato, Meire, Tobias Pfaff, Peter Wirnsberger, Alexander
+      Engineering 427 (2024): 117073.                                              Pritzel, and Peter Battaglia. "Multiscale meshgraphnets." arXiv
+14.   André, Victor, Miguel Costas, Magnus Langseth, and David                     preprint arXiv:2210.00612 (2022).
+      Morin. "Neural network modelling of mechanical joints for the          21.   PhysicsNeMo Contributors. NVIDIA PhysicsNeMo: An Open-
+      application in large-scale crash analyses." International Journal of         Source Framework for Physics-Based Deep Learning in Science
+      Impact Engineering 177 (2023): 104490.                                       and Engineering. Released February 24, 2023. GitHub.
+15.   Wen, Ziming, Yu Li, Hu Wang, and Yong Peng. "Data-driven                     https://github.com/NVIDIA/physicsnemo
+      spatiotemporal modeling for structural dynamics on irregular           22.   National Highway Traffic Safety Administration. “Crash
+      domains by stochastic dependency neural estimation." Computer                Simulation Vehicle Models.” NHTSA. Last modified n.d.
+      Methods in Applied Mechanics and Engineering 404 (2023):                     Accessed October 8, 2025. https://www.nhtsa.gov/crash-
+      115831.                                                                      simulation-vehicle-models.
+16.   Wu, Haixu, Huakun Luo, Haowen Wang, Jianmin Wang, and
+      Mingsheng Long. "Transolver: A fast transformer solver for
+
+
+
+
+Page 15 of 17
+
+10/16/2025
+Appendix
+Additional test sample results using the Transolver architecture trained with the autoregressive rollout (AR-RT) scheme are presented here.
+
+
+
+
+Figure A-1. [Model: Transolver-AR-RT] Visualization of crash deformation results across four viewing angles (rows) for Sample #1 in the test dataset.
+
+
+
+
+Figure A-2. [Model: Transolver-AR-RT] Comparison between predicted and ground-truth displacement, velocity, and acceleration at the driver and passenger toe pans
+for Sample #1 in the test dataset.
+Page 16 of 17
+
+10/16/2025
+Figure A-3. [Model: Transolver-AR-RT] Visualization of crash deformation results across four viewing angles (rows) for Sample #54 in the test dataset.
+
+
+
+
+Figure A-4. [Model: Transolver-AR-RT] Comparison between predicted and ground-truth displacement, velocity, and acceleration at the driver and passenger toe pans
+for Sample #54 in the test dataset.
+
+
+
+
+Page 17 of 17
+
+10/16/2025
+

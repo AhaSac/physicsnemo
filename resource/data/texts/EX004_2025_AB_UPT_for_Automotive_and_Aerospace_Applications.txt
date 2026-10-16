@@ -1,0 +1,1096 @@
+                                          AB-UPT for Automotive and Aerospace Applications
+
+
+                                                              Benedikt Alkin1 Richard Kurle1 Louis Serrano1
+                                                                    Dennis Just1 Johannes Brandstetter1,2
+                                                                              1
+                                                                                EMMI AI, Linz, Austria
+                                                        2
+                                                          ELLIS Unit Linz, Institute for Machine Learning, JKU Linz, Austria
+arXiv:2510.15808v1 [cs.LG] 17 Oct 2025
+
+
+
+
+                                                                                      Abstract
+
+                                                  The recently proposed Anchored-Branched Universal Physics Transformers (AB-
+                                                  UPT) shows strong capabilities to replicate automotive computational fluid dy-
+                                                  namics simulations requiring orders of magnitudes less compute than traditional
+                                                  numerical solvers. In this technical report, we add two new datasets to the body
+                                                  of empirically evaluated use-cases of AB-UPT, combining high-quality data gen-
+                                                  eration with state-of-the-art neural surrogates. Both datasets were generated with
+                                                  the Luminary Cloud platform containing automotives (SHIFT-SUV) and aircrafts
+                                                  (SHIFT-Wing). We start by detailing the data generation. Next, we show favor-
+                                                  able performances of AB-UPT against previous state-of-the-art transformer-based
+                                                  baselines on both datasets, followed by extensive qualitative and quantitative eval-
+                                                  uations of our best AB-UPT model. AB-UPT shows strong performances across
+                                                  the board. Notably, it obtains near perfect prediction of integrated aerodynamic
+                                                  forces within seconds from a simple isotopically tesselate geometry representation
+                                                  and is trainable within a day on a single GPU, paving the way for industry-scale
+                                                  applications.
+
+
+
+
+                                         1   Introduction
+
+                                         Accurate, fast neural surrogates for computational fluid dynamics (CFD) have gathered significant
+                                         interest from industry and engineers due to the computational costs of classical CFD simulations,
+                                         where their neural surrogate is typically orders of magnitudes faster. Recent advances in architecture
+                                         and training methodology has enabled training accurate Transformer architectures [33, 11, 2, 3] on
+                                         CFD meshes containing hundreds of millions of mesh cells by only using a fraction of the CFD mesh
+                                         cell centers for training while allowing efficient inference [4]. This architecture, called Anchored-
+                                         Branched Universal Physics Transformers (AB-UPT), showed accurate modeling of surface and
+                                         volume fields as well as high correlation with integrated quantities such as drag coefficient on high-
+                                         fidelity automotive CFD simulations.
+                                         In this technical report we train and evaluate AB-UPT models on two recently introduced datasets
+                                         from the Luminary Cloud SHIFT program. Namely, SHIFT-SUV, a dataset of automotive CFD
+                                         simulations where car-design varies between samples, and SHIFT-Wing, a dataset of airplane CFD
+                                         simulations with different plane-designs, angle-of-attack regimes, and mach numbers. We evaluate
+                                         our AB-UPT surrogate model for practical engineering use-cases by showing quantitative per-field
+                                         metrics, predictive accuracy of integrated drag and lift coefficients, training and inference costs, as
+                                         well as a best and worst case analysis. Our results show good agreement on simulations from the
+                                         hold-out testset enabling order of magnitude faster CFD simulations with high accuracy such that
+                                         the surrogate models are relevant to practitioners for, e.g., design optimization use-cases.
+2     Preliminaries
+This work leverages the AB-UPT architecture [4] where we do not introduce significant changes to
+architecture or training procedure. Therefore, we refer to [4] for more detailed motivation, back-
+ground, architecture description and related work. Here we describe only the most important archi-
+tectural and training details as well as dataset specific background.
+
+2.1   AI surrogate modeling for external aerodynamics
+
+In general, a surrogate [13], or surrogate model, is a simpler model used to approximate a more
+complex, computationally demanding system like a simulation or physical experiment.
+There has been a recent surge in the use of transformers to create these surrogate models, building
+on their success in scientific fields like protein folding [19, 1] and weather modeling [7, 8]. These
+transformer-based surrogates are designed to effectively integrate information across different spa-
+tial locations and scales by leveraging attention mechanisms [33]. Transformer-based surrogates
+extend the neural operator paradigm [25, 26, 23, 22, 20] by incorporating self-attention, cross-
+attention, or perceiver blocks [18, 17]. Specific examples of these models include OFormer [24],
+Transolver [34], and (AB-)UPT [2, 4].
+
+2.2   Anchored-Branched Universal Physics Transformer (AB-UPT)
+
+AB-UPT [4] is a transformer-based model to tackle large-scale physical simulations. It treats the
+input mesh as a pointcloud and maps it to corresponding surface and volume fields where sur-
+face and volume are logically separated into different branches with regular interactions throughout
+the forward pass. AB-UPT leverages the expressive vanilla attention mechanism [33] where its
+quadratic cost is kept in check via training on a drastically reduced set of input points, so-called
+anchor points, together with a mechanism to efficiently infer the full set of points during inference
+via cross-attending only to anchor points.
+The original work showed strong performances coupled with high efficiency on CFD simulations
+with up to 140 million volumetric cells that were simulated with a hybrid RANS-LES (HRLES) [32,
+9, 15, 5] approach, which is a routine approach in the automotive industry [16, 6], outperforming
+other models like Transolver [34]. In this report, we show that AB-UPT outperforms similar models
+on the SHIFT-SUV (containing car simulations) and SHIFT-Wing (containing airplane simulations)
+datasets. Additionally, we investigate the performance of AB-UPT w.r.t. the practical usability.
+We only make one small adjustment to the AB-UPT model, namely that we do not share parameters
+between branches as we found this to perform slightly better without increasing runtime.
+
+2.3   Aerodynamic forces
+
+Aerodynamic forces quantify interesting properties of the car/airplane design such as drag and lift
+forces which are the result of an integration of the surface pressure ps and shear stress τw , i.e.,
+force per unit area exerted by the fluid on the surface, acting tangential (parallel) to the surface.
+Aerodynamic forces are obtained from the force acting on an object in an airflow, which is given by
+                                    I                         
+                              F =         − (ps − p∞ )n + τw dS ,                                 (1)
+                                        S
+where ps is the surface pressure, p∞ the free stream pressure, n the surface normal vector, and τw
+the shear stress contribution. For comparability between designs, dimensionless numbers as drag
+and lift coefficients
+                                         2 F · edrag          2 F · elift
+                                   Cd =               , Cl =                                             (2)
+                                           ρ v 2 Aref         ρ v 2 Aref
+are often used in engineering [6], where edrag is a unit vector into the free stream direction, elift a unit
+vector into the lift direction perpendicular to the free stream direction, ρ the density, v the magnitude
+of the free stream velocity, and Aref a characteristic reference area. Further, the acting force F can
+be converted into dimensionless numbers as drag and lift forces
+
+                                   Fdrag = F · edrag , Flift = F · elift .                              (3)
+
+
+                                                     2
+When simulating an airplane in flight, the angle of attack α is a common boundary condition which
+changes free stream edrag and lift direction elift as given by the unit velocity vector u∞ as
+
+                             cos(α)                                      0
+                              "     #                                   " #
+                                                 u∞
+                        u∞ =    0     , edrag =        , elift = edrag × 1 ,                         (4)
+                             sin(α)             ∥u∞ ∥2                   0
+
+
+where ∥.∥2 is the Euclidian norm. For α = 0 these reduce to edrag = (1, 0, 0) and elift = (0, 0, 1).
+We choose to compare aerodynamic forces of Equation (3) instead of normalizing them to represent
+a coefficient in order to make comparison with a relative error (as outlined in the next section) easier.
+Drag and lift coefficients can be close to zero which leads to unintuitive relative error values. For
+the datasets considered in this work, comparing aerodynamic forces does not run into this issue as
+they have magnitudes larger than 1.
+
+
+3     Experiments
+
+3.1    Model configuration and baseline models
+
+We evaluate the performance of AB-UPT on the SHIFT-SUV and SHIFT-Wing datasets by bench-
+marking it against several baselines. These include other strong transformer-based surrogates (Tran-
+solver, standard Transformer) and DoMINO [31]; the latter is a prominent point-cloud-based neu-
+ral operator for 3D CFD modeling whose architecture deviates from the state-of-the-art attention
+mechanism of transformers. We provide various practical evaluation metrics and visualizations to
+showcase the usefulness of these models. For the transformer models, we use the same hyperparam-
+eter configurations as in the AB-UPT paper [4]: each model consists of 12 transformer blocks with a
+hidden dimension of 192, 3-headed attention, and an MLP that expands to 4 times the hidden dimen-
+sion using a GELU activation function. Transolver and Transformer models use full self-attention
+between surface and volume tokens, resulting in approximately 5.5M parameters. In contrast, AB-
+UPT interleaves self- and cross-attention within and between the respective domains, where the
+weights in these two branches can be (partially) shared or separated. In this work, we use separate
+weights, which roughly doubles the number of parameters but keeps the same computational cost.
+For the DoMINO model, we use the official implementation from the physics-nemo repository with
+the hyperparameter configuration from Ranade et al. [31], resulting in a model with 19.7M param-
+eters. Beyond raw geometric features, DoMINO incorporates preprocessed surface normal vectors,
+surface areas, and signed distance functions as auxiliary inputs, which enhance the model’s ability
+to capture the geometric characteristics of the aerodynamic domain. The training loss combines
+volume, surface, and area-weighted components; specifically, the surface loss is scaled 5× relative
+to the volume loss to emphasize surface prediction accuracy. On the SHIFT-SUV dataset, we also
+evaluated AB-UPT with a hidden dimension of 384 using 6 attention heads. For the SHIFT-Wing
+dataset, where the angle of attack (AoA) is varied, we use the method proposed in Peebles and
+Xie [30] to condition each transformer block on the AoA. An overview of the dataset properties is
+outlined in Table 1.
+
+                  #Points                                         Properties
+    Dataset   Surface    Volume    #Simulations                           Variability
+    SUV        3M         45M          3992          Geometry [14, 36], physical model scale ∈ {1, 14 }
+    WING       3M          6M          1698         Geometry [29], AoA ∈ [0◦ , 4◦ ], Mach ∈ {0.5, 0.85}
+Table 1: Both datasets contain pressure ps and shear stress τ as surface variables as well as pressure
+pv and velocity u as volume variables. AoA denotes the angle-of-attack. Geometries are varied via
+parametric models. As AB-UPT is a point-based model, we use the centers of the CFD mesh cells
+as inputs.
+
+
+
+                                                   3
+3.2     Luminary SHIFT-SUV
+
+3.2.1    Dataset description
+SHIFT-SUV is an open-source aerodynamics database of high-fidelity external aerodynamics sim-
+ulations developed by Luminary Cloud. The dataset (which continues to increase in size) cur-
+rently includes over four thousand transient delayed detached eddy simulations (DDES) of geo-
+metric variants of the AeroSUV vehicle platform [36]. The AeroSUV platform, developed by FKFS
+(Forschungsinstitut für Kraftfahrwesen und Fahrzeugmotoren Stuttgart), shares inspiration and ge-
+ometry characteristics from the well known DrivAer platform popular in sedan automotive aerody-
+namics [14]. SHIFT-SUV is provided with the CC-BY-NC license and can be downloaded at no cost
+through HuggingFace [27].
+
+
+
+
+  Figure 1: Estate (left) and Fastback (right) configurations of the reference AeroSUV platform.
+
+
+
+
+Figure 2: The deformation cage used to create the geometry variants constructed around the Estate
+configuration.
+
+Geometry variants are produced using morphing boxes defined about the reference configurations
+using the ANSA software from BETA-CAE Systems, shown in Figure 2. The specific parameter-
+ization and their extents were informed through partnership with Honda Motor Company, and are
+summarized in Table 2. The deformations are described in design parameters familiar to vehicle
+stylists, and notably are not mutually orthogonal, e.g., multiple parameters may modify the same
+cage control points. To ensure consistency of geometry that should remain fixed across all variants,
+e.g., wheels, tires, and suspension components, these geometries regions are not influenced by the
+morphing approach. Based on input from Honda, the initial dataset explores only variations of these
+geometry parameters rather than also changing the boundary conditions.
+The geometry variants are divided into four categories based on vehicle size and AeroSUV config-
+uration: full-scale estate, full-scale fastback, quarter-scale estate, and quarter-scale fastback, with
+each group containing 998 samples. Full-scale represents the geometry as described by the refer-
+ence AeroSUV model while quarter-scale uniformly scales all dimensions by 0.25. The quarter-scale
+
+
+                                                  4
+Figure 3: Diagrams visualizing the deformation parameters described in Table 2. The parameters in
+the right image modify the vehicle symmetrically about the centerline (left and right sides equally).
+
+                         Deformation parameter        Min [mm]   Max [mm]
+                         Hood Height                     -50        +50
+                         FR Overhang                    -150        +150
+                         Windshield Angle               -150        +100
+                         Vehicle Height                 -150        +150
+                         Ride Height                     -30        +30
+                         Backlight Angle                -100        +200
+                         RR Overhang                    -150        +100
+                         FR Planview                     -75        +75
+                         Windshield Tapering            -100        +100
+                         Rear Tapering                   -90        +70
+Table 2: Target translation distances of the surface from the reference model. Because a morphing
+cage approach is used for deformation, these minimum and maximum values are used as targets to
+inform the extent of the cage deformation, but are not precisely enforced.
+
+
+dataset was used to validate the simulation setup by comparing to the experimental results acquired
+by [35] at FKFS using a 1/4-scale wind tunnel model. The full-scale results leverage the same gen-
+eral approach, with adjustments based on best practices learned during AutoCFD [12] for full-scale
+vehicle simulations.
+Computational meshes for the entire vehicle were generated in ANSA (each sample has a unique
+volume mesh), which generates hex-dominant and polyhedral meshes. A grid refinement study
+was performed for the validation configuration; refinement settings that produce ≈ 45M cells (see
+Figure 4) provided an acceptable balance of accuracy and computational efficiency.
+Solutions are produced using the Luminary Cloud flow solver, a GPU-native finite-volume code
+which is second-order in both space and time [12, 21]. The transient turbulence modeling approach
+leverages DDES with shear layer-adapted length scale and vortex titling measure (VTM) for grey
+area mitigation. All samples use the Spalart-Allmaras (SA) model for the Reynolds-averaged Navier
+Stokes (RANS) regions, and a hybrid centered/upwind convective scheme with proprietary blend-
+ing allows for low dissipation in the large eddy simulation (LES) regions. An advanced shielding
+function avoids modeled stress depletion, preventing early prediction of separation.
+A rolling floor and wheel rotation are modeled using translating and rotating surface boundary con-
+ditions, respectively. The rest of the vehicle surfaces are modeled as no-slip wall boundaries. A
+uniform inflow velocity of 30 m/s is used for the full-scale datasets, which are the only data used in
+the training described below.
+
+3.2.2   Training setup
+We train AB-UPT for 250 epochs (400K updates) on the full-scale simulations of the SHIFT-
+SUV dataset. This amounts to roughly 1996 simulations which are randomly split with a 80/10/10
+train/validation/test split. To avoid dataloading bottlenecks during training, we randomly subsample
+the volumetric data to 10% of the original mesh cells. The training setting uses the LION opti-
+mizer [10] with a peak learning rate of 5e-5 that is scheduled with a linear warmup the first 5%
+
+
+                                                  5
+Figure 4: Images depicting the mesh resolution refinement regions defined around the vehicle to
+capture the marge near-body and wake dynamics.
+
+
+
+
+Figure 5: Instantaneous velocity field (center plane) and wall shear stress contours (vehicle surface)
+for a full-scale Estate variant.
+
+
+
+of training followed by cosine decay to 1e-6. All models use 16K surface/volume tokens for their
+forward pass during training where AB-UPT does not use any query tokens during training (only
+for inference). Models are trained to predict all surface and volume variables at once where each
+variable is regressed via a mean absolute error loss function. We use a batch size of 1 and use the
+exponential moving average (update rate 1e-4) of the weights for evaluation. Training in float16
+mixed precision takes roughly 13.5h on a single NVIDIA H100 GPU. Even though the training data
+
+
+                                                  6
+contains two categories of cars (estate and fastback), we do not give this information explicitly to
+the model (e.g., via conditioning) as it is implicitly contained in the input geometry.
+
+3.2.3    Training data
+As described in Section 3.2.1 SHIFT-SUV contains 4 categories, full-scale estate, full-scale fast-
+back, quarter-scale estate and quarter-scale fastback, with each category containing roughly 1000
+simulations. We train on all full-scale simulations at once as we find that it is neither better nor
+faster to split it into fastback and estate car types. We tried training on all simulations at once and
+conditioning the model on the simulation scale, which ran into instability issues. We hypothesize
+that the different resolutions behave vastly different, leading to conflicting gradient directions which
+lead to training instabilities. Training models separately on all full-scale and all quater-scale simula-
+tions did not suffer from this. We choose the full-scale simulation resolution for this report to keep
+the results presentation concise. Table 3 shows that training on the union of the estate and fastback
+car types at once performs better, suggesting synbiotic transfer of learned dynamics.
+
+                                                     Estate                                    Fastback
+                                           Surface            Volume                Surface           Volume
+        Training data          Updates    ps      τw        pv          u          ps       τw       pv     u
+        Estate                  200K     8.60     3.78      3.27       2.55         -        -        -      -
+        Fastback                200K       -        -         -          -        8.38     3.70     2.98   2.28
+        Estate + fastback       200K     7.73     3.34      2.80       2.18       7.70     3.36     2.68   2.12
+        Estate + fastback       400K     7.37     3.18      2.72       2.06       7.37     3.21     2.61   2.01
+Table 3: Mean absolute errors of AB-UPT models trained on different data subsets of SHIFT-SUV.
+Median performance over 5 seeds is reported. Training on both estate and fastback car types shows
+best performances. Errors are multiplied by 100 for τw and 10 for u.
+
+
+3.2.4    Comparison against state-of-the-art baselines
+We compare AB-UPT against other transformer-based neural surrogate models in Table 4. AB-UPT
+performs best, obtaining good models in less than a day of training.
+
+                                                         Estate                                     Fastback
+                                               Surface             Volume                  Surface             Volume
+                  GPU-hours        dim      ps       τw           pv          u           ps        τw     pv       u
+ DoMINO                  35         32    42.85    21.25         682        15.26        42.33    21.47    687    15.09
+ Transolver              9.5       192     8.04     3.53         2.96        2.35         8.00     3.55    2.83    2.29
+ Transformer            16.5       192     7.70     3.35         2.78        2.17         7.70     3.37    2.66    2.12
+ AB-UPT                 13.5       192     7.37     3.18         2.72        2.06         7.37     3.21    2.61    2.01
+ AB-UPT                 22.3       384    6.47       2.85        2.56       1.89         6.50      2.91    2.49    1.88
+Table 4: Mean absolute errors of transformer-based models on SHIFT-SUV. Median performance
+over 5 seeds is reported. AB-UPT consistently performs best. Errors are multiplied by 100 for τw
+and 10 for u. For better performance, we also train a larger AB-UPT model with 1 seed, which we
+use for the analysis and visualizations of the subsequent sections. GPU-hours denote the time it took
+to train the model on a single NVIDIA H100 GPU.
+
+
+3.3     Relative errors
+
+We present the relative L1 and L2 errors for the best model in Table 5, as they can provide a more
+interpretable accuracy measure due to the normalizationPn by the norm of all targets in the dataset. In
+                                                         i=1 |yi −ŷi |
+particular, the relative L1 error is defined as Lrel
+                                                  1  =   P n            , where ŷi are predictions and yi are
+                                                           i=1 |yi |
+target field values; and the relative L2 error is analogously defined as the ratio of the L2 norms of all
+n prediction errors and all targets, respectively.
+
+
+                                                       7
+                                                                                      Estate                                                                                        Fastback
+                                                  Surface                                                  Volume                                                  Surface                                                Volume
+                                              ps                   τw                                pv                   u                                    ps                τw                                 pv                    u
+                             Lrel
+                              1          0.0064%               4.95%                           0.0025%                2.25%                                0.0064%            5.03%               0.0024%                              2.21%
+                             Lrel
+                              2          0.0142%               5.97%                           0.0054%                2.83%                                0.0142%            6.16%               0.0054%                              2.83%
+                                Table 5: Relative L1 and L2 errors of different fields from the best model (AB-UPT).
+
+
+ 3.3.1                           Aerodynamic forces
+ We calculate the aerodynamic forces (Equation 3) by evaluating our best model (dim 384) at all
+ positions of the surface mesh that was also used to run the numerical simulation. Figure 6 compares
+ the predicted forces against the ground truth, i.e., the forces obtained from the surface variables of
+ the numerical simulation. AB-UPT is able to model aerodynamic forces with high accuracy where
+ estate car types are more challenging than fastback car types. Notably, the lift forces of most estate
+ car types is below -200 N where some samples of the testset also contain much larger lift forces
+ (up to 100 N) where the model produces larger error. Note that we randomly assign samples to
+ train/validation/test split, meaning that the number of estate training samples that the model has
+ seen, which exhibit lift forces above -200 N, is quite small. Consequently, it is somewhat expected
+ that such rare dynamics are not learned that well and performance could most likely be improved by
+ including more estate geometries that result in lift forces greater than -200 N into the dataset.
+
+                                   Percent error statistics                                     Percent error statistics                                         Percent error statistics                                    Percent error statistics
+                             min=0.0% median=0.4% max=4.5%                               min=0.2% median=2.1% max=226.8%                                   min=0.0% median=0.6% max=2.3%                              min=0.3% median=4.7% max=105.7%
+                       560                                                            100                                                                                                                          100
+                                                                                                                                                     480
+Predicted drag force
+
+
+
+
+                                                                                                                              Predicted drag force
+
+
+
+
+                       540
+                                                               Predicted lift force
+
+
+
+
+                                                                                                                                                                                            Predicted lift force
+                                                                                        0
+                       520                                                                                                                           460                                                             0
+                       500                                                            100                                                            440
+                                                                                                                                                                                                                   100
+                       480
+                                                                                      200                                                            420
+                       460
+                                                                                                                                                                                                                   200
+                       440                                                            300                                                            400
+                       420                    R 2 = 0.963                                                   R 2 = 0.815                              380
+                                                                                                                                                                           R 2 = 0.979                                                   R 2 = 0.994
+                                                                                      400                                                                                                                          300
+                             420 440 460 480 500 520 540 560                             400   300   200    100   0    100                                 380 400 420 440 460 480                                       300     200   100    0       100
+                                Reference drag force                                           Reference lift force                                           Reference drag force                                             Reference lift force
+
+                       (a) Estate drag force                                          (b) Estate lift force                                 (c) Fastback drag force                                            (d) Fastback lift force
+ Figure 6: Aerodynamic drag and lift forces in Newtons. AB-UPT produces accurate predictions of
+ these integrated quantities. The most difficult task is the lift force prediction for estate car types
+ (b) where the bulk of simulations exhibit lift forces below -200 N (both train and test simulations),
+ leading to larger errors than in the other tasks (a, c, d) where coverage of force magnitudes is more
+ uniform.
+
+
+ 3.3.2                           Qualitative visualization
+ Figure 7 and Figure 8 show qualitative visualizations of AB-UPT predictions with various error
+ magnitudes. Target and prediction are visually indistinguishable, indicating good predictions where
+ visualizing the error highlights mispredicted regions.
+
+ 3.3.3                           Inference time analysis
+ Table 6 shows inference runtimes for various resolutions. Some use-cases (e.g., predicting only
+ surface variables) can be calculated using lower runtimes as the flexible anchor-based design of
+ AB-UPT necessitates 16K surface/volume tokens but any amount of query tokens is optional.
+
+ 3.4                          Luminary SHIFT-Wing
+
+ 3.4.1                           Dataset description
+ SHIFT-Wing is an open-source database built around the NASA common research model
+ (CRM) [29] and is tailored for high-speed transonic commercial aircraft aerodynamics. The CRM
+
+
+                                                                                                                             8
+Figure 7: Qualitative visualization of the surface pressure from the best (top), median (middle) and
+worst (bottom) prediction over all fastback simulations from the testset. Note that the colorbar of
+the error was chosen relatively strict to better show the errors made in the best and median case.
+Pressures are displayed as relative to the atmospheric pressure.
+
+
+
+
+Figure 8: Qualitative visualization of the x component of the velocity from the best (top), median
+(middle) and worst (bottom) prediction over all fastback simulations from the testset.
+
+                                      #Surface points    #Volume points     Runtime [s]
+            Full surface                   3M                 16K               2.1
+            Full volume                    16K                45M              31.5
+            Full volume + surface          3M                 45M              33.6
+Table 6: Approximate inference runtime to create predictions for various number of output points.
+The number of surface and volume anchors is fixed to 16K. Anchor points are always required as
+the model uses cross-attention between surface and volume anchors in every other block.
+
+
+
+has many different geometric configurations, ranging from high speed (cruise) to high lift (take-
+off/landing) with flaps and slats deployed, optional nacelle and pylon, optional horizontal stabiliz-
+ers, and even vertical tail. These configurations have been thoroughly experimentally investigated
+and has inspired a history of CFD simulations through the AIAA Drag Prediction and High-Lift
+
+
+                                                 9
+workshops. SHIFT-Wing is provided with the CC-BY-NC license and is available to download at no
+cost through HuggingFace [28].
+The focus of the current dataset is the high-speed cruise configuration with only fuselage and wing,
+focusing primarily on planform design. A parametric model of the CRM was constructed in the
+geometry modeling software OnShape by importing the reference model, deconstructing it, and
+reconstructing with parameters introduced via OnShape’s Variable Studio feature. This involved:
+
+      • Splitting the wing and fuselage into separate parameterized models,
+      • Intersecting the reference wing at six span-wise locations and storing the resulting airfoil
+        profiles,
+      • Exposing Variable Studio parameters to manipulate the translation and rotation (twist) of
+        these profiles,
+      • Re-lofting the wing and reconstructing the wing-tip geometry,
+      • Parameterizing the length and radius of the fuselage,
+      • Parameterizing the size of the wing-body fairing based on the local chord of the new wing,
+      • Boolean operation to combine the wing and fuselage parts.
+
+While there are many “micro” parameters that are used to construct the new model, the dataset is
+constructed by manipulating high-level “macro” parameters, described in Table 7. These parameters
+are commonly used for preliminary planform design, and the micro-parameters are computed from
+these. In the current dataset seven parameters describe the wing and fuselage, resulting in a diverse
+array of geometries as demonstrated in Figures 10 and 11.
+
+
+
+
+Figure 9: Diagram describing the macro parameters for the wing planform used to define the wing
+parameterization.
+
+The dataset is generated in batches at fixed flow speed (Mach number), where the remaining pa-
+rameters (geometry and angle of attack) are sampled via Latin hypercube sampling. This is done
+intentionally to facilitate assessment of AI/ML approaches on fundamentally different flow physics.
+The lower speeds do not induce shocks, sharp discontinuities in the flow field, while the higher Mach
+number conditions produce complex 3-dimensional shock patterns (see contours in Figure 12).
+The same Luminary flow solver described in Section 3.2.1 is used for these simulations. Turbulence
+is characterized via steady RANS with the Spalart-Allmaras turbulence model [21]. All vehicle
+surfaces are modeled as no-slip walls, with the angle-of-attack imposed via far field boundary con-
+ditions.
+An important difference relative to the SHIFT-SUV dataset is the meshing strategy. Luminary Mesh
+Adaptation, a proprietary solution-adaptive meshing technology, is leveraged to automatically cap-
+ture sharp flow features, as demonstrated in in Figure 12. This solution procedure generates a se-
+quence of meshes and solutions, automatically adapting each subsequent mesh (adjusting local mesh
+
+
+                                                 10
+                design space parameter         symbol       Min      Ref      Max
+                Aspect Ratio                   AR           7.5        9        11
+                1/4 chord sweep angle          β 14         25◦       35◦     37.5◦
+                Root-chord extension factor    FCr          1.0      1.373     1.4
+                Fuselage diameter              Df          240 in    240 in   258 in
+                Root twist                     tr            3◦     6.717◦      9◦
+                Delta twist root-to-break      ∆tr,b        -7◦     -5.953◦    -3◦
+                Delta twist break-to-tip       ∆tb,t       -7.5◦    -4.513◦   -1.5◦
+                angle of attack                α            0◦                 4◦
+                Mach number                    Ma           0.5               0.85
+Table 7: SHIFT-Wing design space parameters and their ranges relative to the reference geometry
+values, see Figure 9.
+
+
+
+
+          (a) Aspect ratio                    (b) FCr                          (c) β 1
+                                                                                       4
+
+Figure 10: Comparing realizations of the wing by modifying one parameter at a time. For each
+image the minimum (bottom half) and maximum (top half) range model is represented overlaid on
+the reference geometry (gray).
+
+
+
+
+                                              (a) twists
+Figure 11: Comparison of the reference model (middle) with minimum range values for the twist
+parameters (bottom) and maximum range values (top). For both top and bottom images a 30%
+opacity reference model is overlaid.
+
+
+
+density and anisotropy) to improve accuracy. Sharp flow features, which are incredibly hard or com-
+putationally expensive to capture with manual meshing approaches, are precisely characterized for
+every sample of this dataset without user intervention.
+
+
+                                                 11
+Figure 12: Single solution depicting pressure contours on the surface of the airplane and a depiction
+of the solution-adapted mesh on the x-aligned plane downstream (behind) the vehicle.
+
+
+3.4.2   Training setup
+We train two AB-UPT on the SHIFT-Wing dataset where separate models are trained for Mach 0.5
+and Mach 0.85 as we did not observe improved performance when training on both mach numbers
+at once (see Table 8). This amounts to 1138 simulations for Mach 0.5 and 560 simulations for
+Mach 0.85. We employ the same preprocessing and training protocol as for SHIFT-SUV. Namely,
+we randomly split the dataset into 80/10/10 train/validation/test samples, randomly subsample the
+volumetric data to 10% for improved dataloading speed, train with the LION optimizer [10], use a
+peak learning rate of 5e-5 with a learning rate warmup of 5% followed by cosine decay to 1e-6, train
+for 400K updates, use a batch size of 1 with a model weight exponential moving average update
+rate of 1e-4 and train the model to predict all surface/volume variables at once with a mean absolute
+error. Different from the SHIFT-SUV protocol, we train in float32 precision as we find it performs
+much better and use only 8K surface/volume anchors to compensate for the increased training time
+required for float32 training. Training takes roughly 25h on a single NVIDIA H100 GPU. As the
+training data varies the angle of attack α per simulation, we integrate α through Diffusion Trans-
+former (DiT) style conditioning [30] of all blocks in the surface and volume branches.
+
+3.4.3   Training data
+SHIFT-Wing contains 2 categories, Mach 0.5 and Mach 0.85 where we train separate models per
+Mach number. We tried training on both categories at once and conditioning the model on the
+mach number, which did not improve performance. We hypothesize that these categories exhibit
+significantly different dynamics, prohibiting symbiotic transfer between categories. Table 8 shows
+that separate models for different mach numbers outperform a model trained on the union.
+
+                                         Mach 0.5                        Mach 0.85
+                                  Surface         Volume          Surface          Volume
+          Mach       Updates     ps      τw      pv      u       ps      τw       pv       u
+            0.5       200K      5.60   0.550    6.84   2.38      -        -       -        -
+            0.5       400K      5.24   0.549    6.46   2.30      -        -       -        -
+           0.85       200K        -      -        -      -     18.64    1.462   29.37    4.35
+           0.85       400K        -      -        -      -     17.72    1.459   28.12    4.23
+        0.5 & 0.85    400K      5.70   0.551    6.79   2.32    18.89    1.461   30.13    4.25
+Table 8: Mean absolute errors of AB-UPT models trained on different data subsets of SHIFT-Wing.
+Median performance over 5 seeds is reported. Best results are marked bold and second best are
+underlined. Training separate models per Mach number shows best performance.
+
+
+
+                                                 12
+  3.4.4                                Comparison against state-of-the-art baselines
+  We compare AB-UPT against other transformer-based neural surrogate models in Table 9. AB-UPT
+  obtains good models in half a day where training can be prolonged for better performance.
+
+                                                                                                                                                      Mach 0.5                                                                                  Mach 0.85
+                                                                                                                               Surface                                           Volume                          Surface                                           Volume
+                                                     GPU-hours                                         Updates              ps                   τw                             pv           u            ps                                     τw               pv           u
+                 DoMINO                                     24                                             50K            207          0.547                                  260         2.98            743                                 1.62            745             9.49
+                 Transolver                                 4.7                                           200K            8.24         0.559                                  9.51        3.04            30.7                                1.486           46.1            6.77
+                 Transformer                               16.3                                           200K            5.78         0.551                                  6.87        2.37            19.3                                1.464           29.8            4.40
+                 AB-UPT                                    12.5                                           200K            5.60         0.550                                  6.84        2.38            18.6                                1.461           29.4            4.35
+                 AB-UPT                                    25.0                                           400K            5.24         0.549                                  6.46        2.30            17.7                                1.459           28.1            4.23
+  Table 9: Mean absolute errors of AB-UPT models trained on SHIFT-Wing. Median performance
+  over 5 seeds is reported. For better performance, we also train a AB-UPT model for longer, which
+  we use for the analysis and visualizations of the subsequent sections. GPU-hours denote the time it
+  took to train the model on a single NVIDIA H100 GPU.
+
+  3.5                             Relative errors
+
+  Analogous to Section 3.3, we present the relative L1 and L2 errors for the best model in Table 10 in
+  order to provide a more interpretable measure due to the normalization by the norm of the targets.
+
+                                                                                              Mach 0.5                                                                                         Mach 0.85
+                                                        Surface                                                     Volume                                                     Surface                                                        Volume
+                                                   ps                   τw                                     pv                  u                                        ps              τw                                  pv                            u
+                                      Lrel
+                                       1       0.022%             12.5%                                    0.027%             9.56%                                      0.079%          13.3%             0.125%                                      9.51%
+                                      Lrel
+                                       2       0.056%             18.4%                                    0.072%            12.45%                                      0.221%          18.8%             0.651%                                      12.60%
+                                      Table 10: Relative L1 and L2 errors of different fields from the best model (AB-UPT).
+
+
+  3.5.1                                Aerodynamic forces
+  We calculate the aerodynamic forces (Equation 3) by evaluating our best model at all positions of the
+  surface mesh that was also used to run the numerical simulation. Figure 13 compares the predicted
+  forces against the ground truth, i.e., the forces obtained from the surface variables of the numerical
+  simulation. AB-UPT is able to model aerodynamic forces on the testset almost perfectly.
+                                       Percent error statistics                                            Percent error statistics                                            Percent error statistics                                             Percent error statistics
+                                 min=0.0% median=0.2% max=0.8%                                1400
+                                                                                                     min=0.0% median=0.0% max=1.9%                                       min=0.0% median=0.2% max=0.6%                                        min=0.0% median=0.1% max=1.3%
+                                                                                                                                                                                                                                       3500
+Predicted drag force [kN]
+
+
+
+
+                                                                                                                                       Predicted drag force [kN]
+
+
+
+
+                                                                                                                                                                   350
+                                                                  Predicted lift force [kN]
+
+
+
+
+                                                                                                                                                                                                           Predicted lift force [kN]
+
+
+
+
+                                                                                              1200
+                            60                                                                                                                                                                                                         3000
+                                                                                              1000                                                                 300                                                                 2500
+                            50                                                                800                                                                  250                                                                 2000
+                                                                                              600
+                            40                                                                                                                                     200                                                                 1500
+                                                                                              400
+                                                                                                                                                                                                                                       1000
+                                                                                              200
+                                                                                                                                                                   150
+                            30                                                                                                                                                                                                         500
+                                                                                                0                                                                  100
+                            20                     R 2 = 1.00                                  200                    R 2 = 1.00                                    50
+                                                                                                                                                                                           R 2 = 1.00                                    0
+                                                                                                                                                                                                                                                                  R 2 = 1.00
+                                                                                                                                                                                                                                        500
+                                 20     30   40    50     60                                         250 0 250 500 750 1000 1250                                         50 100 150 200 250 300 350                                              0     1000   2000     3000
+                                 Reference drag force [kN]                                            Reference lift force [kN]                                          Reference drag force [kN]                                             Reference lift force [kN]
+
+              (a) Mach 0.5 drag force                                                  (b) Mach 0.5 lift force                                  (c) Mach 0.85 drag force                                                  (d) Mach 0.85 lift force
+  Figure 13: Aerodynamic drag and lift forces. AB-UPT can model these integrated quantities almost
+  perfectly, obtaining an R2 score of 1.0 with a worst-case error of at most 2%.
+
+  As we observe perfect R2 correlation, we investigate training with fewer training simulations to see
+  how many numerical simulations would be necessary to obtain a good surrogate model. In Figure 14,
+  we show aerodynamic lift force predictions for models trained on less data of the Mach 0.85 subset,
+  showing strong performances even on little data.
+
+
+                                                                                                                                      13
+                                         Percent error statistics                                                  Percent error statistics                                                       Percent error statistics                                         Percent error statistics                                                    Percent error statistics
+                                   min=0.0% median=0.3% max=3.1%                                            min=0.0% median=0.5% max=22.3%                                                 min=0.0% median=1.5% max=104.5%                                  min=0.0% median=3.7% max=226.8%                                            min=0.0% median=12.7% max=326.5%
+                            3500                                                                     3500                                                                               3500                                                             3500                                                                        3500
+
+
+
+
+Predicted lift force [kN]
+
+
+
+
+                                                                         Predicted lift force [kN]
+
+
+
+
+                                                                                                                                                            Predicted lift force [kN]
+
+
+
+
+                                                                                                                                                                                                                             Predicted lift force [kN]
+
+
+
+
+                                                                                                                                                                                                                                                                                                         Predicted lift force [kN]
+                            3000                                                                     3000                                                                               3000                                                             3000                                                                        3000
+                            2500                                                                     2500                                                                               2500                                                             2500                                                                        2500
+                            2000                                                                     2000                                                                               2000                                                             2000                                                                        2000
+                            1500                                                                     1500                                                                               1500                                                             1500                                                                        1500
+                            1000                                                                     1000                                                                               1000                                                             1000                                                                        1000
+                            500                                                                      500                                                                                500                                                              500                                                                         500
+                              0
+                                                      R 2 = 1.00                                       0
+                                                                                                                             R 2 = 1.00                                                   0
+                                                                                                                                                                                                              R 2 = 0.99                                   0
+                                                                                                                                                                                                                                                                                          R 2 = 0.94                                   0
+                                                                                                                                                                                                                                                                                                                                                           R 2 = -0.17
+                             500                                                                      500                                                                                500                                                              500                                                                         500
+                                         0    1000   2000     3000                                             0     1000   2000    3000                                                        0     1000   2000   3000                                         0     1000           2000        3000                                       0     1000    2000   3000
+                                       Reference lift force [kN]                                              Reference lift force [kN]                                                        Reference lift force [kN]                                        Reference lift force [kN]                                                   Reference lift force [kN]
+
+                             (a) 224 samples                                                         (b) 112 samples                                                                      (c) 56 samples                                                   (d) 28 samples                                                              (e) 14 samples
+  Figure 14: Aerodynamic lift forces of Mach 0.85 test simulations when training on subsets. The full
+  dataset (Figure 13d) contains 448 training samples. While median and maximum errors (as shown
+  in the title of each plot) steadily increase, high accuracy is obtained with as little as 56 samples.
+
+
+
+  3.5.2                                      Wing pressure profiles
+
+  A common analysis in aerodynamic modeling is to visualize the pressure values along a slice in
+  the wing. In Figure 15, we show such wing pressure profiles at various slice locations in the wing,
+  highlighting that AB-UPT can accurately reproduce such analysis results.
+
+
+                               10                                                           Ground truth                                            10                                                                Ground truth                                                        10.0                                                            Ground truth
+                                                                                            Prediction                                                                                                                Prediction                                                           7.5                                                            Prediction
+                                   5                                                                                                                 5                                                                                                                                     5.0
+Pressure [kPa]
+
+
+
+
+                                                                                                                                   Pressure [kPa]
+
+
+
+
+                                                                                                                                                                                                                                                                         Pressure [kPa]
+                                                                                                                                                                                                                                                                                           2.5
+                                                                                                                                                     0
+                                   0                                                                                                                                                                                                                                                       0.0
+                                                                                                                                                     5                                                                                                                                     2.5
+                                   5
+                                                                                                                                                                                                                                                                                           5.0
+                                                                                                                                                    10                                                                                                                                     7.5
+                               10
+                                                                                                                                                                                                                                                                                          10.0
+                                                            x-position                                                                                                                                x-position                                                                                                                        x-position
+                               8                                                            Ground truth                                            8                                                                 Ground truth                                                        8                                                               Ground truth
+                               6                                                            Prediction                                              6                                                                 Prediction                                                                                                                          Prediction
+                                                                                                                                                                                                                                                                                          6
+                               4
+Pressure [kPa]
+
+
+
+
+                                                                                                                                   Pressure [kPa]
+
+
+
+
+                                                                                                                                                                                                                                                                         Pressure [kPa]
+
+
+
+                                                                                                                                                    4                                                                                                                                     4
+                               2
+                                                                                                                                                    2                                                                                                                                     2
+                               0
+                               2                                                                                                                    0                                                                                                                                     0
+                               4                                                                                                                    2                                                                                                                                     2
+                               6                                                                                                                    4                                                                                                                                     4
+                               8
+                                                                                                                                                    6
+                                                            x-position                                                                                                                               x-position                                                                                                                       x-position
+
+                                   7.5
+                                                                                            Ground truth                                                                                                 Ground truth                                                                                                                                     Ground truth
+                                                                                            Prediction                                                  5                                                Prediction                                                                           5                                                           Prediction
+                                   5.0
+Pressure [kPa]
+
+
+
+
+                                                                                                                                   Pressure [kPa]
+
+
+
+
+                                                                                                                                                                                                                                                                         Pressure [kPa]
+
+
+
+
+                                   2.5                                                                                                                  0                                                                                                                                     0
+                                   0.0                                                                                                                                                                                                                                                        5
+                                                                                                                                                        5
+                                   2.5
+                                   5.0                                                                                                              10                                                                                                                                    10
+                                   7.5
+                                                                                                                                                                                                                                                                                          15
+                               10.0                                                                                                                 15
+                                                             x-position                                                                                                                               x-position                                                                                                                       x-position
+
+                                             (a) 15% half-span                                                                                                                (b) 50% half-span                                                                                                     (c) 95% half-span
+  Figure 15: Wing pressure profile visualization from the best (top), median (middle) and worst (bot-
+  tom) prediction over all Mach 0.85 simulations from the testset. Slices are taken along the y-axis at
+  15%, 50% and 95% of one side of the wing. AB-UPT obtains near perfect accuracy where even the
+  worst-case obtains good pressure profiles in two out of three slices.
+
+
+
+  3.5.3                                      Qualitative visualization
+
+  AB-UPT predictions are qualitatively visualized in Figure 16 and Figure 17 showing high agreement
+  with the numerical simulation result.
+
+
+                                                                                                                                                                                                      14
+Figure 16: Qualitative visualization of the surface pressure from the best (top), median (middle) and
+worst (bottom) prediction over all Mach 0.85 simulations from the testset. Note that the colorbar of
+the error was chosen relatively strict to highlight the errors where Pa is used as unit instead of kPa.
+Pressure values are relative to the atmospheric pressure.
+
+
+
+
+Figure 17: Qualitative visualization of the x component of the velocity slice at 50% half-span from
+the best (top), median (middle) and worst (bottom) prediction over all Mach 0.85 simulations from
+the testset. Due to geometric variations, the wing position varies in this visualization.
+
+
+3.5.4   Inference from isotropic geometry mesh
+
+The numerical solving process used to obtain the numerical solution for the airplane simulations
+employs Luminary Mesh Adaption, which ensures thin and sharp features, such as transonic shocks,
+
+
+                                                  15
+are accurately captured by the solver with no user input and captures the wide range of flow condi-
+tions and geometries. As transformer-based surrogate models are commonly trained to map input
+points to target values, they use the solution mesh which underwent potentially multiple adaptation
+steps resulting in a highly anisotropic mesh. In contrast, in practice the solution is not known in ad-
+vance and a user will typically provide a non-adapted geometry tessellation which is approximately
+isotropic. For neural surrogate models, this poses a shift in the input distribution as illustrated in
+Figure 18. To investigate the impact thereof, we first evaluate performance of a model trained on the
+solution mesh and provide only the isotropic geometry mesh during inference. Figure 19 (a-b) shows
+that simply plugging in the isotropic mesh into a model trained on the solution mesh (“zero-shot”
+geometry transfer) greatly degrades performance.
+
+
+
+
+          (a) Solution-adapted: 3M nodes                         (b) Uniform: 200k nodes
+Figure 18: Surface discretizations node distribution for a Mach 0.85 sample of SHIFT-Wing. Note
+the geometries of the wing are identical, simply the node distributions (their local densities) are
+different.
+
+To solve this issue, we exploit the flexibility of AB-UPT to decouple the point distribution of an-
+chors and queries to allow the model to make predictions from an isotopically tessellated geometry.
+For this experiment, we sample (i) surface anchors and geometry branch inputs from the isotropic
+geometry mesh (ii) surface queries from the CFD solution mesh (iii) volume anchors from a regular
+grid in the domain (iv) volume queries from the CFD solution mesh. As target values are only avail-
+able for the CFD solution mesh, we do not employ a loss onto the anchor tokens, but only on the
+query tokens. This setup teaches the model to only rely on isotropic geometry representation and
+regular grid volume representation as the positional information from the queries only influences the
+anchor representation via the backward pass but not via the forward pass. This setting is taken from
+the AB-UPT “Training from CAD” Section [4]. Figure 19 (c-d) shows that this setting is able to
+obtain strong performances without requiring the CFD solution mesh.
+Note that in this setting, the reference aerodynamic forces are calculated from the solution mesh
+whereas the predicted forces are calculated from the isotropic CAD representation by calculating
+the corresponding surface normals and surface areas for Equation 3.
+
+3.5.5   Inference time analysis
+We present inference times of various settings in Table 11. For SHIFT-Wing, AB-UPT operates on
+8K anchor tokens from which arbitrary many query tokens can be added. This provides fast inference
+in settings that do not require resolving the full CFD solution mesh. For example, inferring drag and
+lift forces from the CAD input with 200K points requires only 0.6 seconds as it is requires an order
+of magnitude less query tokens than decoding the full surface mesh.
+
+
+                                                  16
+                                         Percent error statistics                                         Percent error statistics                                           Percent error statistics                                            Percent error statistics
+                                  min=0.3% median=10.6% max=35.5%                                 min=5.7% median=21.3% max=207.5%                                     min=0.0% median=0.2% max=3.1%                                       min=0.0% median=0.3% max=5.0%
+                                                                                                3500                                                                                                                                3500
+
+
+
+
+Predicted drag force [kN]
+
+
+
+
+                                                                                                                                     Predicted drag force [kN]
+                            350                                                                                                                                  350
+
+
+
+
+                                                                    Predicted lift force [kN]
+
+
+
+
+                                                                                                                                                                                                        Predicted lift force [kN]
+                                                                                                3000                                                                                                                                3000
+                            300                                                                 2500                                                             300                                                                2500
+                            250                                                                 2000                                                             250                                                                2000
+
+                            200                                                                 1500                                                             200                                                                1500
+                                                                                                1000                                                                                                                                1000
+                            150                                                                                                                                  150
+                                                                                                500                                                                                                                                 500
+                            100                                                                                                                                  100
+                             50
+                                                    R 2 = 0.80                                    0
+                                                                                                                     R 2 = -0.21                                  50
+                                                                                                                                                                                         R 2 = 1.00                                   0
+                                                                                                                                                                                                                                                            R 2 = 1.00
+                                                                                                 500                                                                                                                                 500
+                                  50 100 150 200 250 300 350                                            0     1000   2000   3000                                       50 100 150 200 250 300 350                                             0     1000   2000   3000
+                                   Reference drag force [kN]                                           Reference lift force [kN]                                       Reference drag force [kN]                                            Reference lift force [kN]
+
+  (a) “zero-shot” geometry (b) “zero-shot” geometry (c) Training with CAD in- (d) Training with CAD in-
+  transfer (drag force)    transfer (lift force)    puts (drag force)         puts (lift force)
+  Figure 19: Aerodynamic drag and lift forces from isotropic geometry for Mach 0.85 of the SHIFT-
+  Wing dataset. (a-b) Transferring models in “zero-shot” fashion to the new geometry representation
+  heavily degrades performance. (c-d) AB-UPT offers the flexibility to train models that can readily
+  use a isotropic geometry by using the solution mesh only for query tokens. With this training pro-
+  cedure, AB-UPT obtains strong performances while requiring only a simple isotopically tessellated
+  CAD geometry representation.
+
+                                                                                                                             #Surface points                                        #Volume points                                           Runtime [s]
+                                    Surface (isotropic CAD tesselation)                                                              200K                                                     8K                                                    0.6
+                                    Surface (CFD solution mesh)                                                                       3M                                                      8K                                                     8.4
+                                    Full volume                                                                                       8K                                                      6M                                                    16.8
+                                    Full volume + surface                                                                             3M                                                      6M                                                    25.2
+  Table 11: Approximate inference runtime to create predictions for various number of output points.
+  The number of surface and volume anchors is fixed to 8K. Anchor points are always required as the
+  model uses interleaved cross-attention between surface and volume anchors.
+
+
+  4                               Conclusion
+  We provide an empirical evaluation of AB-UPT on two datasets generated with the Luminary SHIFT
+  platform. SHIFT-SUV contains CFD simulations of different car shapes. Similarly, SHIFT-Wing
+  contains airplane CFD simulations with varying geometry, angle of attack and Mach numbers. AB-
+  UPT compares favorably against other neural surrogate models on these datasets, consolidating the
+  notion of AB-UPT as the current state-of-the-art model for neural surrogate models in external CFD
+  simulations. We show various qualitative and quantitative evaluations of our best model to show
+  practical usability of the model. Notably, AB-UPT obtains perfect R2 correlation of aerodynamic
+  drag and lift forces, even when only provided with a isotopically tessellated geometry representation
+  instead of an adaptively refined CFD mesh. Additionally AB-UPT is very fast to train, obtaining
+  strong models in a day on a single GPU where aerodynamic forces of new designs can be calculated
+  in as little as 0.6 seconds.
+
+  Acknowledgments
+  We would like to thank Luminary Cloud for providing the high-quality SHIFT-SUV and SHIFT-
+  Wing datasets. We extend our special gratitude to Michael Emory and Peter Lyu for their critical
+  contributions to this work, which included detailed data descriptions, insightful visualizations, and
+  fruitful discussions.
+
+
+
+
+                                                                                                                                   17
+References
+ [1] J. Abramson, J. Adler, J. Dunger, R. Evans, T. Green, A. Pritzel, O. Ronneberger, L. Willmore,
+     A. J. Ballard, J. Bambrick, et al. Accurate structure prediction of biomolecular interactions
+     with alphafold 3. Nature, pages 1–3, 2024.
+
+ [2] B. Alkin, A. Fürst, S. L. Schmid, L. Gruber, M. Holzleitner, and J. Brandstetter. Universal
+     physics transformers: A framework for efficiently scaling neural operators. In NeurIPS, 2024.
+
+ [3] B. Alkin, T. Kronlachner, S. Papa, S. Pirker, T. Lichtenegger, and J. Brandstetter. NeuralDEM:
+     Real-time simulation of industrial particulate flows. arXiv preprint arXiv:2411.09678, 2024.
+
+ [4] B. Alkin, M. Bleeker, R. Kurle, T. Kronlachner, R. Sonnleitner, M. Dorfer, and J. Brandstetter.
+     AB-UPT: Scaling neural CFD surrogates for high-fidelity automotive aerodynamics simula-
+     tions via anchored-branched universal physics transformers. arXiv preprint arXiv:2502.09692,
+     2025.
+
+ [5] N. Ashton, P. Batten, A. W. Cary, K. R. Holst, and V. Skaperdas. HLPW-4/GMGW-3: Hybrid
+     RANS/LES technology focus group workshop summary. In AIAA Aviation 2022 Forum, 2022.
+
+ [6] N. Ashton, C. Mockett, M. Fuchs, L. Fliessbach, H. Hetmann, T. Knacke, N. Schonwald,
+     V. Skaperdas, G. Fotiadis, A. Walle, et al. DrivAerML: High-fidelity computational fluid
+     dynamics dataset for road-car external aerodynamics. arXiv preprint arXiv:2408.11969, 2024.
+
+ [7] K. Bi, L. Xie, H. Zhang, X. Chen, X. Gu, and Q. Tian. Accurate medium-range global
+     weather forecasting with 3d neural networks. Nature, 619(7970):533–538, 2023. doi:
+     10.1038/S41586-023-06185-3.
+
+ [8] C. Bodnar, W. P. Bruinsma, A. Lucic, M. Stanley, J. Brandstetter, P. Garvan, M. Riechert,
+     J. A. Weyn, H. Dong, A. Vaughan, J. K. Gupta, K. Thambiratnam, A. Archibald, E. Heider,
+     M. Welling, R. E. Turner, and P. Perdikaris. Aurora: A foundation model of the atmosphere.
+     CoRR, abs/2405.13063, 2024. doi: 10.48550/ARXIV.2405.13063.
+
+ [9] B. Chaouat. The state of the art of hybrid RANS/LES modeling for the simulation of turbulent
+     flows. Flow, turbulence and combustion, 2017.
+
+[10] X. Chen, C. Liang, D. Huang, E. Real, K. Wang, H. Pham, X. Dong, T. Luong, C. Hsieh, Y. Lu,
+     and Q. V. Le. Symbolic discovery of optimization algorithms. In NeurIPS, 2023.
+
+[11] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. De-
+     hghani, M. Minderer, G. Heigold, S. Gelly, J. Uszkoreit, and N. Houlsby. An image is worth
+     16x16 words: Transformers for image recognition at scale. In ICLR, 2021.
+
+[12] T. Economon, D. Engwirda, J. Ho, M. Mara, and R. Mansharamani. Luminary contribution to
+     the autocfd4 workshop, 2024. URL https://autocfd.org/autocfd4/.
+
+[13] A. Forrester, A. Sobester, and A. Keane. Engineering design via surrogate modelling: a prac-
+     tical guide. John Wiley & Sons, 2008.
+
+[14] A. I. Heft, T. Indinger, and N. A. Adams. Introduction of a new realistic generic car model for
+     aerodynamic investigations. Technical report, SAE Technical Paper, 2012.
+
+[15] S. Heinz. A review of hybrid RANS-LES methods for turbulent flows: Concepts and applica-
+     tions. Progress in Aerospace Sciences, 2020.
+
+[16] B. Hupertz, N. Lewington, C. Mockett, N. Ashton, and L. Duan. Towards a standardized
+     assessment of automotive aerodynamic CFD prediction capability-AutoCFD 2: Ford drivaer
+     test case summary. Technical report, SAE Technical Paper, 2022.
+
+[17] A. Jaegle, S. Borgeaud, J.-B. Alayrac, C. Doersch, C. Ionescu, D. Ding, S. Koppula, D. Zoran,
+     A. Brock, E. Shelhamer, et al. Perceiver io: A general architecture for structured inputs &
+     outputs. In International Conference on Learning Representations, 2021.
+
+
+                                                18
+[18] A. Jaegle, F. Gimeno, A. Brock, O. Vinyals, A. Zisserman, and J. Carreira. Perceiver: General
+     perception with iterative attention. In International conference on machine learning, pages
+     4651–4664. PMLR, 2021.
+[19] J. Jumper, R. Evans, A. Pritzel, T. Green, M. Figurnov, O. Ronneberger, K. Tunyasuvunakool,
+     R. Bates, A. Žı́dek, A. Potapenko, et al. Highly accurate protein structure prediction with
+     alphafold. nature, 596(7873):583–589, 2021.
+[20] N. Kovachki, Z. Li, B. Liu, K. Azizzadenesheli, K. Bhattacharya, A. Stuart, and A. Anand-
+     kumar.   Neural operator: Learning maps between function spaces.            arXiv preprint
+     arXiv:2108.08481, 2021.
+[21] J. Krakos, P. Gomes, J. Ho, M. Mara, G. Sáez, A. Loseille, T. Economon, and J. J. Alonso.
+     Gpu-based and adaptive solution technology for the 5th aiaa high lift prediction workshop. In
+     AIAA SCITECH 2025 Forum, page 0496, 2025.
+[22] Z. Li, N. Kovachki, K. Azizzadenesheli, B. Liu, K. Bhattacharya, A. Stuart, and A. Anand-
+     kumar. Fourier neural operator for parametric partial differential equations. arXiv preprint
+     arXiv:2010.08895, 2020.
+[23] Z. Li, N. Kovachki, K. Azizzadenesheli, B. Liu, K. Bhattacharya, A. Stuart, and A. Anandku-
+     mar. Neural operator: Graph kernel network for partial differential equations. arXiv preprint
+     arXiv:2003.03485, 2020.
+[24] Z. Li, K. Meidani, and A. B. Farimani. Transformer for partial differential equations’ operator
+     learning. arXiv preprint arXiv:2205.13671, 2022.
+[25] L. Lu, P. Jin, and G. E. Karniadakis. Deeponet: Learning nonlinear operators for identify-
+     ing differential equations based on the universal approximation theorem of operators. arXiv
+     preprint arXiv:1910.03193, 2019.
+[26] L. Lu, P. Jin, G. Pang, Z. Zhang, and G. E. Karniadakis. Learning nonlinear operators via deep-
+     onet based on the universal approximation theorem of operators. Nature machine intelligence,
+     3(3):218–229, 2021.
+[27] Luminary Cloud. Shift-suv: High-fidelity computational fluid dynamics dataset for suv exter-
+     nal aerodynamics, 2025. URL https://huggingface.co/datasets/luminary-shift/
+     SUV/.
+[28] Luminary Cloud. Shift-wing: High-fidelity computational fluid dynamics dataset for tran-
+     sonic wing external aerodynamics, 2025. URL https://huggingface.co/datasets/
+     luminary-shift/WING/.
+[29] NASA Common Research Model Project. High speed common research model (crm). https:
+     //commonresearchmodel.larc.nasa.gov/home-2/high-speed-crm/.
+[30] W. Peebles and S. Xie. Scalable diffusion models with transformers. In ICCV, 2023.
+[31] R. Ranade, M. A. Nabian, K. Tangsali, A. Kamenev, O. Hennigh, R. Cherukuri, and
+     S. Choudhry. Domino: A decomposable multi-scale iterative neural operator for modeling
+     large scale engineering simulations, 2025.
+[32] P. R. Spalart, S. Deck, M. L. Shur, K. D. Squires, M. K. Strelets, and A. Travin. A new
+     version of detached-eddy simulation, resistant to ambiguous grid densities. Theoretical and
+     computational fluid dynamics, 2006.
+[33] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. Kaiser, and I. Polo-
+     sukhin. Attention is all you need. In NIPS, 2017.
+[34] H. Wu, H. Luo, H. Wang, J. Wang, and M. Long. Transolver: A fast transformer solver for
+     pdes on general geometries. In ICML, 2024.
+[35] C. Zhang. Aerodynamic study on the vehicle shape parameters with respect to ground simula-
+     tion. Springer, 2021.
+
+
+                                                19
+[36] C. Zhang, M. Tanneberger, T. Kuthada, F. Wittmeier, J. Wiedemann, and J. Nies. Introduction
+     of the aerosuv-a new generic suv model for aerodynamic research. Technical report, SAE
+     Technical Paper, 2019.
+
+
+
+
+                                              20
+

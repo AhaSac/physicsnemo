@@ -1,0 +1,1659 @@
+Archives of Computational Methods in Engineering (2023) 30:2929–2958
+https://doi.org/10.1007/s11831-023-09890-4
+
+    REVIEW ARTICLE
+
+
+
+Stiff‑PDEs and Physics‑Informed Neural Networks
+Prakhar Sharma1,4         · Llion Evans1,3,4 · Michelle Tindall2 · Perumal Nithiarasu1,4
+
+Received: 28 October 2022 / Accepted: 19 January 2023 / Published online: 7 February 2023
+© The Author(s) 2023
+
+
+Abstract
+In recent years, physics-informed neural networks (PINN) have been used to solve stiff-PDEs mostly in the 1D and 2D spatial
+domain. PINNs still experience issues solving 3D problems, especially, problems with conflicting boundary conditions at
+adjacent edges and corners. These problems have discontinuous solutions at edges and corners that are difficult to learn for
+neural networks with a continuous activation function. In this review paper, we have investigated various PINN frameworks
+that are designed to solve stiff-PDEs. We took two heat conduction problems (2D and 3D) with a discontinuous solution
+at corners as test cases. We investigated these problems with a number of PINN frameworks, discussed and analysed the
+results against the FEM solution. It appears that PINNs provide a more general platform for parameterisation compared to
+conventional solvers. Thus, we have investigated the 2D heat conduction problem with parametric conductivity and geometry
+separately. We also discuss the challenges associated with PINNs and identify areas for further investigation.
+
+Acronyms                                                                    DNN	Deep neural network
+PINN	Physics-informed neural network                                       FCNN	Fully connected neural network
+PDE	Partial differential equation                                          SiReNs	Sinusoidal Representation Network
+IC	Initial condition                                                       L-BFGS	Limited-memory
+BC	Boundary condition                                                              Broyden–Fletcher–Goldfarb–Shanno
+NN	Neural network                                                          MSE	Mean squared error
+ODE	Ordinary differential equation                                         SDF	Signed distance function
+DGM	Deep Galerkin method                                                   FEM	Finite element method
+LSTM	Long short-term memory                                                FDM	Finite difference method
+
+
+Llion Evans, Michelle Tindall, and Perumal Nithiarasu have
+contributed equally to this work.                                           1 Introduction
+
+* Prakhar Sharma                                                            For a variety of problems, conventional numerical tech-
+  prakhars962@gmail.com                                                     niques for solving partial differential equations (PDEs)
+     Llion Evans                                                            remain difficult. The mesh generation is complicated, noisy
+     llion.evans@swansea.ac.uk                                              experimental data can’t be integrated with the existing
+     Michelle Tindall                                                       algorithms and high-dimensional parametric PDEs often
+     michelle.tindall@ukaea.uk                                              can’t be solved. Ill-posed inverse problems are prohibitively
+     Perumal Nithiarasu                                                     expensive and require complicated algorithms. In an effort to
+     p.nithiarasu@swansea.ac.uk                                             address these issues, the development of powerful computers
+1
+     Faculty of Science and Engineering, Swansea University,
+                                                                            and machine learning libraries has taken research in physics-
+     Bay Campus, Swansea SA1 8EN, UK                                        informed machine learning to new heights.
+2
+     Fusion Technology Facilities, United Kingdom
+                                                                               Recently, physics-informed neural networks (PINNs)
+     Atomic Energy Authority, Unit 2a Lanchester Way,                       have gained popularity due to the novel approach for solving
+     Rotherham S60 5FX, UK                                                  forward [1–4] and inverse problems [5–7] involving PDEs
+3
+     Culham Science Centre, United Kingdom Atomic Energy                    using neural networks (NNs). Unlike conventional numeri-
+     Authority, Abingdon OX14 3DB, UK                                       cal techniques for solving PDEs, PINNs are non-data-driven
+4
+     Zienkiewicz Institute for Modelling, Data and AI, Swansea              meshless models that satisfy the prescribed initial (IC) and
+     University, Bay Campus, Swansea SA1 8EN, UK
+
+
+                                                                                                                              13
+                                                                                                                         Vol.:(0123456789)
+2930                                                                                                               P. Sharma et al.
+
+
+boundary conditions (BC) as well as the governing PDE.           issues during training. Novel architectures such as Fourier
+The differential terms in the PDE are approximated using         networks [25], Modified Fourier networks [26, 27], Sinusoi-
+automatic differentiation.                                       dal Representation networks, SiReNs [28] were proposed to
+    Although, NNs have been present in literature for a long     remove the spectral bias from computer vision problems.
+time, it was only in the last decade that they started gain-        Imbalanced loss terms appear when the magnitude of a
+ing immense popularity due to the recent advancement in          loss term is significantly larger than other loss terms, result-
+automatic differentiation and the availability of open-source    ing in early convergence of other loss terms in the multi-
+machine learning libraries such as PyTorch and TensorFlow.       task loss function. A predominant approach is to multiply a
+It is automatic differentiation [8] producing highly accurate    parameter 𝜆 to each loss term to balance out the contribution
+derivatives that enhances the accuracy of PINNs even with        of each term to the overall loss [29]. Several frameworks
+sparse data points in the spatio-temporal domain.                such as self-adaptive PINNs [30] and the self-adaptive
+    The numerical solution of ordinary differential equations    weight PINN [31]; algorithms such as learning rate anneal-
+(ODEs) and PDEs using NNs [9–15] has been a key area of          ing [18] and neural tangent kernel [32] were proposed to
+interest for researchers. This is because the NNs behave like    balance out the contribution of each term to the overall loss
+meshless solvers and can be scaled to higher dimensions          by introducing adaptive coefficients for each loss term.
+without the need of additional algorithms.                          Gradient explosion [33, 34] is a known issue while train-
+    In this review, we have investigated stiff-PDEs [16], spe-   ing NNs. The baseline PINN uses L-BFGS [35], a second
+cifically those with a discontinuous solution, such as con-      order optimiser, which exhibits exploding gradients when it
+flicting BCs at adjacent edges or faces. The reason for this     encounters sharp gradients [36].
+focus is due to the significant challenge posed by solving          Most of the PINN frameworks are readily available as
+such problems with PINNs because it is not possible to fit a     open-source libraries. Libraries such as DeepXDE [37],
+smooth curve such as a NN on these discontinuities.              SciANN [38], TensorDiffEq [39] and NeuralPDE [40] are
+    The baseline PINN, a generalised NN framework, was           easy to implement and can be used to solve simple problems
+proposed by Raissi et al. [17] for solving forward and inverse   in the 1D and 2D spatial domain. NVIDIA Modulus (for-
+problems involving PDEs. The baseline PINN takes in the          merly NVIDIA SimNet) [26, 27] is an advanced open-source
+independent variables as the input and gives out the depend-     library providing access to different PINN frameworks.
+ent variables as the output, and, depending on the type of       NVIDIA Modulus has successfully simulated physical sys-
+problem we construct, the loss function. The baseline PINN       tems such as laminar flow over a field programmable gate
+accurately predicted the solution of forward problems such       arrays (FPGA) heatsink, turbulent flow over a simple 3D
+as the 1D Burgers equation, 1D Schrodinger equation, 1D          heatsink with parameterised fin dimensions, conjugate heat
+Allen–Cahn equation and inverse problems such as recover-        transfer over NVIDIA’s NVSwitch heat sink using transfer
+ing the 2D Navier–Stokes equation from the finite element        learning.
+generated flow past a cylinder simulation.                          This review paper has been divided into five major
+    The baseline PINN has several limitations such as scal-      sections. Section 1 comprises a comprehensive literature
+ability to higher dimensions, imbalanced magnitude of indi-      review of PINNs. Section 2 discusses the functioning of a
+vidual loss terms in the multiple task loss function, gradient   baseline PINN [17] and some advanced tools that enhance
+explosion etc. A brief description of these issues has been      the performance of PINNs. Section 3 discusses different
+given in this section and are explored further in the subse-     PINN frameworks that are available in DeepXDE [37] and
+quent section.                                                   NVIDIA Modulus [26]. Sections 4 and 5 discuss the solution
+    The baseline PINN can be scaled to higher dimensions by      of 2D and 3D heat conduction test case using various PINN
+modifying the architecture of the NN. A general approach         frameworks. Section 6 discusses the results of a series of
+is to deploy more activated neurons (∼ 500) with very few        parametric PDEs. In Sect. 7, we discuss challenges related
+hidden layers (∼ 4). This approach helps in fitting complex      to implementing PINNs for stiff-PDEs.
+local variations in the solution. Wang et al. [18] proposed         We took two heat conduction problems (2D and 3D) with
+a fully connected NN (FCNN) with two transformer net-            a discontinuous solution at corner points as test cases. In
+works [19–21], which projects the input variables to a high-     Sects. 4 and 5, we investigated these problems with a num-
+dimensional feature space. Sirignano and Spiliopoulos [22]       ber of PINN frameworks from Table 1 and compared the
+proposed a deep Galerkin method (DGM) architecture influ-        results with the FEM solution. PINNs are also known for
+enced by the LSTM architecture [23]. Both these architec-        solving parametric PDEs [41–44]. In Sect. 6, we investi-
+tures attempt to encapsulate the complex local variations in     gated the 2D test case with parameterised conductivity and
+the solution by using more complex NN architectures.             geometry.
+    Spectral bias [24] is a learning bias of deep NNs (DNNs)        For the forward problems, we used the baseline PINN,
+towards low-frequency functions, which causes convergence        DeepXDE’s baseline PINN, NVIDIA Modulus’s baseline
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                                  2931
+
+PINN, Fourier network, Modified Fourier network, SiReNs
+and DGM architecture. Whereas for the parametric PDE,
+we have only used the DeepXDE’s baseline PINN, Modified
+Fourier network and DGM architecture.
+
+
+
+2 How PINNs Work
+
+PINNs are DNNs that obey the physical constraints, such as,
+the BCs, the ICs and the governing PDE.
+   PINNs are fundamentally different from conventional
+PDE solvers such as finite difference or finite elements, in
+terms of the how the system of equations are represented.
+In the case of PINNs, the number of equations or the data
+points are more than the number of unknowns or the network       Fig. 1  Schematic { diagram            of}       an     artificial neu-
+parameters, resulting in a regression problem. On the other      ron. { Here, X = 1, x}1 , x2 , … , xm          is the input dataset,
+hand, the conventional PDE solvers, such as FEM, often           W = w0 , w1 , w2 , … , wm is the vector of trainable weights/param-
+solves the system of equations with the number of equations      eters, 𝜎 is the activation function and ŷ is the predicted output
+and unknowns being equal.
+   This section discusses the theoretical aspects of PINNs.      main drawback of linear regression is underfitting because it
+Section 2.1 discusses the functioning of NNs. Section 2.2        essentially fits a linear equation onto the data points [48, 49].
+discusses how the physics knowledge is embedded into the            A simple technique to prevent underfitting is to pass the
+NN. Section 3 discusses the various PINN frameworks, that        output of linear regression hypothesis (Eq. 1) to specifically
+can solve stiff-PDEs. Finally, Sect. 2.3 discuss various tools   chosen nonlinear function, often referred to as the activation
+that can help in speeding the convergence and improving the      function (𝜎) [50]. These activation functions, for example,
+accuracy of PINNs.                                               sigmoid, hyperbolic tangent, softmax are continuous and
+                                                                 sometimes are infinitely differentiable in the domain of real
+                                                                 numbers. The resulting hypothesis (Eq. 2) is referred to as an
+2.1 Neural Networks for Regression
+                                                                 artificial neuron (Fig. 1) [51]. It transforms the linear regres-
+                                                                 sion hypothesis into a nonlinear feature space.
+NNs are nonlinear and non-convex regression frameworks
+                                                                        (                          )      (     )
+with exceptional predictive capability, widely known as uni-     ŷ = 𝜎 w0 + w1 x1 + w2 x2 + ⋯ = 𝜎 W T X .                     (2)
+versal approximators of continuous functions [45, 46]. They
+are known for their ability to learn and generalise very com-
+plicated information [47]. This section discusses the evolu-        The artificial neuron is the building block of a NN. DNNs
+tion of NNs.                                                     have multiple hidden-layers, each hidden-layer consisting
+   One of the simplest regression models is the linear regres-   of multiple artificial neurons thus increasing the predictive
+sion. In the case of linear regression, the hypothesis or the    capability even further. Each hidden layer transforms the
+trial function is the linear combination of weights and fea-     feature space into a more complex feature space [52]. It is an
+tures. Let us assume a dataset with{ n samples consisting} of    open question in interpretable machine learning to explain
+m features with a bias term X = 1, x1 , x2 , x3 , … , xm and     mathematically, how these nonlinear transformations influ-
+one label y. The linear regression hypothesis for the dataset    ence the output [53]. Figure 2 shows the schematic diagram
+can be written as follows                                        of a FCNN with two hidden layers.
+                                                                    In Fig. 2, there are four layers, one input layer, two hidden
+ŷ = w0 + w1 x1 + w2 x2 + ⋯ + wm xm = W T X,             (1)     layers and one output layer. Both the hidden layers consist of
+                                  {                    }         three artificial neurons, also known as the activated neurons
+where the trainable weights W = w0 , w1 , w2 , … , wm are
+                                                                 or simply the nodes. In a FCNN, each node has its own set
+tweaked such that the mean squared error (MSE) or any loss
+                                                                 of weights or parameters.
+metric of the ground truth y against the predicted output ŷ
+                                                                    Let us define some notation, a(k)   is the ith activated neu-
+is minimised.                                                                                         i
+                                                                 ron in the kth layer. wk is the weight matrix controlling the
+   In principle, we can introduce a hypothesis with a linear
+                                                                 nonlinear mapping between kth layer and (k + 1)th layer. If
+combination of weights with nonlinear features too. The
+                                                                 the network has sk activated neurons in kth layer and s(k+1)
+
+
+                                                                                                                           13
+2932                                                                                                                             P. Sharma et al.
+
+                                                                                         n
+                                                                                     1 ∑|              2
+                                                                               J=           y − ŷ i || .                                    (5)
+                                                                                    2n i=1 | i
+
+                                                                               Now, the loss J is sent to the optimisers. Optimisers are
+                                                                               algorithms that minimise the loss by updating the weights
+                                                                               or parameters of the NN. There are many optimisers that
+                                                                               are available in open-source libraries such as PyTorch and
+                                                                               TensorFlow [55]. On the basis of order of the derivatives of
+                                                                               the loss with respect to the weights, the optimisers can be
+                                                                               divided mainly into two categories: first order and second
+                                                                               order optimisers [56].
+                                                                                  The first-order optimisers utilise the gradient of the loss
+                                                                               with respect to weights of the NN. Similarly, second-order
+                                                                               optimisers utilise the gradient as well as the Hessian of the
+                                                                               loss with respect to the weights of the NN. Gradient-descent
+Fig. 2  Schematic diagram of a fully connected        {     neural network
+                                                                        }      [57] and Adam [58] are the most popular first-order optimis-
+(FCNN) with two     { hidden   layers.}   Here, X = 1, x1 , x2 , … , xm is     ers. Whereas, L-BFGS [35] is the only second-order opti-
+the input dataset, w(1) , w(2)
+                            {, w
+                                  (3)
+                                        is} the vector of trainable weights/
+parameters for each layer, a(2) , a(3) is the vector of activated layers       miser that is still actively used in machine learning.
+and ŷ is the predicted output                                                    Now that the optimisers require derivatives, we need to
+                                                                               compute the derivatives efficiently and accurately. There are
+                                                                               three main techniques that have been successfully used in
+activated neurons in (k + 1)th layer then wk will be of dimen-                 machine learning: numerical [59], symbolic [60] and auto-
+sion s(k+1) × sk.                                                              matic differentiations [8]. After the release of TensorFlow
+                                                                               1.0 in 2015, static computational graphs was the standard
+2.1.1 Forward Pass                                                            data structure for representing NNs, which was later sub-
+                                                                               stituted with dynamic computational graphs in PyTorch
+The first step in training of a NN is to forward pass(the)inputs               [61, 62]. These libraries use forward-mode or reverse-mode
+X to obtain the predicted output ŷ . Let a(k)
+                                             i
+                                                = 𝜎 z(k)
+                                                       i
+                                                            such               automatic differentiation to compute the derivatives within
+that z is the term without the activation. Now, the forward                    a computational graph [63]. The automatic differentiation
+pass for the FCNN in Fig. 2 can be written as follows:                         computes the derivative of the loss with respect to weights
+                                                                               using the chain rule [64] in differential calculus with a hard-
+z(2) = w(1) X,                                                                 coded expression for the derivative of simple functions [65].
+        ( )
+a(2) = 𝜎 z(2) ,                                                                   Let us say that we are using the gradient-descent method
+                                                                               (Eq. 6) for optimising the weight/parameters.
+z(3) = w(2) a(2) ,                                                      (3)
+        ( )                                                                                         𝜕J
+a(3) = 𝜎 z(3) ,                                                                w(k) ∶= w(k) − 𝛼          ,                                   (6)
+                                                                                                   𝜕w(k)
+   ŷ = w(3) a(3) .
+                                                                               where k is the kth layer and 𝛼 is a constant often referred to
+In regression problems, the last layer is not activated because                as the learning rate, a hyperparameter. It tells the optimiser
+we want unbounded values. The hypothesis of a FCNN with                        the amount of perturbation the weights should attain in each
+two hidden layers can be written as follows:                                   epoch [66]. An epoch is a complete cycle of forward pass
+           (      (      ))                                                    and backpropagation on the whole dataset.
+ŷ = w(3) 𝜎 w(2) 𝜎 w(1) X .                                 (4)
+                                                                                  The gradient of the loss J with respect to the weights in
+                                                                               each layer can be computed using the chain rule as follows:
+2.1.2 Backpropagation and Automatic Gradient                                   𝜕J      𝜕J 𝜕 ŷ
+                                                                                      =            ,
+                                                                               𝜕w(3)    𝜕 ŷ 𝜕w(3)
+Once we have obtained the predicted output ŷ from the for-
+                                                                                𝜕J      𝜕J 𝜕 ŷ 𝜕a(3) 𝜕z(3)
+ward pass, we can calculate the difference from the ground                        (2)
+                                                                                      =                        ,                             (7)
+                                                                               𝜕w       𝜕 ŷ 𝜕a(3) 𝜕z(3) 𝜕w(2)
+truth y using some loss metric [54]. In general, for a regres-
+sion problem, the MSE (Eq. 5) is used as a loss metric.                         𝜕J      𝜕J 𝜕 ŷ 𝜕a(3) 𝜕z(3) 𝜕a(2) 𝜕z(2)
+                                                                                  (1)
+                                                                                      =                                    .
+                                                                               𝜕w       𝜕 ŷ 𝜕a(3) 𝜕z(3) 𝜕a(2) 𝜕z(2) 𝜕w(1)
+
+
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                             2933
+
+The analytical expression of the basic differential terms           2.2.2 Discrete Loss Function
+are hard-coded in machine learning libraries. The deriva-
+tive of loss with respect to the weights is decomposed into         PINNs have a multitask loss function with at least two com-
+these hard-coded basic differential terms using the chain           ponents, the BC and the PDE losses (Eq. 9). The multitask
+rule. Once, these derivatives are calculated we plug them           loss function ensures that the inputs to the PINN satisfy a
+into Eq. 6 to update the weights/parameters. The process is         well-posed PDE problem.
+repeated for a number of epochs until the loss J goes below            The IC and BC losses are simply the MSE and the PDE
+some predefined tolerance.                                          loss is the residual of the governing PDE at randomly
+                                                                    chosen collocation points. The total loss (Eq. 9) and the
+2.2 Building a PINN                                                individual loss terms (Eq. 10) are as follows:
+
+PINNs are supervised machine learning models that obey
+                                                                    L = 𝜆PDE LPDE + 𝜆BC LBC + 𝜆IC LIC ,                        (9)
+the prescribed BCs and the governing PDE. In PINNs, the
+inputs are the independent variables and the outputs are the                     Nr
+                                                                             1 ∑| (              )    [ (        )]|2
+dependent variables or the solution of the governing PDE.           LPDE =          |û t xi , ti + Nx û xi , ti | ,
+                                                                             Nr i=1 |                              |
+   As an example, for a 3D time-dependent heat conduction
+                                                                                 N
+PDE, the number of inputs would be four, i.e., the x, y and z                1 ∑| (            )   (       )|2
+                                                                                  b
+
+                                                                     LBC =          |û xi , ti − g xi , ti | ,               (10)
+coordinates and the time t. Similarly, the number of outputs                 Nb i=1 |                       |
+would be one, i.e. the temperature u.                                            N
+                                                                             1 ∑| (           )   (      )|2
+                                                                                  0
+
+                                                                     LIC =          |û xi , 0 − h xi , 0 | ,
+2.2.1 Defining a Well‑Posed PDE                                             N0 i=1 |                     |
+
+Consider a well-posed PDE problem as follows:                       where Nr , Nb and N0 are the number of data points that are
+                                                                    sampled to satisfy the PDE loss, the BC loss and the IC loss.
+ut + Nx [u] = 0,         x ∈ 𝛀,        t ∈ [0, T],                  The coefficients 𝜆PDE , 𝜆BC and 𝜆IC in Eq. 9, help in achieving
+u(x, 0) = h(x),        x ∈ 𝛀,                                (8)    convergence and better accuracy, and are an active field of
+                                                                    research. These weight coefficients can be scalar quantities
+u(x, t) = g(x, t),       x ∈ 𝜕𝛀,        t ∈ [0, T],
+                                                                    [29] as well as vectors to apply weights to every single sam-
+where Nx [u] is a differential operator, x and t are the inde-      ple in the training dataset based on the pointwise error [27].
+pendent variables of the PDE, 𝛀 and 𝜕𝛀 denotes the spatial             We can calculate the residual of the governing equation
+domain and the boundary of the problem, h(x) denotes the            using automatic differentiation similar to Eq. 4. Figure 3,
+prescribed BC which is the solution to the PDE at all spatial       shows a schematic diagram of a baseline PINN with two
+points (𝛀) at the initial time (t = 0), g(x, t) is the prescribed   hidden layers for a 2D spatio-temporal domain.
+BC at the boundary of the domain (𝜕𝛀).                                 A PINN framework, referred to as sparse-regulated
+                                                                    PINNs, uses the experimental or the simulation data to
+                                                                    provide ground truth at sparse locations in the spatio-
+                                                                    temporal domain [67, 68]. The addition of sparse ground
+                                                                    truth helps the NN to accurately predict complex local
+
+
+ Fig. 3  Schematic diagram of
+ a physics-informed neural net-
+ work (PINN) with two hidden
+ layers for a 2D spatio-temporal
+ domain. Here,
+            {      the inputs }are
+{x, y, t}, w(1) , w(2) , w(3) is
+ the vector of trainable weights/
+{parameters  } for each layer,
+  a(2) , a(3) is the vector of acti-
+ vated neurons for each layers
+ and ŷ is the predicted output
+
+
+
+
+                                                                                                                        13
+2934                                                                                                                 P. Sharma et al.
+
+variations in the solution. This introduces one more loss          2.2.5 Overfitted vs. Generalised Solution
+term called the reconstruction loss (Eq. 11), because it
+points the optimiser towards the true solution.                    The baseline PINN gained its popularity due to the notion
+                         N
+                                                                   that it can solve PDEs with sparse sampling in the spatio-
+                 1 ∑| (            )                               temporal domain. Later on it was realised that, in the case
+                      d
+                                            |2
+Lreconstruct =          |û xi , ti − utrue |,             (11)
+                 Nd i=1 |              i    |                      of stiff-PDEs one must sample enough data points to capture
+                                                                   the local variations in the solution.
+where Nd is the number of true solutions being provided.              Theoretically, one can obtain an overfitted model as well
+Bajaj et al. [69] showed that the reconstruction loss is not       as a generalised model depending on the number of data
+very helpful in preventing overfitting. Instead, NVIDIA            points in the training dataset. An overfitted model exhibits
+Modulus uses the Adam optimiser with exponential decay             low training loss but high validation and testing loss whereas
+of the learning rate 𝛼 , so that as we go closer to the minima     a generalised model exhibits low training, validation and
+of the loss, the weights do not attain large perturbations [58].   testing error. Thus overfitted model can only be used for
+                                                                   inferring the solution from the training dataset, i.e., any data
+2.2.3 Integral Formulation of Loss                                point of interest should be included in the training dataset.
+                                                                   On the other hand, a generalised model can be obtained by
+NVIDIA Modulus uses a slightly different version of the loss       sampling a significantly greater number of data points in the
+function [27, 70]. They define continuous/integral losses for      spatio-temporal domain. The solution can be predicted at
+the BC and PDE loss as follows:                                    new spatio-temporal locations within the domain.
+                                                                      The overfitted or generalised model is a qualitative aspect
+              ( (          )    [ (         )])2
+         ∫𝛀
+LPDE =         û t xi , ti + Nx û xi , ti      d𝛀,               that depends on human judgement. In the case of stiff-PDEs,
+                                                           (12)    the overfitted model may converge with a considerable
+                 ( (        )   (       ))2
+         ∫𝜕𝛀
+ LBC =            û xi , ti − g xi , ti d(𝜕𝛀).                    amount of pointwise error. Thus, it is important to sample
+                                                                   more points around the boundary or the problematic region.
+                                                                   In this paper, to be on the safer side, we have aimed for
+Instead of approximating these integrals using deterministic
+                                                                   a generalised solution, i.e., we sampled a large number of
+numerical integration techniques, NVIDIA Modulus uses
+                                                                   points. Specific details can be found in Sect. 4.5.
+the Monte Carlo integration, a non-deterministic integration
+technique [71, 72], resulting in Eq. 13. This helps in keeping
+                                                                   2.2.6 Parametric PINNs
+a specific loss term proportional to its length/area/volume.
+For example, it doesn’t allow a specific BC applied over a
+                                                                   PINNs can predict the variation in the solution for a range
+relatively larger area to dominate other BCs.
+                                                                   of parameters such as density, geometry, conductivity etc.
+                 N                                                 by introducing them as features in the training data set, com-
+       1 ∑| (              )    [ (        )]|2
+            r
+
+
+                                             | ∫𝛀                  pared to conventional numerical solvers where each param-
+LPDE =        |û t xi , ti + Nx û xi , ti |     d𝛀,
+       Nr i=1 |
+                                                           (13)    eter needs a separate simulation and may require complex
+         1 ∑| (
+              b      N
+                           )   (       )|2                         algorithms. The idea is to add the parameter as another fea-
+                                        | ∫𝜕𝛀
+   LBC =        |û xi , ti − g xi , ti |     d(𝜕𝛀).               ture into the training data set such that each parameter has its
+         Nb i=1 |
+                                                                   own set of sampled points in the spatio-temporal domain. In
+                                                                   other words, if there are n parameters for a 2D steady-state
+                                                                   problem, than the training data set contains n + 2 features.
+2.2.4 Exact BC Imposition
+                                                                   2.3 Additional Tools
+The output of the PINN can be hard constrained to exactly
+satisfy the BCs [73]. A function is manually constructed to        In this section, we have discussed tools that enhance the
+transform the network outputs to exactly satisfy the BCs.          accuracy and efficiency of PINNs. Outside the scope of this
+Generally, hard constrained BCs work with simple geometry,         paper are tools such as gradient enhanced training [75],
+constant individual Dirichlet BCs without conflicting each         learning rate annealing [18], neural tangent kernel [32], inte-
+other. This approach does not work well with stiff-PDEs            gral continuity planes [27]. The gradient enhanced training
+[74]. In Sect. 4.4, we have discusssed the difficulties with       does not always improve the results compared to the baseline
+exact imposition of BCs in stiff-PDEs with a discontinuous         PINN. They may even adversely affect the training conver-
+solution.                                                          gence and accuracy [76]. The learning rate annealing and
+                                                                   neural tangent kernel deals with imbalanced losses where
+                                                                   there is a significant difference between the magnitude of
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                               2935
+
+individual losses, which is not applicable to our test cases.       2.3.3 Importance Sampling
+The integral continuity planes are only applicable to prob-
+lems involving fluid flow, where the mass flow rate or the          Nabian et al. [70] proposed a sampling strategy for efficient
+volumetric flow rate is applied as an additional constraint,        training of PINNs based on an approximation method called
+if known. This is particularly useful in the case of channel        importance sampling [80], which is often used in reinforce-
+flow.                                                               ment learning for approximating the expected reward based
+                                                                    on the older policy [81, 82]. In optimisation, the optimal
+2.3.1 Adaptive Activation                                          parameters 𝜽∗ is defined such that
+                                                                    𝜽∗ = argmin 𝔼f [L(𝜽)]
+An activation function transforms a feature space into a more                𝜽
+complex feature space with the help of nonlinear functions.                            N                                        (15)
+                                                                                    1∑
+Without the activation function, the NN is just a sophisti-              ≈ argmin         L(𝜽;𝐱j ),   𝐱j ∼ f (𝐱),
+                                                                                    N j=1
+cated linear model with no performance improvement over                      𝜽
+
+linear regression. Jagtap et al. [77] proposed a DNN frame-
+                                                                    where 𝔼f [L(𝜽)] is the expected value of the total loss L ,
+work with trainable nonlinear transformations to improve
+                                                                    when the collocation points are sampled from f the sampling
+the convergence as well as the accuracy of the NNs. They
+                                                                    distribution in the physical domain 𝐱j ∈ 𝛀.
+introduced an additional hyperparameter A in the nonlinear
+                                                                       Typically, we use a uniform distribution for sampling the
+transformation of the hidden layers as follows:
+                                                                    collocation points. In importance sampling, the collocation
+    (            )   (     (       ))
+a(k) a(k−1) ;𝜃, A = 𝜎 Az(k) a(k−1) ,                     (14)       points are drawn from an alternative sampling distribution
+                                                                    q(x), and the NN parameters are approximated as per Eq. 16
+where a(k) is the nonlinear transformation at layer k, which is     instead of Eqs. 5 and 6.
+a function of a(k−1), the output of the hidden layer (k − 1), the                      N
+weights and biases is denoted by 𝜃 , A is a trainable param-                   1 ∑ f (𝐱j )
+                                                                                                                                (16)
+                                                                     ∗
+                                                                    𝜽 ≈ argmin              L(𝜽;𝐱j ),       𝐱j ∼ q(𝐱).
+eter and z(k) is the linear transformation at layer k. As A is a           𝜽   N j=1 q(𝐱j )
+trainable parameter, it gets updated in each epoch based on
+the total loss L. Thus the activation function a adapts itself      Sampling the collocation points in each epoch according to
+to minimise the total loss L.                                       q(x) (Eq. 17), i.e. a distribution proportional to the loss func-
+                                                                    tion L improves the efficiency of PINNs without introducing
+2.3.2 Signed Distance Function                                     a hyperparameter.
+
+                                                                           L(i)
+While there have been several efforts to solve stiff-PDEs            (i)     j
+                                                                    qj ≈ ∑N (i) ,          ∀j ∈ 1, … , N,                       (17)
+with discontinuity inside the spatial domain, so far, there is            j=1 j
+                                                                               L
+only one viable technique to solve stiff-PDEs with conflict-
+ing BCs at the adjacent edges and corners. The difficulty lies      where L(i)
+                                                                             j
+                                                                                is the total loss of the jth sample in the training
+in the fact that the activation functions are smooth, i.e., they    dataset in ith epoch. Areas with higher q(i) are sampled more
+are differentiable and can’t capture discontinuous BCs. Thus,       frequently in the ith epoch.
+currently the only way to alleviate the issue is to exclude the
+points with a discontinuity from the training data set.
+   In DeepXDE, these corner points are excluded by default,         2.3.4 Low‑Discrepancy Spatio‑temporal Sampling
+as the normal vector at those corners are not defined, or in
+other words the derivative at those points are not defined, so      The collocation points may be sampled according to a
+any BC that includes a derivative for example, a Neumann            uniform distribution, or using the Latin hypercube sam-
+BC is not defined at the corners.                                   pling [83] approach. Alternatively, one can choose low-
+   NVIDIA Modulus and several other literature takes this           discrepancy sequence generators such as the quasi-random
+one step further by using signed distance function (SDF)            sampling [84, 85], the Halton sequence [86, 87] the Sobol
+weights [74, 78, 79]. SDF weights are used to assign minus-         sequence [88, 89] which is used by DeepXDE’s baseline
+cule weights around the region with conflicting BCs. This           PINN and Hammersley sets [90, 91].
+way a region with a discontinuous solution gets a lower pri-
+ority compared to the regions where the solution is smooth.
+The application of SDF weights on complex geometry is an
+active field of research.
+
+
+
+                                                                                                                         13
+2936                                                                                                           P. Sharma et al.
+
+
+3 Modified Baseline PINNs                                    network [94], spatial–temporal Fourier Feature network
+                                                              [97], DGM architecture [22] and multiplicative filter net-
+Numerous modified frameworks of the baseline PINN have        work [27].
+been proposed so far. We have specifically chosen PINN           NVIDIA Modulus also features NNs for nonlinear opera-
+frameworks that not only scale to higher dimensions but can   tor learning such as Fourier neural operator, (FNO) [103],
+also deal with discontinuous BCs.                             adaptive FNO, (AFNO) [104], physics-informed neural
+                                                              operator, (PINO) [105], DeepONet [97], Pix2Pix net [106,
+3.1 DeepXDE                                                  107] and super-resolution net [108].
+
+DeepXDE [37] is a popular Python based physics-               3.2.1 Fourier Network
+informed machine learning library for solving forward
+and inverse problems involving PDEs. DeepXDE fea-             Spectral bias is a learning bias of DNNs towards low-fre-
+tures its own version of the baseline PINN, that not only     quency functions, i.e., functions that vary globally rather
+improves the accuracy, but helps in faster convergence as     than locally. It ignores the high-frequency functions, such
+discussed in Sect. 2.3.2.                                     as sharp variation in the solution of the PDE. This can
+   Other than baseline PINNs, DeepXDE can also solve          adversely affect the training convergence as well as the
+forward and inverse integro-differential equations, (IDEs)    accuracy.
+[92], fractional PDEs, (fPDEs) [92], stochastic PDEs,            One approach to alleviate this issue is to perform input
+(sPDEs) [93], topology optimization with hard constraints,    encoding, for example, a transformer [109], to transform
+(hPINN) [7], PINN with multi-scale Fourier features [94]      the inputs to a higher-dimensional feature space with the
+and multifidelity NN, (MFNN) [95, 96].                        help of high-frequency functions. In the Fourier network,
+   DeepXDE also features NNs for nonlinear operator           the input features are encoded into Fourier space using
+learning such as DeepONet [97], POD-DeepONet [98],            sinusoidal activation functions (Eq. 18).
+MIONet [99], DeepM&Mnet [100, 101] and multifidelity             The trainable input encoding layer is as follows:
+DeepONet [102].                                                   [                            ]T
+   It supports tensor libraries such as TensorFlow,           𝜙E = sin (2𝜋𝐟 × 𝐗); cos (2𝜋𝐟 × 𝐗) ,                        (18)
+PyTorch, JAX, and PaddlePaddle. There are two notable
+                                                              where 𝐟 ∈ ℝnf ×d0 is the trainable frequency matrix, d0 is the
+features in DeepXDE. The first one is that it chooses the
+                                                              number of features and nf is the number of frequency sets
+model with least training loss. The second one is that it
+                                                              which we can choose and 𝐗 is the input dataset. These fre-
+does not include those corner points no matter what the
+                                                              quencies, similar to network weights, can be sampled from
+problem is, with the justification that normal vectors are
+                                                              a Gaussian distribution or from a spectral space created
+not defined at those corners to be able to apply the Neu-
+                                                              from combinations of all entries from a user-defined list of
+mann BCs.
+                                                              frequencies.
+                                                                 Finally, the encoded inputs are 𝜙E x , which results in
+                                                              a training data with nf number of features, thus, trans-
+3.2 NVIDIA Modulus
+                                                              forming the input features to a higher dimensional feature
+                                                              space. NVIDIA Modulus recommends nf = 10 , however,
+NVIDIA Modulus 22.03, formerly NVIDIA SimNet, is
+                                                              for our test cases we used nf = 35, which is computation-
+an advanced physics-informed machine learning pack-
+                                                              ally expensive, but is reasonable for PDEs with a discon-
+age. It redefines the loss function (Sect. 2.2.3), it also
+                                                              tinuous solution.
+uses SDF weights to avoid problematic edges and corners
+(Sect. 2.3.2). The SDF weights result in increased conver-
+gence speed and improved accuracy.
+                                                              3.2.2 Modified Fourier Network
+   NVIDIA Modulus employs the SDF weights on the
+collocation points (they refer to these as interior points)
+                                                              In a Fourier network (Sect. 3.2.1), a FCNN is used as the
+and the boundary points separately. We have discussed the
+                                                              nonlinear mapping between the Fourier features and the
+variation of SDF weights in the spatial domain in Sects.
+                                                              model output. The modified Fourier network uses a modi-
+4 and 5.
+                                                              fied version of the fully-connected network, similar to the
+   NVIDIA Modulus features forward models such as Fou-
+                                                              one proposed in [18]. The authors were inspired by the
+rier networks [25], Modified Fourier networks [26, 27],
+                                                              neural attention mechanism, which is employed in natu-
+Sinusoidal Representation networks, SiReNs [28], High-
+                                                              ral language processing to enhance the hidden states with
+way Fourier network [103], multi-scale Fourier feature
+                                                              transformer networks [109].
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                                 2937
+
+   In Eq. 19, 𝐔 and 𝐕 are two transformer layers that help         𝐒(1) = 𝜎(𝐖1 𝐗),
+in projecting the Fourier features 𝜙E to another feature                   (                  )
+                                                                   𝐙(k) = 𝜎 𝐕(k) 𝐗 + 𝐖(k) 𝐒(k) , k = 1, … , L,
+space, and forward passed through the hidden layers (H)                     (
+                                                                              z       z
+                                                                                               )
+using the Hadamard product, similar to its standard fully          𝐆(k) = 𝜎 𝐕(k)
+                                                                               g
+                                                                                 𝐗 + 𝐖(k)
+                                                                                       g
+                                                                                          𝐒(k) , k = 1, … , L,
+connected counterpart. The Modified Fourier network                        (                  )
+takes the following forward propagation rule:                      𝐑(k) = 𝜎 𝐕(k)
+                                                                              r
+                                                                                 𝐗 + 𝐖(k)
+                                                                                      r
+                                                                                          𝐒(k) , k = 1, … , L,
+                                                                            (                            )
+        (     )            (       )                               𝐇(k) = 𝜎 𝐕(k) 𝐗 + 𝐖 (k) (k)
+                                                                                          (𝐒    ⊙ 𝐑(k)
+                                                                                                       )   , k = 1, … , L,
+𝐔 = 𝜎 𝐖1 𝜙E , 𝐕 = 𝜎 𝐖2 𝜙E ,                                                    h       h
+          (     )                                                  𝐒(k+1) = (1 − 𝐆(k) ) ⊙ 𝐇(k) + 𝐙(k) ⊙ 𝐒(k) ,    k = 1, … , L,
+𝐇(1) = 𝜎 𝐖z,1 𝐗 ,
+          (        )                                               𝐲̂ = 𝐖𝐒  (L+1)
+                                                                                    .
+𝐙(k) = 𝜎 𝐖z,k 𝐇z,1 , k = 1, … , L,                    (19)
+  (k+1)
+            (     (k)
+                      )        (k)
+                                                                                                                                  (20)
+𝐇       =𝜎 1−𝐙          ⊙ 𝐔 + 𝐙 ⊙ 𝐕, k = 1, … , L,
+                                                                   The DGM architecture consists of multiple nonlinear trans-
+𝐲̂ = 𝐖𝐇(L+1) ,                                                     formations of the input: 𝐙 , 𝐆 , 𝐑 and 𝐇 , that helps with
+where 𝐖1 , 𝐖2 , 𝐖z,k and 𝐖 are four different sets of              learning complicated functions such as discontinuous func-
+weight matrices associated with 𝐔 , 𝐕 , 𝐇(k) and 𝐇(L+1) with       tions. Figure 5 shows the structure of DGM architecture and
+k = 1, … , L , where L is the number of hidden layers. Fig-        the DGM layers.
+ure 4 shows the structure of a modified Fourier network.              A DGM layer includes 𝐙 , 𝐆 , 𝐑 and 𝐇 with their sets
+                                                                   of weights 𝐕 and 𝐖 . Thus, a DGM layer consists of eight
+3.2.3 Sinusoidal Representation Networks (SiReNs)                 weight matrices. Additionally, the DGM architecture con-
+                                                                   sists of two more weight matrices: 𝐖1 and 𝐖.
+Sitzmann et al. [28] proposed a FCNN which uses the sine
+trigonometric function as the activation function. This net-
+work has some similarities to Fourier networks (Sect. 3.2.1)       4 Problem 1: 2D Steady‑State Heat
+as both uses a sine activation function, manifesting the same         Conduction
+effect as the input encoding for the first layer of the network.
+   A key component of this network architecture is the             For Problem 1, we chose a 2D heat conduction problem with
+weight initialisation scheme. The weights (of √      the NN        conflicting BCs at the corners. We solved the problem with
+                                                          √ are)   different PINN frameworks and compared with the FEM
+sampled from a uniform distribution W ∼ U − f6 , f6
+                                                      in    in     solution. The 2D heat conduction problem can be stated as
+where fin is the input size to that layer.                         follows:
+   The input of each Sine activation has a Gauss-Normal
+distribution and the output of each Sine activation, a Sine        uxx + uyy = 0,       x ∈ [−0.5, 0.5],   y ∈ [0, 1],
+                                                                                                                                  (21)
+inverse distribution. This preserves the distribution of acti-     u(x, 0) = u(x, 1) = 0,      u(−0.5, y) = u(0.5, y) = 1.
+vations allowing deep architectures to be constructed and
+trained effectively.                                               We used MATLAB Partial Differential Equation Toolbox
+                                                                   [110] to solve the 2D steady-state heat conduction problem
+3.2.4 DGM Architecture                                            (Eq. 21) with quadratic triangles (Fig. 6).
+                                                                      We assigned a model number to each of the PINN frame-
+The DGM architecture [22] (Eq. 20), consists of several hid-       works (see Table 1). Table 2 summarises the network param-
+den layers, which are referred to as DGM layers, similar to        eters and relative L2 error for various PINN frameworks.
+LSTM gates [23], where each layer produces weights based           Figures 9 and 7 show the solution of 2D steady-state heat
+on the last layer, determining how much of the information         conduction problem for different PINN frameworks.
+gets passed to the next layer.                                        We have not completed a full exploration of the best
+                                                                   parameters for each PINN such as the number of hidden
+
+
+Fig. 4  Structure of modified
+Fourier network as per Eq. 19
+
+
+
+
+                                                                                                                         13
+2938                                                                                                                P. Sharma et al.
+
+Fig. 5  Structure of structure
+of DGM architecture and the
+DGM layers as per Eq. 20
+
+
+
+
+layers, the number of neurons in each layers, number of           4.1 Model 1: Baseline PINN (See Also Table 1)
+boundary and collocation points to be sampled etc. to use
+in these models. We started with the default values and           Firstly, we trained a baseline PINN with 8 hidden layers and
+retained the results if they were acceptable. We observed         20 neurons in each layer using the L-BFGS optimiser with
+early convergence in several models, so we stopped training       hyperbolic tangent activation. We used the nodal coordinates
+those models. Unless otherwise specified, the same applies        from the mesh of FEM solution consisting of 612 boundary
+to other upcoming problems. As the PINN reaches maturity          points and 5800 collocation points. We observed that the
+we will hopefully come up with the best practices to bench-       gradient explodes while training with L-BFGS. That is why
+mark different PINN frameworks.                                   we switched to the Adam optimiser with default parameters,
+                                                                  unless otherwise stated.
+                                                                      Figure 7 shows the predicted temperature distribution and
+                                                                  pointwise absolute error at 5k, 10k and 30k epochs. Initially,
+                                                                  i.e., around 5k epochs, the pointwise absolute error around
+                                                                  the corners is much higher compared to the interior points.
+                                                                  If we continue the training past 5k epochs, the optimiser
+                                                                  tries to reduce the loss around the corners at the cost of high
+                                                                  errors at the interior points, which can be clearly seen in the
+                                                                  pointwise absolute error plot at 30k epochs. This is a result
+                                                                  of the fact that we did not use a learning rate scheduler [111].
+                                                                  A learning rate scheduler adjusts the learning rate 𝛼 between
+                                                                  epochs during the training which helps convergence.
+                                                                      Figure 8 shows the training and validation losses. We pur-
+                                                                  posely used the predicted temperature distribution from the
+                                                                  training dataset against the FEM solution to calculate the
+                                                                  validation loss. In the validation loss plot, we can clearly
+Fig. 6  FEM solution of 2D steady-state heat conduction problem   see that the least validation error occurs somewhere between
+(Eq. 21) using MATLAB Partial Differential Equation Toolbox       15k and 20k. However, the total training loss continues to
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                                        2939
+
+Table 1  Models considered in the numerical study
+Model number         Model name
+
+Model 1              Baseline PINN
+Model 2              DeepXDE’s baseline PINN
+Model 3              NVIDIA Modulus’s baseline PINN (no SDF weights)
+Model 4              NVIDIA Modulus’s baseline PINN (Interior SDF weights)
+Model 5              NVIDIA Modulus’s baseline PINN (Full SDF weights)
+Model 6              NVIDIA Modulus’s baseline PINN (Full SDF weights with importance sampling)
+Model 7              NVIDIA Modulus’s baseline PINN (Full SDF weights with adaptive activation, importance sampling and quasi-random
+                       sampling*)
+Model 8              Fourier network (Full SDF weights with adaptive activation, importance sampling and quasi-random sampling*)
+Model 9              SiReNs network (Full SDF weights with importance sampling and quasi-random sampling*)
+Model 10             Modified Fourier network (Full SDF weights with adaptive activation, importance sampling and quasi-random sampling*)
+Model 11             DGM architecture (Full SDF weights with adaptive activation, importance sampling and quasi-random sampling*)
+
+*Sampling drawn from a Halton sequence
+
+
+
+Table 2  Problem 1: summary of                         Layers      Nodes      Boundary        Collocation          Epochs
+                                                                                                            𝛼                Relative L2 error
+training parameters and relative                                              points          points
+L2 error for different PINN
+frameworks                            Model 1          8            20          612           5800*         1e−3   30k       0.13599
+                                      Model 2          8            20          800           2500**        1e−3   30k       0.05285#
+                                      Model 3          6           512        4000            4000          1e−3   20k       0.08931
+                                      Model 4          6           512        4000            4000          1e−3   10k       0.10124
+                                      Model 5          6           512        4000            4000          1e−3   10k       0.09557
+                                      Model 6          6           512        4000            4000          1e−3   20k       0.06448
+                                      Model 7          6           512        4000            4000          1e−3   20k       0.06433
+                                      Model 8          6           512        4000            4000          1e−3   20k       0.18741
+                                      Model 9          6           512        4000            4000          2e−5   11k       0.12640
+                                      Model 10         6           512        4000            4000          1e−3   20k       0.17577
+                                      Model 11         6           512        4000            4000          1e−3   30k       0.08229
+
+                                      *Model 1 uses the nodal coordinates from the FEM mesh
+                                      **Model 2 uses the Sobol sequence
+                                      #
+                                          Relative L2 error not calculated at corner points
+
+
+
+decrease even after 20k epochs resulting in increased valida-                  2500 collocation points, i.e. only about half the collocation
+tion loss in the interior points as discussed earlier.                         points compared to Model 1.
+   The FCNNs are continuous and differentiable functions                          Although the training loss converged in 5k epochs, we
+and can’t predict discontinuities such as the corners with                     continued to train the model until 30k epochs to demon-
+conflicting BCs. Also, it is very challenging to obtain a                      strate the benefits of exponential decay of the learning
+trained PINN model with minimum validation error because                       rate. As the training progresses, the amount of perturba-
+we are not using the ground truth to calculate the training                    tion in the weights (as per Eq. 6) decreases. Thus, we don’t
+loss.                                                                          see much difference in the predicted temperature distribu-
+                                                                               tion after 5k epochs, which was not possible with Model 1.
+4.2 Model 2: DeepXDE’s Baseline PINN                                             As discussed in Sect. 2.3.2, DeepXDE does not sam-
+                                                                               ple the corner points, so we ignored these points from
+We trained a FCNN with 8 hidden layers and 20 neurons                          the FEM solution to compute the relative L2 error. Thus
+in each layer using the Adam optimiser with hyperbolic                         we obtain very low relative L2 error as most of the error
+tangent activation and exponential decay of the learning                       occurs around the corners.
+rate. We used DeepXDE’s default sampling method, i.e.,
+the Sobol sequence to sample 800 boundary points and
+
+
+                                                                                                                                 13
+2940                                                                                                           P. Sharma et al.
+
+Fig. 7  Solution of 2D steady-
+state heat conduction problem
+using Model 1. The predicted
+temperature distribution (on the
+top) and the absolute pointwise
+error (on the bottom) is shown
+at 5k, 10k and 30k epochs
+respectively. Temperature
+predicted outside the expected
+bound, i.e., when u ∉ [0, 1], is
+shown using the white and grey
+colour
+
+
+
+
+  Figure 9a shows the predicted temperature distribution        weights, i.e., SDF weights on both interior and boundary
+and the pointwise absolute error for the 2D steady-state heat   points with an exception for SiReNs network which does
+conduction problem.                                             not has an adaptive activation implemented in NVIDIA
+                                                                Modulus 22.03. Furthermore, NVIDIA Modulus 22.03 only
+4.3 Models 3–11: NVIDIA Modulus                                implements the Halton sequence to generate a quasi-random
+                                                                sample.
+We used NVIDIA Modulus to train PINN frameworks                    The SDF weights are manually adjusted depending on the
+from Models 3 to 11. We started with NVIDIA Modulus’s           problem and is an active field of research. We formulated
+baseline PINN with the integral form of the loss function       the SDF weights on boundary points such that the weights
+(Model 3). Then we applied the SDF weights on interior          on the corner points is zero and increased as we move away
+points (Model 4) and on both interior and boundary points       from the corner (see Eq. 22). The SDF weights on the inte-
+(Model 5). We used additional tools such as importance          rior points depends on the shape of the spatial domain. We
+sampling (Model 6) and combined the importance sampling         used the default SDF weights on collocation/interior points.
+with adaptive activation and quasi-random sampling (Model       Figure 10 shows the magnitude of the SDF weights on the
+7). We also used the Fourier network (Model 8), SiReNs          boundary and interior points of the square domain for Prob-
+network (Model 9), Modified-Fourier network (Model 10)          lem 1. In the case of a full set of SDF weights, it is worth
+and DGM architectures (Model 11) with adaptive activation,      noting that the maximum magnitude of the SDF weights
+importance sampling, quasi-random sampling and full SDF         on the interior points is 0.5. So, We are giving 50% less
+
+Fig. 8  The training loss (top)
+and the validation loss (bot-
+tom) for the 2D steady-state
+heat conduction problem. The
+training loss plot shows the
+BC loss (BC loss), the residual
+loss (PDE loss) and the sum
+of both, i.e., the total loss. The
+validation loss plot shows the
+mean squared error between the
+temperature predicted from the
+training dataset and the FEM
+solution. The black dot denotes
+the least validation loss
+
+
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                   2941
+
+Fig. 9  PINN predicted solution
+of 2D steady-state heat conduc-
+tion problem is shown on the
+left side. The absolute pointwise
+error between the FEM solution
+and PINN predicted solution
+is shown on the right side.
+Temperature predicted outside
+the expected bound (if any), i.e.,
+when u ∉ [0, 1] is shown using
+the white and grey colour
+
+
+
+                                                    (a) Model 1
+
+
+
+
+                                                    (b) Model 2
+
+
+
+
+                                                     (c) Model 3
+
+
+
+
+                                                     (d) Model 4
+
+
+
+                                                                   13
+2942                                P. Sharma et al.
+
+Fig. 9  (continued)
+
+
+
+
+                      (e) Model 5
+
+
+
+
+                      (f) Model 6
+
+
+
+
+                      (g) Model 7
+
+
+
+
+                      (h) Model 8
+
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                    2943
+
+Fig. 9  (continued)
+
+
+
+
+                                                                  (i) Model 9
+
+
+
+
+                                                                 (j) Model 10
+
+
+
+
+                                                                  (k) Model 11
+
+
+importance to the interior points compared to the boundary     layers and 512 neurons in each layer using the Adam opti-
+points, because we want the optimiser to obtain more infor-    miser with exponential decay in the learning rate and SiLU
+mation from the BC loss, as it does not converge in the case   activation (Sigmoid Linear Unit) [112] for 20k epochs.
+of Model 1 (as shown in Fig. 8).                               We used 4000 boundary points and 4000 collocation
+                                                               points sampled from a uniform distribution. We used the
+Top and bottom boundary: y = 1.0 − 2|x|,
+                                                       (22)    same number of boundary points and collocation points
+Left and right boundary: x = 1.0 − 2|y − 0.5|.                 in models from Models 3 to 11. We obtained a relative L2
+                                                               error of 0.08931, 0.10124, 0.09557 for Models 3, 4 and
+                                                               5, respectively.
+  In Models 3, 4 and 5, we trained NVIDIA Modulus’s
+                                                                  In Model 6, we replaced the uniform sampling with
+baseline PINN with default values, i.e., with 6 hidden
+                                                               importance sampling to resample the interior points in
+
+
+                                                                                                               13
+2944                                                                                                                P. Sharma et al.
+
+Fig. 10  The magnitude of SDF
+weights on interior and bound-
+ary points of a square domain.
+The SDF weights for Model 4,
+i.e., with only interior points is
+shown on the left side. Whereas,
+the SDF weights with interior
+and boundary points is shown
+on the right side (for Models 5
+to 11)
+
+
+
+
+Model 5. We observed a significant improvement around             temperature distribution looks similar to Model 8 and the
+the corners, resulting in a relative L2 error of 0.06448. In      relative L2 error was found to be 0.17577.
+the case of Model 7, we used adaptive activation with quasi-         In Model 11, we trained a DGM architecture (see
+random sampling for the initial sampling in each batch and        Sect. 3.2.4), with 6 hidden layers and 512 neurons in each
+importance sampling for resampling of the interior points.        layer using the Adam optimiser with SiLU activation for
+We obtained a relative L2 error of 0.06433, not a significant     20k epochs, with full SDF weights, quasi-random sampling
+improvement over Model 6.                                         and importance sampling. We obtained a relative L2 error
+   In Model 8, we trained a Fourier network with 10 Fou-          of 0.08229.
+rier features (see Sect. 3.2.1) using 6 hidden layers and 512        In Fig. 9, Models 6, 7 and 11 resulted in less than 1%
+neurons in each layer using the Adam optimiser with SiLU          absolute pointwise error at most of the points in the domain.
+adaptive activation for 20k epochs, with full SDF weights,        This indicates that the SDF weights and the importance sam-
+quasi-random sampling and importance sampling. We used            pling plays an important role in solving stiff-PDEs with a
+10, 15, 25 and 35 Fourier features for the input encoding.        discontinuous solution. In Table 2, Models 3, 5, 6, 7 and 11
+We observed that the Fourier network is only working for 10       resulted in less than 10% relative L2 error. Further investiga-
+Fourier features and the absolute pointwise error is 0.18741,     tion is required to determine whether the DGM architecture
+which is even higher than Model 1. For 15, 25 and 35 Fou-         is advantageous compared to the baseline PINNs in higher
+rier features the predicted temperature distribution were         dimensions.
+close to 0.5 over the entire domain, i.e., the average of upper
+and lower bound temperature in the domain.
+   In Model 9, we trained a SiReNs network (Sect. 3.2.3)          4.4 Hard Constrained BCs
+with 6 hidden layers and 512 neurons in each layer using
+the Adam optimiser with Sine activation for 20k epochs,           In this section, we discuss the exact imposition of BCs in
+with full SDF weights, quasi-random sampling and impor-           PINNs. Hard constrained BCs involves the construction of
+tance sampling. The network was continuously experienc-           a continuous and differentiable function through which we
+ing exploding gradients until we reduced the learning rate        pass the output of the NN. Problem 1, involves discontinu-
+to (2e−5). Still after 12k epochs the training loss would         ous BCs which can’t be exactly satisfied with a continuous
+abruptly increase, leading to prohibitively large absolute        and differentiable function. However, it is possible to satisfy
+pointwise error. Hence, we forced the training to stop            the BCs on two opposite walls, here we chose to exactly
+around 11k epochs and the relative L2 error was found to          satisfy the top and bottom walls using the following output
+be 0.12640.                                                       transform function.
+   In Model 10, we trained a modified Fourier network             u ∶= y(y − 1)u.                                             (23)
+(Sect. 3.2.2) with 6 hidden layers and 512 neurons in each
+layer using the Adam optimiser with SiLU activation for           We trained the Model 2 (see Table 1) with 3500 collocation
+20k epochs, with full SDF weights, quasi-random sampling          points and 400 boundary points with Adam for 30k epochs.
+and importance sampling. Similar to Model 10, we used             Figure 11 shows the DeepXDE predicted solution to Prob-
+10 Fourier features for the input encoding. The predicted         lem 1 with the hard constrained BCs at the top and bottom
+                                                                  walls. Due to hard constrained BCs at the top and bottom
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                                          2945
+
+walls, we observe significant errors around the left and right       5 Problem 2: 3D Steady‑State Heat
+walls resulting in a relative L2 error of 0.183119. Thus, it is         Conduction
+not recommended to apply hard constraints to the BCs in
+stiff-PDEs.                                                          The next problem we address is a 3D steady-state heat con-
+                                                                     duction problem with conflicting BCs at the edges and the
+                                                                     corners. We solved the problem with different PINN frame-
+4.5 Overfitted Solution                                             works and compared the results to the FEM solution. The 3D
+                                                                     heat conduction problem is described as follows:
+In this section, we discuss the behaviour of an overfitted
+PINN model while predicting the solution of the PDE at               uxx + uyy + uzz = 0,    x ∈ [−0.5, 0.5],      y ∈ [−0.5, 0.5],   z ∈ [0, 1],
+new spatio-temporal locations in the domain. We trained the          u(x, y, 0) = u(x, y, 1) = u(0.5, y, z) = 0,
+Model 2 (see Table 1) with 2500 collocation points and 200           u(−0.5, y, z) = u(x, −0.5, z) = u(x, 0.5, z) = 1.
+boundary points with Adam for 30k epochs. Figure 12 shows                                                                                  (24)
+the DeepXDE predicted solution to Problem 1 from both                We used MATLAB Partial Differential Equation Toolbox
+the training dataset and on new spatio-temporal locations            [110] to solve the 3D steady-state heat conduction problem
+within the domain. Given that the trained model’s accuracy           (Eq. 24) with quadratic triangles (Fig. 13).
+during the validation is low, we will categorise the model              We again used the same PINN models (see Table 1) to
+as an overfitted model. The validation loss can be decreased         solve the 3D steady-state heat conduction problem. We did
+by adding more points in the training data set, for instance,        not use the full SDF weights because the boundary walls are
+NVIDIA Modulus samples different points for the training             planes instead of lines in 2D. This is where we potentially
+in each epoch. Intuitively, the overfitted model is computa-         require an algorithm, instead of manually constructing the
+tionally cheaper than a generalised model as it requires very        SDF weights for the boundary points. Therefore, for this
+few collocation points, which is evident with this example.          problem, we refer to the SDF weights on interior points
+                                                                     as the full SDF weights and we exclude Model 4. Table 3
+
+
+Fig. 11  DeepXDE predicted
+solution of 2D steady-state heat
+conduction problem (Eq. 21)
+with hard constrained BCs at
+the top and bottom walls on the
+left and the absolute point-
+wise error between the FEM
+and PINN predicted solutions
+is shown on the right side.
+Temperature predicted outside
+the expected bound (if any), i.e.,
+when u ∉ [0, 1] is shown using
+the white and grey colour
+
+
+
+
+Fig. 12  Comparison of PINN predicted solution from the training     the same problem at new spatio-temporal locations in the domain.
+dataset and at new data-points. a The FEM solution of Problem 1      Temperature predicted outside the expected bound (if any), i.e., when
+(Eq. 21), b the DeepXDE predicted solution of the same problem       u ∉ [0, 1] is shown using the white and grey colour
+from the training dataset, and c the DeepXDE predicted solution of
+
+
+                                                                                                                                      13
+2946                                                                                                                    P. Sharma et al.
+
+                                                                       at the edges and vertices (see Sect. 2.3.2). We obtained a
+                                                                       relative L2 error of 3.15547.
+                                                                          In the case of models trained within NVIDIA Modulus,
+                                                                       the SDF weights on the interior nodes from Problem 1 was
+                                                                       extended to three dimension such that interior points close
+                                                                       to the boundary were assigned negligible weights. As we
+                                                                       move away from the boundary, the SDF weights on the inte-
+                                                                       rior points increases until it reaches close to 0.5 around the
+                                                                       centroid of the cubical domain (see Fig. 15).
+                                                                          NVIDIA Modulus’s baseline PINN (Model 3) predicts
+                                                                       better temperature distribution compared to Models 1
+                                                                       and 2 with a relative L2 error of 0.12031. The addition of
+Fig. 13  FEM solution for the 3D steady-state heat conduction prob-    SDF weights on the interior points (Model 5) dramatically
+lem (Eq. 24) using MATLAB Partial Differential Equation Toolbox        reduces the relative L2 error to 0.07455.
+                                                                          To obtain accurate results, the nodal coordinates or the
+                                                                       training data needs special treatment either by transforming
+summarises the network parameters and relative L2 error for            the coordinates to higher dimensions using the Fourier net-
+various PINN frameworks. Figure 14 shows the solution of               work or by adding more transformer layers using the DGM
+the 3D steady-state heat conduction problem for different              architecture or both using the modified Fourier network.
+PINN frameworks.                                                       From Table 3, it is clear that the baseline PINN without
+   In Problem 1 (Sect. 4), the discontinuities occurred at             SDF weights is not suitable for solving stiff-PDEs with dis-
+the corners of the square domain, which affected only a few            continuities in 3D.
+training points. Whereas, in Problem 2, the discontinuities               In summary, Models 5, 6, 7, 8, 10 and 11 resulted in less
+affected not only the vertices but also the edges. We can              than 10% relative L2 error and less than 5% absolute point-
+sample a large number of points along these edges. Thus,               wise error at most of the points in the domain. It is worth
+Problem 2 is more suitable for testing the robustness of dif-          mentioning that the SiReNs network (Model 9) experiences
+ferent PINN frameworks.                                                difficulty while minimising the loss, resulting in a constant
+   In Problem 2, all the models had the same number of lay-            temperature over the entire domain with a relative L2 error
+ers, nodes per layer and the learning rate as in Problem 1.            of 0.56448 (see Fig. 14).
+However, we increased the number of boundary points and                   A summary of the total training time (s) and training time
+collocation/ interior points in Models 1 and 2.                        (s) per epoch in Problems 1 and 2 for each model is pre-
+   In Model 1, we observed that the interior points had sig-           sented in Table 4. The training time does not include the
+nificant absolute pointwise error, meaning the PDE loss                time taken in pre-processing of the data and initialisation of
+didn’t converge. We obtained a relative L2 error of 0.23778.           the NN. In Models 1 and 2, the number of data points were
+In Model 2, the DeepXDE network didn’t sample the points               different in Problems 1 and 2, which influences the train-
+                                                                       ing time. Thus, we could not draw a concrete conclusion.
+
+
+Table 3  Problem 2: summary of                   Layers     Nodes      Boundary    Collocation             Epochs
+                                                                                                  𝛼                   Relative L2 error
+training parameters and relative                                       points      points
+L2 error for different PINN
+frameworks                         Model 1        8         150        5814        34,071*        1e−3     20k        0.23778
+                                   Model 2       10         150        5000        15,000**       1e−3     15k        3.15547
+                                   Model 3        6         512        4000        4000           1e−3     20k        0.12031
+                                   Model 5        6         512        4000        4000           1e−3     10k        0.07455
+                                   Model 6        6         512        4000        4000           1e−3     20k        0.07163
+                                   Model 7        6         512        4000        4000           1e−3     20k        0.08557
+                                   Model 8        6         512        4000        4000           1e−3     20k        0.07302
+                                   Model 9        6         512        4000        4000           2e−5     20k        0.56448
+                                   Model 10       6         512        4000        4000           1e−3     20k        0.09498
+                                   Model 11       6         512        4000        4000           1e−3     30k        0.07213
+
+                                   *Model 1 uses the nodal coordinates from the FEM mesh
+                                   **Model 2 uses the Sobol sequence
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                  2947
+
+Fig. 14  PINN predicted solution
+of 3D steady-state heat conduc-
+tion problem is shown on the
+left side. The absolute pointwise
+error between the FEM solution
+and PINN predicted solution
+is shown on the right side.
+Temperature predicted outside
+the expected bound (if any), i.e.,
+when u ∉ [0, 1] is shown using
+the white and grey colour
+
+
+                                                    (a) Model 1
+
+
+
+
+                                                    (b) Model 2
+
+
+
+
+                                                    (c) Model 3
+
+
+
+
+                                                    (d) Model 5
+
+
+
+
+                                                                  13
+2948                                 P. Sharma et al.
+
+Fig. 14  (continued)
+
+
+
+
+                       (e) Model 6
+
+
+
+
+                       (f) Model 7
+
+
+
+
+                       (g) Model 8
+
+
+
+
+                       (h) Model 9
+
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                                    2949
+
+Fig. 14  (continued)
+
+
+
+
+                                                                             (i) Model 10
+
+
+
+
+                                                                              (j) Model 11
+
+                                                                        6 Parametric Heat Conduction Problem
+
+                                                                        As discussed in Sect. 2.2.6, PINNs can be parameterised
+                                                                        by adding the parameter of interest as another feature in
+                                                                        the training dataset. We solved two parametric 2D steady-
+                                                                        state heat conduction problems with parameterised con-
+                                                                        ductivity and parameterised geometry (see Table 5).
+
+
+                                                                        6.1 Problem 3: Parameterised Conductivity
+
+                                                                        We formulated the 2D steady-state heat conduction prob-
+Fig. 15  The magnitude of SDF weights on interior points of the cubi-   lem such that the conductivity 𝜅 is varying from 0 to 1 in
+cal domain of Problem 2                                                 Eq. 25.
+
+In Models 3–10, even though the number of data points                   uxx + 𝜅 uyy = 0,   x ∈ [−0.5, 0.5],   y ∈ [0, 1],      𝜅 ∈ [0, 1],
+were same there was no noticeable increase in the training              u(x, 0) = u(x, 1) = 0,   u(−0.5, y) = u(0.5, y) = 1.
+time per epoch. However, in Model 11, the training time                                                                              (25)
+per epoch was almost 3 times for Problem 2, a 3D problem,               We trained Problem 3, with various models from Table 1
+compared to Problem 1, a 2D problem. This is because one                and observed that the predicted temperature distribution
+DGM layers contains eight weight matrices and introduc-                 was fairly accurate except for Model 1 because we did not
+ing one more feature into the training dataset increases the            use a learning rate scheduler (see Sect. 4.1). The absolute
+number of operations exponentially.                                     pointwise error is less than 5% on the interior points with
+                                                                        some errors around the corners, similar to Problems 1 and
+                                                                        2. Figure 16 shows the solution to Problem 3 using Model
+                                                                        2. Model 2 predicted a reasonably accurate temperature
+
+
+
+                                                                                                                               13
+2950                                                                                                                              P. Sharma et al.
+
+Table 4  Summary of the total                          Problem 1                                        Problem 2
+training time (s) and training
+time (s) per epoch in Problems                         Training time (s)         Training time/epoch    Training time (s)         Training time/
+1 and 2 for each model                                                           (10−3 s)                                         epoch (10−3 s)
+
+                                      Model 1           455                      15.61                  2259                      112.95
+                                      Model 2           482                      16.06                  845                       56.33
+                                      Model 3           632                      31.60                  592                       29.6
+                                      Model 4           527                      52.71                  –                         –
+                                      Model 5           530                      53.00                  585                       58.5
+                                      Model 6          2759                      137.95                 1931                      96.55
+                                      Model 7          1843                      92.15                  2193                      109.65
+                                      Model 8          2031                      101.55                 2416                      120.80
+                                      Model 9           769                      69.91                  1144                      57.2
+                                      Model 10         2792                      139.60                 3481                      174.05
+                                      Model 11         2670                      89.00                  8174                      272.46
+
+
+
+Table 5  Summary of parametric heat conduction problems                    distribution in just 523 s. Model 3 to 11 took 2–3 times the
+                            Parametric     Parametric geometry
+                                                                           time to train the model with very little improvement.
+                            conductivity
+                                                                           6.2 Problem 4: Parameterised Geometry
+PINN framework              Model 2        Models 7, 10, 11
+Layers                      8              6
+                                                                           Similar to conductivity the geometry can also be parameter-
+Nodes per layer             20             512
+                                                                           ised. We used the y-dimension of the 2D steady-state heat
+Boundary points             10,000         4000
+                                                                           conduction problem as the parameter (Eq. 26).
+Collocation points          25,000         4000
+𝛼                           1e−3           1e−3                            uxx + uyy = 0,   x ∈ [−0.5, 0.5],        y ∈ [0, L],   L ∈ [1, 10],
+Epochs                      30k            20k                             u(x, 0) = u(x, L) = 0,      u(−0.5, y) = u(0.5, y) = 1.
+Average relative L2 error   0.10305        0.05460, 0.10407, 0.08192                                                                        (26)
+                                                                           Implementing the parametric geometry is not straightfor-
+                                                                           ward, care should be taken that for each geometry parameter
+                                                                           the sampled points along the geometry parameter is within
+                                                                           the spatio-temporal domain. For example, as per Eq. 26,
+
+
+Fig. 16  Solution to Problem 3
+using Model 2. The predicted
+temperature distribution (on the
+top) and the absolute pointwise
+error (on the bottom) for dif-
+ferent values of 𝜅 (see Eq. 25).
+Temperature predicted outside
+the expected bound, i.e., when
+u ∉ [0, 1], is shown in white and
+grey colour
+
+
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                              2951
+
+                                                                      use the SDF weights, the predicted temperature distribution
+                                                                      improves dramatically.
+                                                                         In Model 11, the predicted temperature distribution with-
+                                                                      out the SDF weights was much better than any other Model
+                                                                      without the SDF weights. Also, Model 11 with SDF weights
+                                                                      predicts better temperature distribution compared to Models
+                                                                      7 and 10 with SDF weights.
+
+
+                                                                      7 Conclusion
+
+                                                                      In this paper, we have reviewed application of PINNs to stiff-
+                                                                      PDEs, specifically for simple steady-state heat conduction
+                                                                      problems with discontinuous BCs at the corners. We defined
+                                                                      a list of PINN frameworks in Table 1 which included the
+Fig. 17  The boundary points sampling of the parameterised geometry
+                                                                      baseline PINN and models from open-source libraries such
+in Problem 4
+                                                                      as DeepXDE and NVIDIA Modulus.
+                                                                         We started with a 2D steady-state heat conduction prob-
+y ∈ [0, L] and L ∈ [1, 10], i.e., y ≤ L for each sample in the        lem (Problem 1). We observed that both the baseline PINN
+training dataset.                                                     and DGM architecture predicted temperature distribution
+   Figure 17 shows the boundary points sampling of Prob-              with 5–10% absolute pointwise error in the corner regions
+lem 4 to illustrate the implementation of parametric geom-            for most models. The results are summarised in Table 2.
+etry. Here, x and y axes shows the 2D spatial domain for each            Next, we solved Problem 1 with hard constrained BCs.
+geometry parameter along the L axis. As discussed earlier,            We showed that we can’t satisfy all the BCs exactly when
+for y ≤ L , this results in moving the upper boundary on the          they conflict with each other. Problem 1 contains discontinu-
+y axis as L increases.                                                ous BCs, which can’t be satisfied exactly with a differenti-
+   We observed that none of the models could predict a tem-           able function such as a NN. Thus, we do not recommend
+perature distribution that visually looks similar to the FEM          applying hard constrained BCs on a stiff-PDE.
+solution. Some of the models such as Models 1, 3, 4, 5, 6                We also demonstrated the inability of an overfitted PINN
+and 7 could not converge the loss. Whereas, Models 10 and             to predict the temperature distribution at new spatio-tem-
+11 resulted in gradient explosion. We think that none of the          poral locations. However, an overfitted PINN proves to be
+PINN frameworks in Table 1 does have enough features and              computationally cheap when the solution is to be inferred
+parameters to predict multiple discontinuous temperature              on the training dataset only.
+distribution around the moving upper boundary. We need                   We then solved a 3D steady-state heat conduction prob-
+more sophisticated PINN frameworks to solve these types               lem (Problem 2), an equivalent of Problem 1 in 3D space.
+of problems.                                                          This is where modified PINN frameworks such as Fourier
+   Thus, we decreased the range of the parameter L until we           network, Modified Fourier network, DGM architecture
+could predict a temperature distribution that visually resem-         proves to be more accurate than the baseline PINN frame-
+bles the FEM solution. The parameter’s range was eventually           works (Models 1–7) in terms of the relative L2 error. Further-
+narrowed to 1.05, i.e. L ∈ [1, 1.05].                                 more, the SDF weights significantly improved the accuracy.
+   We trained Models 7, 10 and 11 with the redefined L                This is primarily because the modified PINN frameworks are
+parameter. For Models 10 and 11, we have also shown the               inherently evolutional over the baseline PINN. The Fourier
+predicted temperature distribution without the SDF weights            network addresses the spectral bias in the baseline PINNs,
+to highlight how important they are while solving problems            the DGM architecture is useful for solving problems in
+with discontinuities. Figure 18 shows the predicted tempera-          higher dimensions and the Modified Fourier network is a
+ture distribution for the redefined problem with Models 7,            combination of both.
+10 and 11 with and without the SDF weights.                              Then we solved Problem 1 with parametric conductivity
+   In Model 7, the predicted temperature distribution around          (Problem 3) using DeepXDE’s baseline PINN. DeepXDE’s
+the left and right boundary does not change with the moving           baseline PINN accurately predicted the temperature distribu-
+upper boundary, especially, around the upper-left and upper-          tion while using fewer resources compared to Models 3–11.
+right corners of the square domain. In Model 10 without the              We also solved Problem 1 with parametric geometry by
+SDF weights, the predicted temperature distribution does              extending the y-dimension (Problem 4). We observed that
+not visually resemble the FEM solution. Whereas, when we              solving stiff-PDEs with parametric geometry can be very
+
+
+                                                                                                                         13
+2952                                                                                                           P. Sharma et al.
+
+Fig. 18  Solution of 2D steady-
+state heat conduction problem
+with parameterised upper
+boundary. Each plot shows the
+predicted temperature dis-
+tribution for a specific value
+of parameter L ∈ [1, 1.05].
+Temperature predicted outside
+the expected bound, i.e., when
+u ∉ [0, 1], is shown using white
+and grey colour
+
+
+
+
+                                                                    (a) Model 7
+
+
+
+
+                                                         (b) Model 10 without SDF weights
+
+
+challenging for PINNs. Even robust PINN frameworks such        network and DGM architecture are robust even on 3D prob-
+as the Modified Fourier Network resulted in exploding gra-     lems. The SiReNs network is very unstable and often results
+dients. In Problem 4, we also showed that the predicted tem-   in exploding gradients even with exponential decay of the
+perature distribution with SDF weights significantly outper-   learning rate. The SiReNs network fails to predict the tem-
+forms those without the SDF weights. Table 5 summarises        perature distribution in Problem 2 even with a reduced learn-
+the network parameters and the accuracy (relative L2 error)    ing rate. A summary of the best models for each problem is
+of various models for Problems 3 and 4.                        shown in Table 6.
+   Among the PINN frameworks (see Sect. 1), baseline              In Table 6, Models 7 and 11 can be categorised as the
+PINNs are not useful in the case of 3D problems. On the        best performing models in general for the four problems we
+other hand, PINN frameworks such as Modified Fourier           considered. Model 10 also works in most of the cases. Model
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                     2953
+
+Fig. 18  (continued)
+
+
+
+
+                                                                   (c) Model 10
+
+
+
+
+                                                       (d) Model 11 without SDF weights
+
+7 is computationally cheaper than Model 11 (see Table 4).       quasi-random sampling improves the convergence and the
+However, Model 11 seems to work without SDF weights in          accuracy respectively.
+Problem 4 which is an advantage for solving more compli-           We also tried to solve 2D steady-state heat conduction
+cated problems.                                                 problem with a temperature dependent conductivity along
+   Among the additional tools (see Sect. 2.3), the SDF          the y-direction. However, we could not converge the train-
+weights are an important asset for solving problems with dis-   ing loss with any of the models in Table 1. We were also
+continuous BCs. The importance sampling is a loss depend-       interested in solving Problem 1 with parametric prescribed
+ent resampling strategy of the collocation points. It samples   BCs, but it seems, currently, this is not possible with any
+points proportional to the absolute pointwise error, which is   PINN framework.
+particularly useful in stiff-PDEs where we need more points        The development of FEM took us almost five decades.
+to capture the sharp gradients. The adaptive activation and     In contrast, PINNs are evolving rather quickly. As of now,
+
+
+                                                                                                                13
+2954                                                                                                                                  P. Sharma et al.
+
+Fig. 18  (continued)
+
+
+
+
+                                                                            (e) Model 11
+
+
+                                                                       Declarations
+Table 6  Summary of models                     Models
+with least relative L2 error                                           Conflict of interest On behalf of all authors, the corresponding author
+                                                                       states that there is no conflict of interest. The code we used to train
+                                   Problem 1   3, 5, 6, 7 and 11
+                                                                       and evaluate our models is available at https://​doi.​org/​10.​5281/​zenodo.​
+                                   Problem 2   5, 6, 7, 8, 10 and 11   73618​56.
+                                   Problem 3   All except Model 1
+                                   Problem 4   7, 10 and 11            Open Access This article is licensed under a Creative Commons Attri-
+                                                                       bution 4.0 International License, which permits use, sharing, adapta-
+                                                                       tion, distribution and reproduction in any medium or format, as long
+                                                                       as you give appropriate credit to the original author(s) and the source,
+                                                                       provide a link to the Creative Commons licence, and indicate if changes
+                                                                       were made. The images or other third party material in this article are
+PINNs are able to solve simple discontinuous problems in
+                                                                       included in the article's Creative Commons licence, unless indicated
+2D and 3D without any problem-specific tuning and trans-               otherwise in a credit line to the material. If material is not included in
+fer learning. The same framework can be used to solve the              the article's Creative Commons licence and your intended use is not
+parametric PDEs which is difficult to achieve with conven-             permitted by statutory regulation or exceeds the permitted use, you will
+                                                                       need to obtain permission directly from the copyright holder. To view a
+tional PDE solvers. We believe that in 2–3 years, we will
+                                                                       copy of this licence, visit http://​creat​iveco​mmons.​org/​licen​ses/​by/4.​0/.
+see PINNs solving complex benchmark problems.
+   There is a need to automate the SDF for problems with
+discontinuous solutions. Also, there is a lack of bench-
+marking in PINNs. We can not use the same parameters
+                                                                       References
+for all the Models in Table 1. To compare different PINN
+frameworks, an improvement to this field would be for the                1. De Florio M, Schiassi E, Ganapol BD, Furfaro R (2022a)
+research community to collectively agree upon a standard                    Physics-Informed Neural Networks for rarefied-gas dynam-
+set of benchmarks.                                                          ics: Poiseuille flow in the BGK approximation. Z angew Math
+                                                                            Phys 73(3):126. ISSN 1420-9039. https://​ d oi.​o rg/​1 0.​1 007/​
+Acknowledgements This work is funded by the United Kingdom                  s00033-​022-​01767-z
+Atomic Energy Authority (UKAEA) and the Engineering and Physi-           2. De Florio M, Schiassi E, Furfaro R (2022b) Physics-informed
+cal Sciences Research Council (EPSRC) under the Grant Agreement             neural networks and functional interpolation for stiff chemical
+Numbers EP/T517987/1 and EP/R012091/1. We acknowledge the sup-              kinetics. Chaos Interdiscip J Nonlinear Sci 32(6):063107. ISSN
+port of Supercomputing Wales and AccelerateAI projects, which is            1054-1500. https://​doi.​org/​10.​1063/5.​00866​49
+part-funded by the European Regional Development Fund (ERDF) via         3. Aliakbari M, Mahmoudi M, Vadasz P, Arzani A (2022) Predict-
+the Welsh Government for giving us access to NVIDIA A100 40 GB              ing high-fidelity multiphysics data from low-fidelity fluid flow
+GPUs for batch training. We also acknowledge the support of NVIDIA          and transport solvers using physics-informed neural networks.
+for donating us a NVIDIA RTX A5000 24 GB for local testing.
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                                                                  2955
+
+     Int J Heat Fluid Flow 96:109002. ISSN 0142-727X. https://​doi.​                 21. Gao H, Zahr MJ, Wang J-X (2022) Physics-informed graph neu-
+     org/​10.​1016/j.​ijhea​tflui​dflow.​2022.​109002                                    ral Galerkin networks: a unified framework for solving PDE-
+  4. Abueidda DW, Koric S, Guleryuz E, Sobh NA (2022) Enhanced                           governed forward and inverse problems. Comput Methods Appl
+     physics-informed neural networks for hyperelasticity. Technical                     Mech Eng 390:114502. ISSN 0045-7825. https://​doi.​org/​10.​
+     Report. arXiv:​2205.​14148                                                          1016/j.​cma.​2021.​114502
+  5. Xu C, Cao TB, Yuan Y, Meschke G (2022) Transfer learning                        22. Sirignano J, Spiliopoulos K (2018) DGM: a deep learning algo-
+     based physics-informed neural networks for solving inverse prob-                    rithm for solving partial differential equations. J Comput Phys
+     lems in tunneling. Technical Report. arXiv arXiv:​2205.​07731                       375:1339–1364. ISSN 0021-9991. https://​doi.​org/​10.​1016/j.​jcp.​
+  6. Zapf B, Haubner J, Kuchta M, Ringstad G, Eide PK, Mardal K-A                        2018.​08.​029
+     (2022) Investigating molecular transport in the human brain from                23. Yu Y, Si X, Hu C, Zhang J (2019) A review of recurrent neural
+     MRI with physics-informed neural networks. Technical Report.                        networks: LSTM cells and network architectures. Neural Com-
+     arXiv arXiv:​2205.​02592                                                            put 31(7):1235–1270. ISSN 0899-7667. https://​doi.​org/​10.​1162/​
+  7. Lu L, Pestourie R, Yao W, Wang Z, Verdugo F, Johnson SG                             neco_a_​{0}1199
+     (2021a) Physics-informed neural networks with hard constraints                  24. Rahaman N, Baratin A, Arpit D, Draxler F, Lin M, Hamprecht
+     for inverse design. SIAM J Sci Comput 43(6):B1105–B1132.                            F, Bengio Y, Courville A (2019) On the spectral bias of neural
+     ISSN 1064-8275. https://​doi.​org/​10.​1137/​21M13​97908                            networks. In: Proceedings of the 36th international conference
+  8. Margossian CC (2019) A review of automatic differentiation and                      on machine learning, 2019. PMLR, pp 5301–5310. ISSN 2640-
+     its efficient implementation. WIREs Data Min Knowl Discov                           3498. https://​proce​edings.​mlr.​press/​v97/​raham​an19a.​html
+     9(4):e1305. ISSN 1942-4795. https://d​ oi.o​ rg/1​ 0.1​ 002/w    ​ idm.1​ 305   25. Tancik M, Srinivasan P, Mildenhall B, Fridovich-Keil S,
+  9. Lee H, Kang IS (1990) Neural algorithm for solving differen-                        Raghavan N, Singhal U, Ramamoorthi R, Barron J, Ng R (2020)
+     tial equations. J Comput Phys 91(1):110–131. ISSN 0021-9991.                        Fourier features let networks learn high frequency functions in
+     https://​doi.​org/​10.​1016/​0021-​9991(90)​90007-N                                 low dimensional domains. In: Advances in neural information
+ 10. Lagaris IE, Likas A, Fotiadis DI (1998) Artificial neural networks                  processing systems, 2020, vol 33. Curran Associates, Inc., pp
+     for solving ordinary and partial differential equations. IEEE                       7537–7547. https://​proce​edings.​neuri​ps.​cc/​paper/​2020/​hash/​
+     Trans Neural Netw 9(5): 987–1000. ISSN 1941-0093. https://​                         55053​68326​89576​97aa3​9fba6​f231c​68-​Abstr​act.​html
+     doi.​org/​10.​1109/​72.​712178                                                  26. Modulus user guide, release v21.06 (2021). https://​devel​oper.​
+ 11. Lagaris IE, Likas AC, Papageorgiou DG (2000) Neural-network                         nvidia.​com/​modul​us-​user-​guide-​v2106
+     methods for boundary value problems with irregular boundaries.                  27. Hennigh O, Narasimhan S, Nabian MA, Subramaniam A, Tang-
+     IEEE Trans Neural Netw 11(5):1041–1049. ISSN 1941-0093.                             sali K, Fang Z, Rietmann M, Byeon W, Choudhry S (2021)
+     https://​doi.​org/​10.​1109/​72.​870037                                             NVIDIA SimNetTM : an AI-accelerated multi-physics simulation
+ 12. Malek A, Shekari Beidokhti R (2006) Numerical solution for                          framework. In: Paszynski M, Kranzlmüller D, Krzhizhanovskaya
+     high order differential equations using a hybrid neural network-                    VV, Dongarra JJ, Sloot PMA (eds) Computational science—
+     optimization method. Appl Math Comput 183(1):260–271. ISSN                          ICCS 2021, Lecture notes in computer science, 2021. Springer,
+     0096-3003. https://​doi.​org/​10.​1016/j.​amc.​2006.​05.​068                        Cham, pp 447–461. ISBN 978-3-030-77977-1. https://​doi.​org/​
+ 13. Rudd K, Ferrari S (2015) A constrained integration (CINT)                           10.​1007/​978-3-​030-​77977-1_​36
+     approach to solving partial differential equations using artificial             28. Sitzmann V, Martel J, Bergman A, Lindell D, Wetzstein G (2020)
+     neural networks. Neurocomputing 155:277–285. ISSN 0925-                             Implicit neural representations with periodic activation functions.
+     2312. https://​doi.​org/​10.​1016/j.​neucom.​2014.​11.​058                          In: Advances in neural information processing systems, 2020, vol
+ 14. Raissi M, Perdikaris P, Karniadakis GE (2018) Numerical Gauss-                      33. Curran Associates, Inc., pp 7462–7473. https://​proce​edings.​
+     ian processes for time-dependent and nonlinear partial differ-                      neurip​ s.c​ c/p​ aper/2​ 020/h​ ash/5​ 3c041​ 18df1​ 12c13​ a8c34​ b3834​ 3b9c​
+     ential equations. SIAM J Sci Comput. https://​doi.​org/​10.​1137/​                  10-​Abstr​act.​html
+     17M11​20762                                                                     29. Zhao CL (2020) Solving Allen–Cahn and Cahn–Hilliard equa-
+ 15. Raissi M, Wang Z, Triantafyllou MS, Karniadakis GE (2019a)                          tions using the adaptive physics informed neural networks.
+     Deep learning of vortex-induced vibrations. J Fluid Mech                            Commun Comput Phys 29(3). https://​doi.​org/​10.​4208/​cicp.​
+     861:119–137. ISSN 0022-1120, 1469-7645. https://​doi.​org/​10.​                     OA-​2020-​0086
+     1017/​jfm.​2018.​872                                                            30. McClenny L, Braga-Neto U (2019) Self-adaptive physics-
+ 16. Stiff differential equations. https://​uk.​mathw​orks.​com/​compa​ny/​              informed neural networks using a soft attention mechanism.
+     newsl​etters/​artic​les/​stiff-​diffe​renti​al-​equat​ions.​html                    Technical Report 68. http://​ceur-​ws.​org/​Vol-​2964/​artic​le_​68.​pdf
+ 17. Raissi M, Perdikaris P, Karniadakis GE (2019b) Physics-                         31. Shi S, Liu D, Zhao Z (2021) Non-Fourier heat conduction based
+     informed neural networks: a deep learning framework for solving                     on self-adaptive weight physics-informed neural networks. In:
+     forward and inverse problems involving nonlinear partial differ-                    2021 40th Chinese control conference (CCC), pp 8451–8456.
+     ential equations. J Comput Phys 378:686–707. ISSN 0021-9991.                        ISSN 1934-1768. https://​doi.​org/​10.​23919/​CCC52​363.​2021.​
+     https://​doi.​org/​10.​1016/j.​jcp.​2018.​10.​045                                   95504​87
+ 18. Wang S, Teng Y, Perdikaris P (2021a) Understanding and miti-                    32. Wang S, Yu X, Perdikaris P (2022a) When and why PINNs fail
+     gating gradient flow pathologies in physics-informed neural net-                    to train: a neural tangent kernel perspective. J Comput Phys
+     works. SIAM J Sci Comput 43(5):A3055–A3081. ISSN 1064-                              449:110768. ISSN 0021-9991. https://​doi.​org/​10.​1016/j.​jcp.​
+     8275. https://​doi.​org/​10.​1137/​20M13​18043                                      2021.​110768
+ 19. Vaswani A, Shazeer N, Parmar N, Uszkoreit J, Jones L, Gomez                     33. Sun R-Y (2020) Optimization for deep learning: an overview. J
+     AN, Kaiser Ł, Polosukhin I (2017a) Attention is all you need. In:                   Oper Res Soc China 8(2):249–294. ISSN 2194-6698. https://d​ oi.​
+     Advances in neural information processing systems, 2017, vol 30                     org/​10.​1007/​s40305-​020-​00309-6
+ 20. Cao S (2021) Choose a transformer: Fourier or Galerkin. In:                     34. Pascanu R, Mikolov T, Bengio Y (2013) On the difficulty of
+     Advances in neural information processing systems, 2021, vol                        training recurrent neural networks. In: Proceedings of the 30th
+     34. Curran Associates, Inc., pp 24924–24940. https://​proce​                        international conference on machine learning. PMLR, pp 1310–
+     edings.​neuri​ps.​cc/​paper/​2021/​hash/​d0921​d442e​e91b8​96ad9​                   1318. ISSN 1938-7228. https://​proce​edings.​mlr.​press/​v28/​pasca​
+     5059d​13df6​18-​Abstr​act.​html                                                     nu13.​html
+
+
+
+                                                                                                                                                          13
+2956                                                                                                                                 P. Sharma et al.
+
+35. Fletcher R (1994) An overview of unconstrained optimization.           51. Werbos P (1974) Beyond regression: new tools for prediction and
+    In: Spedicato E (ed) Algorithms for continuous optimization:               analysis in the behavior science. Doctoral Dissertation, Harvard
+    the state of the art, NATO ASI series. Springer, Dordrecht, pp             University. https://​ci.​nii.​ac.​jp/​naid/​10012​540025/
+    109–143. ISBN 978-94-009-0369-2. https://​doi.​org/​10.​1007/​         52. Minsky M, Papert SA (2017) Perceptrons: an introduction to
+    978-​94-​009-​0369-2_5                                                     computational geometry. The MIT Press. ISBN 978-0-262-
+36. Tan HH, Lim KH (2019) Review of second-order optimization                  34393-0. https://​doi.​org/​10.​7551/​mitpr​ess/​11301.​001.​0001
+    techniques in artificial neural networks backpropagation. IOP          53. Molnar C (2020) Interpretable machine learning. Lulu.com.
+    Conf Ser Mater Sci Eng 495:012003. ISSN 1757-899X. https://​               ISBN 0-244-76852-8
+    doi.​org/​10.​1088/​1757-​899X/​495/1/​012003                          54. Wang Q, Ma Y, Zhao K, Tian Y (2022b) A comprehensive
+37. Lu L, Meng X, Mao Z, Karniadakis GE (2021b) DeepXDE: a                     survey of loss functions in machine learning. Ann Data Sci
+    deep learning library for solving differential equations. SIAM             9(2):187–212. ISSN 2198-5812. https:// ​ d oi. ​ o rg/ ​ 1 0. ​ 1 007/​
+    Rev 63(1):208–228. ISSN 0036-1445. https://​doi.​org/​10.​1137/​           s40745-​020-​00253-5
+    19M12​74067                                                            55. Elshawi R, Wahab A, Barnawi A, Sakr S (2021) DLBench: a
+38. Haghighat E, Juanes R (2021) SciANN: a Keras/TensorFlow                    comprehensive experimental evaluation of deep learning frame-
+    wrapper for scientific computations and physics-informed                   works. Clust Comput 24(3):2017–2038. ISSN 1573-7543. https://​
+    deep learning using artificial neural networks. Comput Meth-               doi.​org/​10.​1007/​s10586-​021-​03240-4
+    ods Appl Mech Eng 373:113552. ISSN 0045-7825. https://​doi.​           56. Ghojogh B, Ghodsi A, Karray F, Crowley M (2021) KKT con-
+    org/​10.​1016/j.​cma.​2020.​113552                                         ditions, first-order and second-order optimization, and distrib-
+39. McClenny LD, Haile MA, Braga-Neto UM (2021) TensorDif-                     uted optimization: tutorial and survey. arXiv:​2110.​01858 [cs,
+    fEq: scalable multi-GPU forward and inverse solvers for phys-              math]
+    ics informed neural networks. Technical Report. arXiv arXiv:​          57. Ketkar N (2017) Stochastic gradient descent. In: Ketkar N (ed)
+    2103.​16034                                                                Deep learning with Python: a hands-on introduction. Apress,
+40. Zubov K, McCarthy Z, Ma Y, Calisto F, Pagliarino V, Azeglio                Berkeley, pp 113–132. ISBN 978-1-4842-2766-4. https://​doi.​
+    S, Bottero L, Luján E, Sulzer V, Bharambe A, Vinchhi N, Bal-               org/​10.​1007/​978-1-​4842-​2766-4_8
+    akrishnan K, Upadhyay D, Rackauckas C (2021) NeuralPDE:                58. Kingma DP, Ba J (2017) Adam: a method for stochastic opti-
+    automating physics-informed neural networks (PINNs) with                   mization. Technical Report. arXiv arXiv:​1412.​6980
+    error approximations. Technical Report. arXiv arXiv:​2 107.​           59. Ramm A, Smirnova A (2001) On stable numerical differen-
+    09443                                                                      tiation. Math Comput 70(235):1131–1153. ISSN 0025-5718,
+41. Schiassi E, Leake C, De Florio M, Johnston H, Furfaro R,                   1088-6842. https://​doi.​org/​10.​1090/​S0025-​5718-​01-​01307-2
+    Mortari D (2020) Extreme theory of functional connections: a           60. Davenport JH, Siret Y, Tournier É (1993) Computer algebra
+    physics-informed neural network method for solving parametric              systems and algorithms for algebraic computation. Academic
+    differential equations. Technical Report. arXiv arXiv:2​ 005.1​ 0632       Press Professional, Inc. ISBN 0-12-204232-8
+42. Demo N, Strazzullo M, Rozza G (2021) An extended physics               61. Barros CDT, Mendonça MRF, Vieira AB, Ziviani A (2021)
+    informed neural network for preliminary analysis of parametric             A survey on embedding dynamic graphs. ACM Comput Surv
+    optimal control problems. Technical Report. arXiv arXiv:​2110.​            55(1):1–37. ISSN: 0360-0300
+    13530                                                                  62. Fang B, Yang E, Xie F (2020) Symbolic techniques for deep
+43. Raj M, Kumbhar P, Annabattula RK (2022) Physics-informed                   learning: challenges and opportunities. arXiv preprint arXiv:​
+    neural networks for solving thermo-mechanics problems of func-             2010.​02727
+    tionally graded material. Technical Report. arXiv arXiv:​2111.​        63. Giles M (2008) An extended collection of matrix derivative
+    10751                                                                      results for forward and reverse mode automatic differentiation.
+44. Heger P, Full M, Hilger D, Hosters N (2022) Investigation of               Report
+    physics-informed deep learning for the prediction of paramet-          64. Mathias R (1996) A chain rule for matrix functions and appli-
+    ric, three-dimensional flow based on boundary data. Technical              cations. SIAM J Matrix Anal Appl 17(3):610–620. ISBN:
+    Report. arXiv arXiv:​2203.​09204                                           0895-4798
+45. Wu Y, Feng J (2018) Development and application of artificial          65. Raschka S, Patterson J, Nolet C (2020) Machine learning in
+    neural network. Wirel Pers Commun 102(2):1645–1656. ISSN                   Python: main developments and technology trends in data sci-
+    1572-834X. https://​doi.​org/​10.​1007/​s11277-​017-​5224-x                ence, machine learning, and artificial intelligence. Informa-
+46. Trehan D (2020) Non-convex optimization: a review. In: 2020                tion 11(4):193. ISSN 2078-2489. https://​doi.​org/​10.​3390/​info1​
+    4th International conference on intelligent computing and control          10401​93
+    systems (ICICCS), pp 418–423. https://​doi.​org/​10.​1109/​ICICC​      66. Andonie R (2019) Hyperparameter optimization in learning
+    S48265.​2020.​91208​74                                                     systems. J Membr Comput 1(4):279–291. ISSN 2523-8914.
+47. Chen T, Chen H (1995) Universal approximation to nonlinear                 https://​doi.​org/​10.​1007/​s41965-​019-​00023-0
+    operators by neural networks with arbitrary activation functions       67. Gopakumar V, Pamela S, Samaddar D (2022) Loss landscape
+    and its application to dynamical systems. IEEE Trans Neural                engineering via data regulation on PINNs. Technical Report.
+    Netw 6(4):911–917. ISSN 1941-0093. https://​doi.​org/​10.​1109/​           arXiv arXiv:​2205.​07843
+    72.​392253                                                             68. Arzani A, Wang J-X, D’Souza RM (2021) Uncovering near-
+48. Freedman D (2009) Statistical models: theory and practice.                 wall blood flow from sparse data with physics-informed neural
+    Cambridge University Press. ISBN 978-0-521-11243-7. Google-                networks. Phys Fluids 33(7):071905. ISSN 1070-6631. https://​
+    Books-ID 4N3KOEitRe8C                                                      doi.​org/​10.​1063/5.​00556​00
+49. Thacker WC (1989) The role of the Hessian matrix in fitting            69. Bajaj C, McLennan L, Andeen T, Roy A (2021) Robust learn-
+    models to measurements. J Geophys Res Oceans 94(C5):6177–                  ing of physics informed neural networks. Technical Report.
+    6196. ISSN 2156-2202. https://​doi.​org/​10.​1029/​JC094​iC05p​            arXiv arXiv:​2110.​13330
+    06177                                                                  70. Nabian MA, Gladstone RJ, Meidani H (2021) Efficient training
+50. Diaconis P, Shahshahani M (1984) On nonlinear functions of lin-            of physics-informed neural networks via importance sampling.
+    ear combinations. SIAM J Sci Stat Comput 5(1):175–191. ISSN                Comput Aided Civ Infrastruct Eng 36(8):962–977. ISSN 1467-
+    0196-5204. https://​doi.​org/​10.​1137/​09050​13                           8667. https://​doi.​org/​10.​1111/​mice.​12685
+
+
+13
+Stiff‑PDEs and Physics‑Informed Neural Networks﻿	                                                                                              2957
+
+ 71. Robert CP, Casella G (1999) Monte Carlo integration. In:                  Phys 7(4):86–112. ISSN 00415553. https://​doi.​org/​10.​1016/​
+     Robert CP, Casella G (eds) Monte Carlo statistical meth-                  0041-​5553(67)​90144-9
+     ods, Springer texts in statistics. Springer, New York, pp             89. Joe S, Kuo FY (2008) Constructing Sobol sequences with better
+     71–138. ISBN 978-1-4757-3071-5. https://​doi.​org/​10.​1007/​             two-dimensional projections. SIAM J Sci Comput 30(5):2635–
+     978-1-​4757-​3071-5_3                                                     2654. ISSN 1064-8275. https://​doi.​org/​10.​1137/​07070​9359
+ 72. Morokoff WJ, Caflisch RE (1995) Quasi-Monte Carlo integra-            90. Hammersley JM (1960) Monte Carlo methods for solving mul-
+     tion. J Comput Phys 122(2):218–230. ISSN 0021-9991. https://​             tivariable problems. Ann NY Acad Sci 86(3):844–874. ISSN
+     doi.​org/​10.​1006/​jcph.​1995.​1209                                      1749-6632. https://​doi.​org/​10.​1111/j.​1749-​6632.​1960.​tb428​46.x
+ 73. Berrada I, Ferland JA, Michelon P (1996) A multi-objective            91. Hammersley J (2013) Monte Carlo methods. Springer, Singapore
+     approach to nurse scheduling with both hard and soft constraints.     92. Pang G, Lu L, Karniadakis GE (2019) fPINNs: fractional phys-
+     Socio-Econ Plan Sci 30(3):183–193. ISSN 0038-0121. https://​              ics-informed neural networks. SIAM J Sci Comput 41(4):A2603–
+     doi.​org/​10.​1016/​0038-​0121(96)​00010-9                                A2626. ISSN 1064-8275. https://​doi.​org/​10.​1137/​18M12​29845
+ 74. Sukumar N, Srivastava A (2022) Exact imposition of bound-             93. Zhang D, Guo L, Karniadakis GE (2020) Learning in modal
+     ary conditions with distance functions in physics-informed deep           space: solving time-dependent stochastic PDEs using physics-
+     neural networks. Comput Methods Appl Mech Eng 389:114333.                 informed neural networks. SIAM J Sci Comput 42(2):A639–
+     ISSN 0045-7825. https://​doi.​org/​10.​1016/j.​cma.​2021.​114333          A665. ISSN 1064-8275. https://​doi.​org/​10.​1137/​19M12​60141
+ 75. Son H, Jang JW, Han WJ, Hwang HJ (2021) Sobolev training              94. Wang S, Wang H, Perdikaris P (2021) Learning the solution
+     for physics informed neural networks. Technical Report. arXiv             operator of parametric partial differential equations with physics-
+     arXiv:​2101.​08932                                                        informed DeepONets. Sci Adv 7(40):eabi8605. https://​doi.​org/​
+ 76. Yu J, Lu L, Meng X, Karniadakis GE (2022) Gradient-                       10.​1126/​sciadv.​abi86​05
+     enhanced physics-informed neural networks for forward and             95. Meng X, Karniadakis GE (2020) A composite neural net-
+     inverse PDE problems. Comput Methods Appl Mech Eng                        work that learns from multi-fidelity data: application to func-
+     393:114823. ISSN 0045-7825. https://​doi.​org/​10.​1016/j.​cma.​          tion approximation and inverse PDE problems. J Comput Phys
+     2022.​114823                                                              401:109020. ISSN 0021-9991. https://​doi.​org/​10.​1016/j.​jcp.​
+ 77. Jagtap AD, Kawaguchi K, Karniadakis GE (2020) Adaptive acti-              2019.​109020
+     vation functions accelerate convergence in deep and physics-          96. Lu L, Dao M, Kumar P, Ramamurty U, Karniadakis GE, Suresh S
+     informed neural networks. J Comput Phys 404:109136. ISSN                  (2020) Extraction of mechanical properties of materials through
+     0021-9991. https://​doi.​org/​10.​1016/j.​jcp.​2019.​109136               deep learning from instrumented indentation. Proc Natl Acad Sci
+ 78. Chan T, Zhu W (2005) Level set based shape prior segmentation.            USA 117(13):7052–7062. https://​doi.​org/​10.​1073/​pnas.​19222​
+     In: 2005 IEEE Computer Society conference on computer vision              10117
+     and pattern recognition (CVPR’05), vol 2, pp 1164–1170. ISSN          97. Wang S, Wang H, Perdikaris P (2021c) On the eigenvector bias of
+     1063-6919. https://​doi.​org/​10.​1109/​CVPR.​2005.​212                   Fourier feature networks: From regression to solving multi-scale
+ 79. Xiang Z, Peng W, Zhou W, Yao W (2022) Hybrid finite differ-               PDEs with physics-informed neural networks. Comput Methods
+     ence with the physics-informed neural network for solving PDE             Appl Mech Eng 384:113938. ISSN 0045-7825. https://​doi.​org/​
+     in complex geometries. arXiv:​2202.​07926 [physics]                       10.​1016/j.​cma.​2021.​113938
+ 80. Martino L, Elvira V, Louzada F (2017) Effective sample size for       98. Lu L, Jin P, Pang G, Zhang Z, Karniadakis GE (2021c) Learning
+     importance sampling based on discrepancy measures. Signal Pro-            nonlinear operators via DeepONet based on the universal approx-
+     cess 131:386–401. ISSN 0165-1684. https://​doi.​org/​10.​1016/j.​         imation theorem of operators. Nat Mach Intell 3(3):218–229.
+     sigpro.​2016.​08.​025                                                     ISSN 2522-5839. https://​doi.​org/​10.​1038/​s42256-​021-​00302-5
+ 81. Samsami MR, Alimadad H (2020) Distributed deep reinforce-             99. Jin P, Meng S, Lu L (2022) MIONet: learning multiple-input
+     ment learning: an overview. Technical Report. arXiv arXiv:2​ 011.​        operators via tensor product. Technical Report. arXiv:​2202.​
+     11012                                                                     06137
+ 82. Arulkumaran K, Deisenroth MP, Brundage M, Bharath AA                 100. Cai S, Wang Z, Lu L, Zaki TA, Karniadakis GE (2021)
+     (2017) Deep reinforcement learning: a brief survey. IEEE Signal           DeepM&Mnet: inferring the electroconvection multiphysics
+     Process Mag 34(6):26–38. ISSN 1558-0792. https://​doi.​org/​10.​          fields based on operator approximation by neural networks. J
+     1109/​MSP.​2017.​27432​40                                                 Comput Phys 436:110296. ISSN 0021-9991. https://​doi.​org/​10.​
+ 83. Viana FAC (2016) A tutorial on Latin hypercube design of exper-           1016/j.​jcp.​2021.​110296
+     iments. Qual Reliab Eng Int 32(5):1975–1985. ISSN 1099-1638.         101. Mao Z, Lu L, Marxen O, Zaki TA, Karniadakis GE (2021)
+     https://​doi.​org/​10.​1002/​qre.​1924                                    DeepM&Mnet for hypersonics: predicting the coupled flow and
+ 84. Shaw JEH (1988) A quasirandom approach to integration in                  finite-rate chemistry behind a normal shock using neural-network
+     Bayesian statistics. Ann Stat 16(2):895–914. ISSN 0090-5364.              approximation of operators. J Comput Phys 447:110698. ISSN
+     https://​www.​jstor.​org/​stable/​22417​63                                0021-9991. https://​doi.​org/​10.​1016/j.​jcp.​2021.​110698
+ 85. Lemieux C (2006) Chapter 12: quasi-random number techniques.         102. Lu L, Pestourie R, Johnson SG, Romano G (2022) Multifidelity
+     In: Henderson SG, Nelson BL (eds) Handbooks in operations                 deep neural operators for efficient learning of partial differential
+     research and management science. Simulation, vol 13. Elsevier,            equations with application to fast inverse design of nanoscale
+     pp 351–379. https://​doi.​org/​10.​1016/​S0927-​0507(06)​13012-1          heat transport. Technical Report arXiv:​2204.​06684
+ 86. Halton JH (1960) On the efficiency of certain quasi-random           103. Srivastava RK, Greff K, Schmidhuber J (2015) Training very
+     sequences of points in evaluating multi-dimensional integrals.            deep networks. In: Advances in neural information processing
+     Numer Math 2(1):84–90. ISSN 0945-3245. https://​doi.​org/​10.​            systems, vol 8. Curran Associates, Inc. https://​proce​edings.​neuri​
+     1007/​BF013​86213                                                         ps.​cc/​paper/​2015/​hash/​215a7​1a127​69b05​6c3c3​2e729​9f1c5​ed-​
+ 87. Faure H, Lemieux C (2009) Generalized Halton sequences in                 Abstr​act.​html
+     2008: a comparative study. ACM Trans Model Comput Simul              104. Guibas J, Mardani M, Li Z, Tao A, Anandkumar A, Catanzaro B
+     19(4):15:1–15:31. ISSN 1049-3301. https://​ doi.​org/​10.​1145/​          (2022) Adaptive Fourier neural operators: efficient token mixers
+     15965​19.​15965​20                                                        for transformers. Technical Report. arXiv:​2111.​13587
+ 88. Sobol’ IM (1967) On the distribution of points in a cube and the     105. Li Z, Zheng H, Kovachki N, Jin D, Chen H, Liu B, Azizzade-
+     approximate evaluation of integrals. USSR Comput Math Math                nesheli K, Anandkumar A (2021) Physics-informed neural
+
+
+                                                                                                                                        13
+2958                                                                                                                                    P. Sharma et al.
+
+     operator for learning partial differential equations. arXiv preprint   109. Vaswani A, Shazeer N, Parmar N, Uszkoreit J, Jones L, Gomez
+     arXiv:​2111.​03794                                                          AN, Kaiser Ł, Polosukhin I (2017b) Attention is all you need. In:
+106. Isola P, Zhu J-Y, Zhou T, Efros AA (2017) Image-to-image trans-             Advances in neural information processing systems, vol 30. Cur-
+     lation with conditional adversarial networks. In: Proceedings of            ran Associates, Inc. https://​proce​edings.​neuri​ps.​cc/​paper/​2017/​
+     the IEEE conference on computer vision and pattern recognition,             hash/​3f5ee​24354​7dee9​1fbd0​53c1c​4a845​aa-​Abstr​act.​html
+     2017, pp 1125–1134                                                     110. Partial differential equation toolbox (R2022a). https://​uk.​mathw​
+107. Wang T-C, Liu M-Y, Zhu J-Y, Tao A, Kautz J, Catanzaro B                     orks.​com/​produ​cts/​pde.​html
+     (2018) High-resolution image synthesis and semantic manipu-            111. Lewkowycz A (2021) How to decay your learning rate. arXiv:​
+     lation with conditional GANs. In: Proceedings of the IEEE con-              2103.​12682 [cs]
+     ference on computer vision and pattern recognition, 2018, pp           112. Elfwing S, Uchibe E, Doya K (2017) Sigmoid-weighted linear
+     8798–8807                                                                   units for neural network function approximation in reinforcement
+108. Ledig C, Theis L, Huszár F, Caballero J, Cunningham A, Acosta               learning. Technical Report. arXiv arXiv:​1702.​03118
+     A, Aitken A, Tejani A, Totz J, Wang Z, Shi W (2017) Photo-real-
+     istic single image super-resolution using a generative adversarial     Publisher's Note Springer Nature remains neutral with regard to
+     network. In: Proceedings of the IEEE conference on computer            jurisdictional claims in published maps and institutional affiliations.
+     vision and pattern recognition, 2017, pp 4681–4690
+
+
+
+
+13
+

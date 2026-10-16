@@ -1,0 +1,2173 @@
+                                        GLOBE: ACCURATE AND G ENERALIZABLE PDE S UR -
+                                        ROGATES USING D OMAIN -I NSPIRED A RCHITECTURES
+                                        AND E QUIVARIANCES
+
+                                                                                         Peter Sharpe
+
+                                                                                   NVIDIA Corporation
+                                                                                 psharpe@nvidia.com
+arXiv:2511.15856v3 [cs.LG] 1 Dec 2025
+
+
+
+
+                                                                                         A BSTRACT
+                                                 We introduce GLOBE, a new neural surrogate for homogeneous PDEs that draws
+                                                 inductive bias from boundary-element methods and equivariant ML. GLOBE
+                                                 represents solutions as superpositions of learnable Green’s-function-like kernels
+                                                 evaluated from boundary faces to targets, composed across multiscale branches and
+                                                 communication hyperlayers. The architecture is translation-, rotation-, and parity-
+                                                 equivariant; discretization-invariant in the fine-mesh limit; and units-invariant via
+                                                 rigorous nondimensionalization. An explicit far-field decay envelope stabilizes
+                                                 extrapolation, boundary-to-boundary hyperlayer communication mediates long-
+                                                 range coupling, and the all-to-all boundary-to-target evaluation yields a global
+                                                 receptive field that respects PDE information flow, even for elliptic PDEs.
+                                                 On AirFRANS (steady incompressible RANS over NACA airfoils), GLOBE
+                                                 achieves substantial accuracy improvements. On the “Full” split, it reduces mean-
+                                                 squared error by roughly 200× on all fields relative to the dataset’s reference
+                                                 baselines, and roughly 50× relative to the next-best-performing model. In the
+                                                 “Scarce” split, it achieves over 100× lower error on velocity and pressure fields
+                                                 and over 600× lower error on surface pressure than Transolver. Qualitative results
+                                                 show sharp near-wall gradients, coherent wakes, and limited errors under modest
+                                                 extrapolation in Reynolds number and angle of attack.
+                                                 In addition to this accuracy, the model is quite compact (117k parameters), and
+                                                 fields can be evaluated at arbitrary points during inference. We also demonstrate the
+                                                 ability to train and predict with non-watertight meshes, which has strong practical
+                                                 implications.
+                                                 These results show that rigorous physics- and domain-inspired inductive biases
+                                                 can achieve large gains in accuracy, generalizability, and practicality for ML-based
+                                                 PDE surrogates for industrial computer-aided engineering (CAE).
+
+
+                                        1     I NTRODUCTION
+
+                                        1.1   M OTIVATION : T HE C OMPUTATIONAL C HALLENGE OF CFD AND THE N EED FOR
+                                              S URROGATES
+
+                                        Computational fluid dynamics (CFD) simulations are essential throughout modern engineering,
+                                        from aerospace and automotive design to energy systems and climate modeling. In aerospace
+                                        and automotive applications, the vast majority of engineering quantities of interest (e.g., time-
+                                        averaged lift, drag, pressure distributions) are steady-state. Because of this, flows are commonly
+                                        modeled using either a) Reynolds-averaged Navier-Stokes (RANS) equations or b) higher-fidelity
+                                        (and inherently-unsteady) large-eddy simulation (LES) methods, from which a time-averaged solution
+                                        is extracted. In either case, severe computational limitations arise for several reasons. First, the
+                                        PDE’s nonlinearity makes iterative methods most practical1 , yet these introduce the possibility of
+                                            1
+                                              Referring to outer-loop iterations for PDE linearization, which wrap any inner-loop iterations that are used
+                                        to solve the linearized system itself.
+
+
+                                                                                                1
+convergence failures and unfavorable speed-stability tradeoffs. Second, the PDE’s elliptic character
+demands global information propagation and solution relaxation (discussed in Section 1.4), driving
+high computational cost – even with acceleration techniques such as multigrid or tailored initialization
+strategies (e.g., Sharpe et al. (2025)). Finally, at the high Reynolds numbers typical of industry interest,
+thin boundary layers develop on no-slip walls, requiring many degrees of freedom to resolve these
+high-gradient regions that are critical for accurate force predictions. Due to the combination of these
+factors, industrial CFD simulations routinely consume days to weeks of supercomputer time.
+This computational expense has motivated rapid growth in machine-learning-based surrogate models
+that learn to approximate PDE solution operators from data. However, as discussed in Section 1.4,
+many existing ML surrogates do not structurally enforce fundamental physical requirements: they
+may break under coordinate transformations (lacking translation, rotation, or parity equivariance),
+depend on arbitrary discretization choices, lack unit consistency, or employ local receptive fields
+that limit generalization for elliptic PDEs. Architecturally enforcing these requirements can improve
+generalization beyond narrow training distributions, which is critical for industrial deployment.
+
+1.2      M OTIVATION FROM B OUNDARY-E LEMENT M ETHODS
+
+Advanced numerical methods for aerodynamics provide instructive architectural guidance. Integral
+boundary layer (IBL) methods such as XFOIL by Drela (1989) achieve 100- to 1,000-fold
+computational speedups over volumetric RANS by discretizing only boundaries via boundary-element
+methods (BEM), exploiting the linear, homogeneous structure of potential flow. This boundary-centric
+formulation with global information transfer through boundary-only integrals encodes powerful
+inductive biases for fluid dynamics, and indeed more broadly to many PDEs as shown by Martinsson
+(2020). In this work, we combine such domain-inspired architectural ideas with equivariant ML and
+the flexibility of learned representations. The long-term goal is to extend the accuracy and speed
+benefits of IBL methods to complex 3D cases where analytical IBL extensions have long remained
+elusive. Appendix A provides additional background on IBL methods and their relevance to the
+GLOBE architecture introduced in Section 2.
+
+1.3      R ELATED W ORK : ML S URROGATE M ODELS FOR PDE S
+
+Recent ML surrogate approaches offer different tradeoffs in handling unstructured meshes,
+discretization invariance, and geometric symmetries. Table 1 summarizes key methods2 . CNNs excel
+on structured grids but struggle with unstructured meshes. GNNs handle irregular domains but require
+many layers for global coupling in elliptic PDEs. Neural operators achieve discretization invariance
+but often use localized kernels. Neural fields (Serrano et al., 2023; Catalani et al., 2025b) are closest to
+GLOBE in evaluating at arbitrary points, but typically compress boundary and problem information
+into fixed-size global latents. GLOBE differs by maintaining per-face latents, using kernel functions
+from each face rather than a single field, and structurally enforcing Euclidean equivariance and
+representational invariances throughout.
+
+1.4      N ECESSARY ATTRIBUTES OF P HYSICS M ODELS
+
+To motivate the architectural choices presented later in this work, we review several fundamental
+qualities that physics models – whether numerical solvers or learned surrogates – must satisfy.
+We organize these requirements into three categories: physical conservation laws, representation
+invariances, and problem-specific constraints. Table 2 provides a summary.
+
+1.4.1      P HYSICAL C ONSERVATION L AWS AND S YMMETRIES
+These requirements follow directly from fundamental physics via Noether’s theorem, which connects
+conservation laws to continuous symmetries.
+
+Translation-equivariance. Any proposed physics model must obey conservation of momentum,
+and by Noether’s theorem, this requires translational symmetry: if all inputs are translated in space,
+outputs should be identically translated. Architecturally, this requires using only relative spatial
+   2
+       A comprehensive review is available in Catalani et al. (2023).
+
+
+                                                         2
+                   Table 1: ML surrogate approaches for PDEs and their characteristics.
+
+ Method                      Key Strengths                              Key Limitations
+ CNNs / UNets                Hierarchical features; efficient on        Structured grids only; lack geometric
+                             structured grids                           symmetries; costly interpolation for
+                                                                        unstructured meshes
+ GNNs                        Handle unstructured meshes; effective      Local receptive fields require
+                             for parabolic PDEs                         O(diameter) layers for elliptic PDEs;
+                                                                        typically lack rotation equivariance
+ Neural Operators            Discretization invariance;                 Often use localized kernels to
+                             function-space mappings; well-suited       incorporate geometry information,
+                             for heterogeneous PDEs that are chiefly    limiting information flow; limited
+                             driven by field forcing functions          ability to incorporate boundary
+                                                                        information for boundary-driven
+                                                                        problems
+ Neural Fields               Arbitrary query points; continuous         Global compression bottleneck; limited
+                             representations; discretization            geometric equivariance
+                             invariance
+
+       Table 2: Necessary attributes for valid physics models and their architectural implications.
+
+ Attribute                              Physical Basis                  Architectural Implication
+ Physical Conservation Laws & Symmetries
+    Translation-equivariance            Conservation of momentum        Use only relative spatial information;
+                                                                        no absolute coordinates
+                                        Conservation of angular         Vectors via local basis reprojection,
+    Rotation-equivariance                                               not channel concatenation
+                                        momentum
+    Parity-equivariance                 Euclidean symmetry group        Proper handling of vectors vs.
+                                                                        pseudovectors
+ Representation Invariances
+    Discretization-invariance           Numerical consistency           Predictions must converge as mesh is
+                                                                        refined
+    Units-invariance                    Physical consistency            Operate in unitless space via
+                                                                        nondimensionalization
+ Problem-Specific Constraints (examples for PDEs)
+                                                                        Global receptive field for elliptic
+    Receptive field structure           PDE well-posedness              PDEs; match characteristic speeds for
+                                                                        hyperbolic PDEs
+    Boundary condition encoding         PDE well-posedness              Explicit BC type labels as inputs
+
+
+information – any use of absolute coordinates in the core learned encoding of a model breaks this
+symmetry.
+
+Rotation-equivariance. Conservation of angular momentum requires rotational symmetry. While
+rare in ML surrogates for PDEs, rotation-equivariant architectures have achieved remarkable successes
+in other domains (Thomas et al., 2018; Fuchs et al., 2020; Jumper et al., 2021; Batzner et al., 2022),
+with libraries such as e3nn (Geiger & Smidt, 2022) enabling implementation. Common sources
+of violations include treating vector components as concatenated scalar channels (which implicitly
+fixes an arbitrary global Cartesian frame) or using traditional convolutional layers on structured grids.
+If a trained model does not produce identical output when the grid is rotated, it lacks rotational
+equivariance.
+
+Parity-equivariance (reflection / chirality). Almost all physical laws are equivariant under parity3 .
+Intuitively, a pair of vortices spinning clockwise and counterclockwise must have exactly identical
+decay rates. Combining parity symmetry with translation- and rotation-equivariance forms the
+   3
+       With the fascinating exception of the weak force at subatomic scales, as discovered by Wu et al. (1957).
+
+
+                                                         3
+Euclidean symmetry group. Structurally embedding Euclidean symmetry substantially improves data
+efficiency and generalizability (Geiger & Smidt, 2022; Batzner et al., 2022; Zhang, 2022; Sharpe &
+Hansman, 2025; Geiger, 2025). While equivariant ML research has historically focused on materials
+science, chemistry, and biology, these symmetries are equally relevant in computer-aided engineering
+(CAE) applications - yet their incorporation into PDE surrogates in this domain remains rare.
+
+On the infeasibility of data augmentation for equivariance learning. It may be tempting to at-
+tempt to address the problem of equivariance learning via data augmentation, rather than architectural
+modifications – largely because equivariant architectures require substantial domain knowledge to
+construct correctly. However, augmentation (a) leads to only approximate symmetry learning, and
+(b) becomes wholly intractable on industrial-scale datasets. For example, the DrivAerML dataset by
+Ashton et al. (2024) consists of 31 TB of 3D CFD data, before any augmentation. Following Smidt
+(2020), learning rotational symmetry alone through data augmentation requires roughly a 500×
+increase in dataset size and training compute. When combined with other symmetries that further
+multiply the data requirements, these requirements become utterly astronomical. Fundamentally, it is
+unsound to expect to cover a factorially-large space through data augmentation4 .
+
+1.4.2    R EPRESENTATION I NVARIANCES
+In addition to respecting physical symmetries, any valid physics model must produce results that are
+independent of arbitrary choices in how we represent and discretize the problem.
+
+Discretization-invariance (numerical consistency). For a valid solver, discretization error must
+approach zero as mesh resolution increases – this is numerical consistency in CFD. Architecturally,
+this requires that the model’s predictions converge to a well-defined limit independent of the specific
+mesh used. CNNs and GNNs tie their representations to specific discretizations; neural operators and
+neural fields achieve this property by parameterizing continuous functions.
+
+Units-invariance. Another fundamental requirement is invariance to the choice of physical units.
+The same physical scenario, whether represented in SI or Imperial units, should yield the same
+physical solution. This necessitates dimensional consistency throughout the entire modeling pipeline.
+Notably, most ML surrogates violate this principle during data preprocessing, before the model
+architecture is even considered – for example, by concatenating features with incompatible units (such
+as combining velocities, [L][T ]−1 , with lengths, [L]). A practical way to achieve units-invariance is
+to learn in unitless spaces via rigorous nondimensionalization, as in Sharpe & Hansman (2025).
+
+1.4.3    P ROBLEM -S PECIFIC C ONSTRAINTS
+These requirements vary depending on the PDE type and problem formulation, but are equally critical
+for learning valid solution operators.
+
+PDE information flow and receptive fields. Beyond the symmetries discussed above, any valid
+physics model must respect the information flow structure dictated by the PDE itself. Different PDE
+types5 impose fundamentally different requirements on how information propagates through space:
+Elliptic PDEs (e.g., steady-state aerodynamics, electrostatics, static structural analysis) exhibit global
+coupling: every point in the domain is meaningfully influenced by every boundary condition and
+source term. Mathematically, well-posedness requires that boundary data at any location can affect
+the solution at any other location. For a surrogate model, this necessitates a global receptive field: the
+model’s output at a query point depends on information from the entire domain.
+Parabolic PDEs (e.g., heat diffusion, most unsteady problems) exhibit infinitely fast spatial
+information propagation, but with rapid decay of influence with distance. For small time steps
+∆t, local receptive fields can provide reasonable approximations; however, large-timestep solution
+operators still require spatially-distant information access.
+   4
+     Intuitively, one might ask how many distinct valid translations and rotations of a physics problem exist – the
+answer is infinite.
+   5
+     Here, we restrict this classification discussion to second-order-and-higher PDEs, as these form the vast
+majority of computationally-expensive PDEs used in engineering applications.
+
+
+                                                        4
+Hyperbolic PDEs (e.g., wave propagation, inviscid compressible flow) have finite characteristic
+speeds. Information travels along characteristic curves at well-defined wave speeds. A valid solver
+must resolve these characteristics: the receptive field at time t must encompass all points reachable
+via characteristics originating from initial/boundary data. This requirement is in some ways an
+analogue of the Courant-Friedrichs-Lewy (CFL) condition in explicit time-stepping: if the numerical
+receptive field fails to capture physical wave propagation, the solver becomes fundamentally unstable
+or inaccurate.
+Architectures with local or limited-range receptive fields cannot satisfy well-posedness requirements
+for PDEs requiring global coupling. Vanilla GNNs, for instance, would need layers proportional
+to mesh diameter for elliptic PDEs - intractable to satisfy on arbitrarily-fine meshes. Many neural
+operator implementations similarly employ localized kernels (ball queries, k-NN) that lack global
+coupling.
+When such architectures nonetheless achieve strong benchmark performance on elliptic PDEs despite
+these architectural limitations, it suggests they may be learning correlations with problem-specific
+features (mesh patterns, geometric heuristics) rather than the underlying PDE physics. For example,
+a local GNN applied to aerodynamics might learn that fine mesh cells correlate with boundary layer
+regions and hence lower velocities, or that distance to a boundary (measured by neighbor-hops)
+correlates with pressure gradients. Such patterns can produce good metrics on validation sets from
+the same distribution but fail catastrophically under genuine distribution shift to different geometries,
+flow regimes, or mesh strategies. For applications requiring robust out-of-distribution generalization,
+architecturally ensuring that receptive fields match the PDE’s intrinsic information flow provides
+stronger guarantees than relying on training data to implicitly capture these patterns.
+
+Explicit boundary condition encoding. A related and equally fundamental issue is that many PDE
+problem encodings in the ML literature fail to encode any boundary condition (BC) type information
+whatsoever, rendering the learning task mathematically ill-posed: it is not possible to truly learn
+a PDE’s solution operator if the boundary conditions are not provided. Consider an automotive
+aerodynamics case with mixed BCs: no-slip (vehicle body) and free-slip (ground plane). Without
+explicit BC labels, models either a) cannot distinguish boundary condition differences, leading to
+inaccurate solutions, or b) worse, they infer boundary condition types from nearby geometry, learning
+spurious correlations (e.g., “flat surfaces tend to be road surfaces, which tend to be slip walls”) that
+also fail catastrophically under distribution shift. Proper generalization requires BC types as explicit
+inputs, ensuring physically grounded learning rather than dataset artifacts.
+
+1.4.4      A RCHITECTURE D ESIGN P HILOSOPHY FOR ML S URROGATES FOR PDE S
+The prevalence of architectures in the field of ML for PDEs that violate these requirements reflects a
+mismatch between the domains where modern ML has historically achieved its greatest successes
+and the requirements of modeling physics-governed systems. While breakthroughs in perception,
+language, and game-playing have naturally influenced and advanced PDE surrogates, these domains
+differ fundamentally from physics in their treatment of structure and generalization. For example,
+symmetries can be useful heuristics in computer vision6 , but the inevitable exceptions and edge cases
+limit the usefulness of structurally-enforcing these symmetries.
+By contrast, in physics, conservation laws and coordinate invariances are exact, universal
+mathematical constraints. Hence, by encoding these symmetries, we reduce the hypothesis space
+to physically-plausible functions, improving data efficiency and out-of-distribution accuracy. In
+CAE applications, this out-of-distribution generalization is particularly crucial, due to adverse
+selection bias: engineers reach for new simulations precisely when encountering scenarios that are
+far from any previously-analyzed case. ML benchmarks with i.i.d. train/test splits may therefore
+inadvertently reward architectures that achieve high in-distribution accuracy through mechanisms that
+preclude practical generalization (encoding absolute position, architecture-specific discretizations,
+local receptive fields), as discussed by McGreivy & Hakim (2024).
+As the field matures toward foundation-model aspirations, we believe that incorporating physical
+structure at the architectural level is essential. Foundation models must generalize across vast ranges
+of geometries, flow regimes, and boundary conditions. Models that violate conservation laws, break
+   6
+       For example, see the data augmentation techniques in Krizhevsky et al. (2017)
+
+
+                                                        5
+under coordinate transformations, or depend on arbitrary discretization choices are fundamentally
+learning correlations in the training distribution rather than underlying physics. If a model violates
+basic physical requirements known to be exact, it has likely learned dataset-specific patterns rather
+than a general solution operator, regardless of its performance on held-out test sets from the same
+distribution.
+
+1.5   C ONTRIBUTIONS AND PAPER O RGANIZATION
+
+This paper’s primary contributions are:
+
+       • A first-principles review of the necessary attributes that any valid physics model must
+         possess, and guidance for constructing architectures that respect these (Section 1.4).
+       • A new domain-inspired ML architecture for PDE surrogate modeling that respects these
+         attributes, GLOBE (Section 2).
+       • Evaluation of the GLOBE model on an airfoil aerodynamics case study (Section 3), including
+         results, discussion, and comparison to state-of-the-art surrogate models (Section 4).
+
+Novel technical contributions include:
+
+       • Equivariant kernel functions that maintain exact translation, rotation, and parity
+         symmetries through invariant feature engineering and local basis reprojection.
+       • Padé-approximant MLPs whose rational-function structure naturally matches Green’s
+         function decay characteristics, providing stronger inductive bias for physics kernels.
+       • Multiscale kernel composition that explicitly encodes multiple characteristic length scales
+         (viscous, geometric, and their learned combinations), enabling efficient representation across
+         disparate spatial scales.
+       • Communication hyperlayers that propagate boundary condition information between BC
+         partitions before interior evaluation, learning source strengths in a manner inspired by but
+         computationally lighter than traditional boundary-element linear solves.
+       • Rigorous nondimensionalization throughout the data pipeline, ensuring units-invariance
+         and physical consistency.
+
+Section 2 details the GLOBE architecture; Sections 3 and 4 demonstrate its application to aerodynamic
+surrogate modeling.
+
+
+2     GLOBE M ODEL A RCHITECTURE
+
+We now introduce GLOBE: Green’s-function-Like Operator for Boundary Element PDEs. The
+architecture synthesizes three key insights: (1) for linear homogeneous PDEs, solutions can be
+exactly represented as superpositions of Green’s functions; for nonlinear PDEs, learnable kernel
+superpositions can approximate solutions when the PDE operator is weakly nonlinear or exhibits
+approximately linear behavior in significant domain regions; (2) for boundary-driven problems,
+discretizing only boundaries (not interiors) dramatically reduces degrees of freedom while maintaining
+global information flow; and (3) neural networks can learn kernel shapes that generalize Green’s
+function concepts to settings where analytical forms are unknown or do not exist.
+While the theoretical framework is general, in this work we develop and evaluate GLOBE specifically
+for aerodynamic flows, where the RANS equations admit quasi-linear approximations. Specifically,
+at high Reynolds numbers and with mostly-attached flows, thin shear layer approximations apply,
+as described in full detail by Drela (2013a; 2019). This allows decomposition of the flow into
+potential flow (linear) and boundary layers. The latter are governed by the von Kármán momentum
+integral equation, which is parabolic in the streamwise coordinate and hence far more tractable
+than the full RANS system; furthermore, the surface-normal dimension can be simplified away via
+integral boundary layer theory, as in Drela (1989). This motivates kernel-based representations even
+for nominally nonlinear PDEs. The quasi-linear tractability of RANS under industrially-relevant
+assumptions is particularly significant: if even this notoriously nonlinear system admits effective
+kernel-based treatment, the approach likely extends to other PDEs exhibiting regional or weak
+nonlinearity. More broadly, the architecture is designed for PDEs with the following characteristics:
+
+
+                                                  6
+         • Homogeneous governing equations: no spatially-varying forcing terms or material
+           properties
+         • Boundary-driven physics and focus: quantities of interest are primarily driven by and/or
+           measured at boundaries (e.g., boundary layers, stress concentrations)
+         • Elliptic or mixed character: requiring global information propagation for a solver to be
+           well-posed
+         • Weak or regional nonlinearity: PDEs where the governing operator is linear or exhibits
+           approximately linear behavior in significant portions of the domain
+         • Multiscale structure: PDEs exhibiting diverse phenomena at multiple characteristic length
+           scales
+
+This profile encompasses many industrially critical problems in computational engineering. We focus
+our evaluation on external aerodynamics, though the architectural principles may extend to other
+boundary-driven elliptic problems such as static structural analysis, heat conduction, and electrostatics.
+Demonstrating such transferability remains important future work.
+GLOBE learns a mapping shown in Figure 1. This mapping is similar to those found in neural-field-
+based architectures, and GLOBE could perhaps be classified as a kernel-based neural field variant.
+However, the GLOBE model architecture has crucial differences from traditional neural fields that (a)
+allow it to respect the necessary attributes of a valid physics model, such as Euclidean equivariance,
+and (b) avoid the global compression bottleneck common in neural fields. While GLOBE does
+propagate latent variables through communication hyperlayers, these latents are physically bound to
+individual boundary faces rather than compressed into a single global vector.
+More generally, GLOBE actually has more in common with traditional boundary-element-method
+PDE solvers than it does with existing popular ML surrogate architectures. In particular, as discussed
+in Section 1.2, heavy inspiration is drawn from aerodynamic panel methods and integral boundary
+layer methods such as those described by Katz & Plotkin (2004); Drela (1989; 2013a; 2019); Zhang
+(2022).
+
+                                             Problem Inputs
+      • A sequence of one or more boundary meshes (one per BC type), each of which consists of:
+           ◦ Geometry: triangle faces in 3D or line edges in 2D; represented as vertices and face
+             indices (e.g., an unstructured STL file)
+           ◦ The boundary condition (BC) type as a string label (e.g., “no_slip”, “inlet”, “outlet”)
+           ◦ Any unitless scalar or vector values associated with this BC type (e.g., values of a
+             Dirichlet boundary condition)
+      • A set of scalar, dimensional reference lengths {ℓi }, obtained through combinations of
+        dimensional parameters in the governing equations (via Buckingham π theorem or domain
+        expertise)
+      • (Optional) Global scalars and/or vectors (unitless), which could be drawn from the
+        governing equations or infinite far-field boundary conditions
+
+
+              Query Points                                                        Output
+                                                 GLOBE
+       • Spatial coordinates where                Model                • Values of the solution fields
+         the solution fields are                (Figure 2)               (scalars and/or vectors, all
+         evaluated                                                       unitless) at the query points
+
+
+                       Figure 1: The input-output mapping of a GLOBE model.
+
+
+2.1     A RCHITECTURE OVERVIEW
+
+GLOBE predicts fields on arbitrary query points in space, given one or more boundary meshes
+partitioned by boundary-condition (BC) type. The architecture is organized in three levels, most
+easily explained bottom-to-top:
+
+• At the lowest level, the centroid of each face of a boundary mesh acts as a source point that
+
+
+                                                    7
+  influences every target point in an all-to-all manner via a learned kernel function K. This kernel
+  is shared across all faces. Most of the desirable physical properties of the overall model (e.g.,
+  equivariances) are derived through the careful structure of this component, so this is the most
+  critical layer. Further description is provided in Section 2.2.
+• At the middle level, GLOBE implements a multiscale composition of multiple kernel functions,
+  whose influences are linearly superimposed. Each individual kernel is still shared across boundary
+  faces, and is associated with a different reference length scale ℓi . These length scales are derived
+  from combinations of dimensional constants within the PDE governing equations, and should be
+  given as model inputs. This multiscale composition is described in Section 2.3.
+• At the top level, GLOBE implements a stack of communication hyperlayers, which is a sequence
+  of these multiscale kernel compositions. These hyperlayers pass latent scalar and vector fields
+  from all boundaries to all other boundaries, prior to the final evaluation at user-chosen query points.
+  These hyperlayers are also used to compute the source strength values associated with each face,
+  which are used to linearly weight the contributions of each source face to each target point in the
+  subsequent hyperlayer. This is described in Section 2.4.
+
+Figure 2 depicts the overall architecture. Boundary meshes are merged by BC type; within each
+hyperlayer, the kernel is evaluated from every source BC to targets taken from either (a) other
+boundary face centers (to propagate latent variables) or (b) user query points (final layer). Outputs
+across source BC types are summed. After the final prediction, a learnable calibration (affine for
+scalar fields, linear for vector fields7 ) is applied.
+
+Mathematical properties. The architecture satisfies the necessary attributes established in Section
+1.4: translation-, rotation-, and parity-equivariance through relative positions and local reprojection
+onto carefully-constructed vector bases; discretization-invariance via area-weighted boundary
+integrals; and units-invariance through rigorous nondimensionalization. More detailed discussion
+of these properties is provided in Appendix D. Additionally, GLOBE’s all-to-all boundary-to-target
+evaluation (Eq. 7) provides a true global receptive field: every query point receives information from
+every boundary face, directly fulfilling elliptic PDE requirements. For parabolic and hyperbolic PDEs,
+global receptive fields remain beneficial (allowing the model to learn long-range couplings if present)
+without imposing structural limitations. Communication hyperlayers (Section 2.4) further enable
+boundary-to-boundary information exchange, mediating the kind of global boundary coupling that
+traditional boundary-element methods achieve through dense linear solves.
+
+2.2      K ERNEL F UNCTIONS
+
+A GLOBE model fundamentally represents the solution of a PDE as a linear combination of learnable
+kernel functions K. These kernels were designed with inductive biases inspired by Green’s functions:
+in the case of a linear PDE, the ideal kernels would be the PDE’s Green’s functions themselves. We
+provide visual illustrations of the kernel’s properties and symmetries in Appendix B to aid intuition
+before proceeding with the mathematical development.
+The kernel function K computes influence values for each output field (whether scalar or vector) from
+each source face to each target point. For simplicity, in the following subsections we consider the
+base case of a single source face’s influence on a single target point. We first describe features, then
+the network backend and physics constraints, and finally aggregation.
+
+2.2.1      I NPUTS
+We begin by gathering all relevant scalars and vectors associated with this particular source-to-
+target interaction. We denote this collection of scalars as ξ = [ξ1 , ξ2 , . . . , ξn ] and vectors as
+V = [v1 , v2 , . . . , vm ]T .
+To start, we take a set of scalar- and vector-valued inputs to the kernel function as elements of ξ and V ,
+respectively. Some of these may be associated with the source face (e.g., boundary condition values
+or latent variables from prior processing); others may be global (e.g., parameters of the governing
+PDE). Critically, all inputs should be physically dimensionless to preserve units-invariance.
+   7
+       required to preserve rotation-equivariance
+
+
+                                                    8
+                                            Top Level: Communication Hyperlayers (Section 2.4)
+
+                                          Hyperlayer 0
+                                          P                            Hyperlayer 1
+                                                                       P                                  Hyperlayer
+                                                                                                          P           H
+     Inputs                                 i Multiscale                 i Multiscale                       i Multiscale
+                                          kernels, with:      latent   kernels, with:                     kernels, with:                                  Output
+Boundary meshes;          Initialize
+                                                               data
+                                                                                                                                    Calibration
+Reference lengths;     ws(k,0) = 1       Sources: BCi faces            Sources: BCi faces     ···        Sources: BCi faces         Scalars: affine;
+                                                                                                                                                          Solution
+Global scalars &       latents = ∅       Targets: all faces            Targets: all faces                Targets: query pts.                              fields at
+vectors                                                                                                                             Vectors: linear       query pts.
+                                         Outputs: ws(k) for            Outputs: ws(k) for                Outputs: raw
+Query points                             H1 kernels; latent            H2 kernels; latent                solution fields at
+                                         scalars & vectors             scalars & vectors                 query points
+                                                           Zooming into a single multiscale kernel
+                                                           associated with a single source BC type
+
+                 Middle Level: Multiscale Kernel (one per source BC type, e.g., ‘inlet’, ‘outlet’, ‘wall’; Section 2.3)
+                                                        Kernel K(1) with ref.
+             Inputs                                   length ℓeff
+                                                              1 = ℓ1 exp(α1 )
+Source points {xs };                                                                                            X                               Output
+Target points {xt };                                    Kernel K(2) with ref.
+Source scalars & vectors;                             length ℓeff                                                                    Field values at targets
+Global scalars & vectors;                                     2 = ℓ2 exp(α2 )                                     k
+                                                                                                                                     ut (Eq. 9)
+Source strengths ws(k) (per branch);
+                                                                  ..
+Log-ratios ln(ℓi /ℓj )
+                                                                   . (n branches)
+                                                        Kernel K(n) with ref.
+ Each kernel function has its own learnable
+                                                      length ℓeff
+                                                              n = ℓn exp(αn )
+  parameters; shared architecture (Sec. 2.3)
+
+                                                         Zooming into a single kernel K(k)
+
+
+                                 Bottom Level: Kernel Function K (source → target evaluation; Section 2.2)
+    Input                     Invariant
+   Assembly                   Features                                   Far-Field Decay
+                                                                                                       Vector                                           Output
+Relative position                                  Padé MLP              Scale by envelope                                     Aggregation
+        x −x            Scalars s;                                                                   Reprojection                                      Aggregated
+rts = t ℓ s ;                                                            (Eq. 6):                                              P
+                        smoothlog(∥vi ∥)          Process concat.                                                                 s ws as Kts          kernel
+Source scalars s;                                                                                   Project onto basis         (Eq. 7)
+                        for vectors;              scalar features           1−exp(−∥r∥2 )                                                              output Kt
+Source vectors V ;                                                                                  B = [r̂, v̂i , . . .]
+                        Weighted Pi (cos θab )                            (∥r∥2 +1)(d−1)/2
+Global scalars &        on vector pairs
+vectors                                          Shared kernel parameters across all (t, s)                Equivariance Mechanisms:
+                                                   pairs; aggregate over sources (Eq. 7)                   • Translation: relative positions only
+                                                                                                           • Rotation: invariant features + reprojection
+                                                                                                           • Parity: parity-preserving reprojection
+                                                                                                           • Discretization: area-weighted aggregation
+                                                                                                           • Units: rigorous nondimensionalization
+
+
+        Figure 2: GLOBE architecture. The model operates at three hierarchical levels. Top:
+        Communication hyperlayers propagate latent information between boundary partitions before final
+        evaluation. Middle: Each hyperlayer contains multiscale kernels operating at different reference
+        length scales, with outputs summed. Bottom: Individual kernels evaluate all-to-all source-to-
+        target influences through invariant feature engineering, Padé-approximant networks, far-field decay
+        envelopes, and equivariant vector reprojection, then aggregate over sources weighted by strengths
+        and face areas.
+
+
+        In addition to any such scalar and vector quantities that are given as inputs, two are added as
+        engineered features: the unit normal vector of the source face n̂s , and the relative position vector
+        from the source face center to the target point rts . This latter vector must be nondimensionalized by
+        a reference length scale ℓ to preserve units-invariance:
+                                                        xt − x s
+                                                rts =              ∈ Rd ,                                  (1)
+                                                             ℓ
+        where: xt = spatial position of target point t
+                  xs = spatial position of source face center s
+                    ℓ = reference length scale associated with each kernel branch; provided as input to the
+                        multiscale composition (Section 2.3)
+                   d = number of spatial dimensions (typically 2 or 3)
+        Because these raw inputs contain only relative positional information from PDE boundaries to target
+
+
+                                                                            9
+points, the kernel function itself becomes translation-equivariant.
+
+2.2.2    I NVARIANT E NGINEERED F EATURES
+The scalar collection ξ can be used directly as model inputs. However, the vector collection V cannot
+be used directly without breaking rotational-equivariance. We therefore transform these vectors into
+rotationally-invariant features. (Rotational equivariance is later restored by vector reprojection in
+Section 2.2.5.)
+One possible rotationally-invariant feature is the magnitude ∥vi ∥. However, this has two issues: (a)
+very large magnitudes can dominate the scalar collection, saturating downstream steps, and (b) the
+magnitude function breaks C 1 continuity near the zero vector, violating continuous differentiability8 .
+Instead, we encode the value
+                                            smoothlog(∥vi ∥)                                                 (2)
+for each vector vi as an additional scalar in the collection ξ. Here, we define the function smoothlog :
+R1 → R1 as
+                               smoothlog(x) = (1 − e−x ) · ln(1 + x),                                (3)
+which is crafted to have several desirable properties on the domain x ≥ 0 (as is the case when applied
+to the raw magnitude values):
+
+        • smoothlog(x) ∼ x2 as x → 0
+        • smoothlog(x) ∼ ln(x) as x → ∞
+        • smoothlog(x) is monotonically increasing for x > 0, and hence forms a bijection with x
+        • smoothlog(x) is C ∞ continuous for all x ≥ 0, with higher-degree derivatives that grow
+          relatively slowly with degree
+        • smoothlog(x) can be efficiently and accurately computed using the expm1 and log1p
+          special functions
+
+Figure 3 illustrates these asymptotic properties.
+
+                          smoothlog(x)                                          dx smoothlog(x)
+                                                                                d
+     2.5                                                   2.5
+                                                                                           2x
+     2.0                                                   2.0                             1/x
+                                                                                           dx smoothlog(x)
+                                                                                           d
+     1.5                                                   1.5
+f(x) 1.0                                            f 0(x) 1.0
+     0.5                             x2                    0.5
+     0.0                             ln(x)                 0.0
+                                     smoothlog(x)
+     0.5                                                   0.5
+           0         2          4          6      8            0            2          4          6           8
+                               x                                                      x
+Figure 3: The smoothlog(x) function and its derivative, with near- and far-field asymptotic limits
+shown as dashed lines.
+
+Next, we compute additional engineered features by considering every possible unordered pair of
+vectors va and vb in the collection V . For each such pair, we evaluate the magnitude-weighted
+spherical harmonic features
+                               smoothlog(∥va ∥ · ∥vb ∥) · Pi (cos(θab )) ,                                   (4)
+where Pi is the i-th Legendre polynomial (for i = 1, 2, . . . , nharmonics , a hyperparameter), and θab
+is the angle between vectors va and vb . These are added to the collection ξ. Multiplication by
+smoothlog(∥va ∥ · ∥vb ∥) is necessary to preserve C ∞ continuity: without this scaling, θab can
+   8
+     While not strictly required for surrogate modeling, many practical use cases (e.g., design optimization)
+benefit heavily from this property.
+
+
+                                                    10
+change discontinuously as either vector crosses zero. Effectively, Eq. 4 forms a special case of
+a spherical harmonics expansion on the pairwise angle, weighted by a nonlinear function of the
+magnitudes.
+At this point, all relevant information has been gathered and encoded into a collection of scalars ξ. As
+scalar-valued quantities, these are inherently rotationally-invariant (in addition to translation-invariant,
+from Section 2.2.1), facilitating further processing.
+
+2.2.3   P ROCESSING WITH PADÉ -A PPROXIMANT MLP S
+At this stage, the scalar collection ξ could be processed by a standard multilayer perceptron (MLP).
+However, we find empirically that using a custom Padé-approximant MLP instead yields substantial
+improvements in model accuracy and training speed.
+We introduce what we call a “Padé-approximant MLP” as a learnable mapping of the form:
+
+                                                                         N
+                                                  sgn(ϕn (ξ)) |ϕn (ξ)|
+                                 Padé (ξ) =                       D
+                                                                    .                           (5)
+                                                 1 + |ϕd (ξ)|
+Here, ϕn and ϕd are independent learnable MLPs with C ∞ differentiable activations (SiLU in
+the reference implementation); N and D are the integer-valued orders of the numerator and
+denominator, respectively. The numerator uses sign-preserving exponentiation, while the denominator
+uses magnitude-only exponentiation; when combined with the constant term, this ensures that the
+denominator is always ≥ 1, preventing arbitrarily large Lipschitz constants.
+We typically set N = 2 and D = 2; while other choices can be made, the property N = D is quite
+useful as it ensures that the Padé-approximant layer asymptotes to a constant value in the far-field
+limit, for any direction in the input space ξ. This will later aid in careful control of the asymptotic
+behavior of the kernel function, as discussed in Section 2.2.4.
+The motivation stems from Green’s function structure: these typically exhibit rational-function-like
+behavior with algebraic singularities near sources and algebraic decay at infinity (e.g., 1/r for 3D
+Poisson). While standard MLPs are universal approximators, Padé-approximant MLPs provide
+explicit inductive bias toward this functional form, enabling more parameter-efficient learning of
+physics kernels. Appendix C provides visualizations demonstrating the expressivity of randomly-
+initialized Padé-approximant MLPs compared to standard MLPs.
+
+2.2.4   FAR -F IELD D ECAY C ONSTRAINT
+To bias the model toward physically plausible decay with distance, we then scale all the raw outputs
+of the Padé-approximant MLP by a function of the relative position vector rts :
+                                                                  2
+                                                    1 − e−∥rts ∥
+                                 g ∥rts ∥       =            (d−1)/2 ,                                (6)
+                                                         2
+                                                   ∥rts ∥ + 1
+where d is the number of spatial dimensions (2 or 3), yielding ∼ 1/r decay in 2D and ∼ 1/r2 in 3D
+as ∥rts ∥ → ∞ in any direction.
+This introduces two useful effects. First, self-influence at rts = 0 is driven to zero, encouraging
+kernels to share influence across faces and preventing overly compact support (the “bed-of-nails
+interpolant” failure mode in radial basis interpolation). The chosen decay is inspired by the Lamb-
+Oseen vortex profile. Second, the far-field decay encodes an inductive bias toward the inverse square
+law: a common large-distance behavior of particle-mediated interactions (or alternatively, Gauss’s
+law for fields with conserved fluxes) that is observed across a vast array of physical systems, while
+still allowing the model to learn deviations where appropriate (e.g., advection-dominated regimes).
+This also introduces favorable generalization properties in spatial extrapolation. When a GLOBE
+model is queried with target points that are much more distant from PDE boundaries than any target
+points seen in the training data, the kernel function cannot extrapolate wildly: “in the absence of other
+information, physical phenomena tend to zero at infinity.” Additionally, this guaranteed far-field decay
+enables the formulation of infinite far-field boundary conditions, where boundary effects naturally
+vanish at large distances without requiring explicit far-field boundary meshes.
+
+
+                                                     11
+2.2.5    V ECTOR R EPROJECTION FOR ROTATIONAL E QUIVARIANCE
+The Padé-approximant MLP outputs a latent vector z that is not a physical-space vector; its
+dimensionality typically far exceeds d. Interpreting any subset of channels as a physical vector
+would implicitly select an arbitrary global Cartesian frame, breaking rotational symmetry. Therefore,
+while individual channels of z can be directly interpreted as physical scalar fields, constructing
+physical vector outputs requires a separate procedure.
+To illustrate how we can achieve this, consider the simplified case of constructing a single physical
+vector u associated with the pairwise interaction between a source face and a target point. We
+fundamentally need to project channel(s) of z onto a local basis vector set with non-arbitrary
+directionality to preserve rotational symmetry. A convenient source of non-arbitrary directionality
+can be found in the set of vectors V that were gathered as inputs to the kernel function (in Section
+2.2.1). We then assemble a set of basis vectors9 B = [b1 , b2 , . . . , bn ] by including the following
+components:
+1. Base direction:
+      • The radial unit vector r̂ from the source face to the target point.
+2. For each non-r input vector vi with unit direction v̂i :
+    (a) Add the axis direction v̂i .
+    (b) In the 2D case (d = 2): include a dipole-like direction eκ (projection of −v̂i onto the line
+        orthogonal to r̂).
+    (c) In the 3D case (d = 3): include a polar/meridional direction eθ (projection of −v̂i onto the
+        plane orthogonal to r̂).
+    (d) Finally, scale each of the above basis vectors (steps within this enumeration) by
+        smoothlog(∥vi ∥). Similar to the use of smoothlog(·) in Section 2.2.2, this is subtly required
+        to preserve C ∞ continuity of the resulting field, and has the side benefit of mitigating
+        saturation effects.
+Optional tangential/vortex basis vectors. The above construction preserves parity symmetry. However,
+for physical phenomena that are strongly linked to vorticity, additional tangential basis vectors can
+provide useful inductive bias: in 2D, a tangential direction eθ orthogonal to r̂; in 3D, an azimuthal
+direction eϕ orthogonal to both r̂ and eθ . These directions are pseudovectors rather than true vectors,
+so including them naïvely breaks parity symmetry. A parity-preserving implementation is possible but
+requires explicit tracking of vector versus pseudovector semantics throughout the architecture, which
+is not yet implemented in the reference code. Consequently, these tangential/vortex-like directions
+are disabled by default, though users may enable them for applications where the inductive bias
+outweighs the loss of exact parity equivariance.
+
+2.2.6    AGGREGATION OVER S OURCES
+Let Kts denote the kernel output value for the target-source pair (t, s). The aggregated kernel value
+at each target point is a weighted sum over sources, implemented as a batched contraction:
+                                              XNs
+                                        Kt =       ws as Kts ,                                    (7)
+                                                    s=1
+where:    Kt = aggregated kernel output at target point t (may be scalar or vector, depending on the
+                output field)
+          ws = source strength associated with each source face s; these are obtained at a higher
+                level through the hyperlayer stack described in Section 2.4
+           as = area of the source face s; multiplication by this area term is critical, as it yields
+                discretization-invariance in the limit case of a refined source mesh
+          Kts = kernel output value for the target-source pair (t, s)
+The resulting fields are then returned as a collection of scalars and vectors, each with batch size (Nt ).
+    9
+      Strictly speaking, this is not a true basis in the linear algebra sense, as (a) we typically have more basis
+vectors than spatial dimensions, and (b) the collection may not always span all of Rd (e.g., if every vector in V
+is the zero vector). This is not problematic for our approach, but it is worth noting that such a reprojection is
+generally not invertible.
+
+
+                                                       12
+2.2.7     C OMPLEXITY AND S CALABILITY VIA H IERARCHICAL ACCELERATION
+
+The complete architecture with communication hyperlayers (Section 2.4) incurs O(Ns2 + Ns × Nt )
+complexity. During training, the boundary-to-boundary O(Ns2 ) term dominates due to the ability to
+downsample to a reasonably low number of query points. At inference, where we typically evaluate on
+a high number of query points to populate complete results, the latter boundary-to-target O(Ns × Nt )
+term typically dominates. In both cases, this quadratic scaling is reminiscent of transformer self-
+attention mechanisms, and indeed the kernel evaluation shares conceptual similarities with attention:
+both implement all-to-all communication to propagate contextual information, though GLOBE’s
+kernels omit the softmax normalization to preserve kernel linearity (a useful inductive bias on linear-
+or nearly-linear PDEs) and discretization-invariance.
+While this quadratic scaling limits naive application to massive meshes, two promising paths forward
+mitigate this. First, the robustness to decimation later demonstrated in Section 4.3 provides an
+immediate solution: training can be performed on heavily downsampled boundary representations
+(nsrc, train ≪ nsrc, true ) while still retaining good accuracy.
+In the longer-term, the guaranteed far-field decay from Section 2.2.4 enables hierarchical
+approximation schemes analogous to fast multipole methods (FMM) or Barnes-Hut algorithms.
+The key insight is that distant source clusters can be approximated by aggregations at their centroids,
+reducing far-field interactions from O(n2 ) to O(n log n) with careful tree construction. We
+leave implementation of such acceleration to future work, though the architectural design already
+accommodates this due to the kernel’s smoothness (inherited from C ∞ continuity of smoothlog and
+Padé layers) and decay.
+Thus, the combination of decimation-robust training and hierarchical inference offers a clear path
+to scalability for industrial 3D problems. This contrasts with many neural field architectures whose
+general-purpose MLP representations provide minimal bounds on far-field behavior, precluding
+hierarchical methods entirely.
+
+2.3     M ULTISCALE K ERNEL F UNCTIONS
+
+Many physical systems exhibit multiple characteristic lengths. In GLOBE, each reference length
+ℓi defines a parallel kernel branch. These branches share the same kernel function architecture
+(as defined in Section 2.2) and inputs, but have independent learnable parameters and have their
+maximum expressivity at different effective reference length scales. Their outputs are then linearly
+summed. Collectively, we refer to this collection of kernel branches as a multiscale kernel.
+More precisely, for each index i in the user-provided set of reference lengths, a separate kernel branch
+K(i) is instantiated and evaluated with its effective reference length
+
+                                            ℓeff
+                                             i   = ℓi exp(αi ),                                             (8)
+
+where:        ℓi = user-provided reference length for branch i
+              αi = learned scalar that fine-tunes the scale during training
+Because the relative position feature rts = (xt − xs )/ℓeff                    eff
+                                                        i is normalized by ℓi (to restate Eq. 1),
+each branch effectively “zooms” the same geometric interaction to a different scale.
+During multiscale evaluation, we also add global scalar features exposing scale relationships: for
+every pair (ℓi , ℓj ) of reference lengths, we append ln(ℓi /ℓj ) to the global scalar input10 . This provides
+explicit, unitless information about relative scales of problem physics. (Encoding individual length
+values directly would break units-invariance.) This design introduces a key inductive bias toward
+scale similarity: the network behaves equivariantly11 under absolute scale changes so long as all
+nondimensional parameters (e.g., Reynolds number, Mach number, etc.) are fixed.
+        (k)                                                                                      (k)
+Let Kts denote the output for kernel branch k. With per-source, per-branch strengths ws                (Section
+
+  10
+    With logic such that the assignment order to numerator and denominator is always consistent.
+  11
+    Strictly speaking, when encoding all reference lengths from Buckingham π theorem applied to governing
+equation parameters.
+
+
+                                                     13
+2.4), the multiscale field is
+                                                Ns
+                                                                    (k)
+                                              X X
+                                      ut =                ws(k) as Kts .                                 (9)
+                                               k   s=1
+
+where:    ut = final field value (may be scalar or vector, depending on the output field) at target
+                point t
+            k = kernel branch index, corresponding to each reference length scale
+          (k)
+         ws = source strength for source face s in kernel branch k
+           as = area of the source face s
+          (k)
+         Kts = kernel output value for target-source pair (t, s) from kernel branch k
+This extends Eq. 7 from a single kernel to a superposition across multiple kernel branches indexed by
+k, where each branch operates at a different effective reference length scale.
+In the reference implementation, evaluation of the multiscale kernel also supports optional chunking
+over target points to control memory12 without changing results.
+
+Choosing reference lengths. The set {ℓi } is a model design choice made by the user, and should be
+guided by the governing physics. For maximum model generalizability, these should be fundamental
+physical length scales from the governing equations; however, problem-specific reference lengths
+could be included for models designed with a tighter scope of use. For example, in external
+aerodynamics applications, candidates for reference lengths might include:
+         • The viscous length ν/U∞ , where ν is the kinematic viscosity and U∞ is the freestream
+           velocity
+         • A problem-specific characteristic length, such as an airfoil chord length cref
+         • The trailing-edge boundary layer thickness under Blasius and/or turbulent models (e.g.,
+                          √                              1/5
+           δlam = 5 cref / Rex and δturb ≈ 0.37 cref /Rec , where Rec = U∞ cref /ν is the Reynolds
+           number based on a characteristic streamwise length), depending on the problem
+         • In rarefied flows, the mean free path length λ
+In practice, using a small set of {ℓi } (typically 2 to 4) is sufficient. Physical relevance of each length’s
+variation matters more than absolute values; the learnable factors αi adapt initial scale choices during
+training.
+
+2.4   C OMMUNICATION H YPERLAYERS
+
+The top level stacks H communication hyperlayers that exchange latent information between
+boundary-condition (BC) partitions in an all-to-all manner before the final interior evaluation. Each
+hyperlayer contains one multiscale kernel per source BC type: all mesh faces with a “no slip” BC
+share one multiscale kernel, while all “free slip” faces share another. This enables GLOBE to learn
+BC-type-specific behavior, such as boundary layer presence or absence. These hyperlayers also
+                                        (k)
+compute the source strengths ws and ws introduced in Eqs. 7 and 9.
+
+Per-hyperlayer evaluation.       For hyperlayer hi (i = 0, . . . , H), we perform:
+1. Initialization (only for i = 0). For each source BC type, set per-branch source strengths
+     (k,0)
+   ws      = 1 for all reference-length branches k and source faces s. Here, the superscript (k, i)
+                                                                                               (k)
+   denotes kernel branch k at hyperlayer i; this notation extends the per-branch strengths ws from
+   Eq. 9 to track distinct values across hyperlayers. Initialize latent scalars/vectors as empty.
+2. Inputs per source BC. Assemble kernel inputs from per-face data and, for i > 0, include the
+   latent scalars/vectors produced by the previous hyperlayer hi−1 . Always include the unit normal
+   vector as an input (Section 2.2.1).
+  12
+     At training time, chunking has no effect on memory due to the need to store intermediate primals on the
+compute graph; memory reduction is better achieved by downsampled training. However, at inference time,
+chunking can drive down the peak memory footprint to extremely low levels (700 MB at a chunk size of 128
+query points), due to the independence of pairwise interactions.
+
+
+                                                     14
+3. Targets. If i < H, choose the target points to be the boundary face centers (grouped by target
+   BC). If i = H, instead choose the target points to be the user-requested query points (generally,
+   but not necessarily, in the interior of the domain).
+
+4. Multiscale evaluation and aggregation. For each source BC type, evaluate its multiscale kernel
+   at the current targets using the effective reference lengths (Eq. 8). During source-summation
+   (Section 2.2.6), weight contributions by source strengths and face areas.
+
+5. Outputs. If i < H, output a collection of tensors for each target BC boundary mesh containing
+                                                                                    (k,i+1)
+   (a) per-branch strengths (one scalar channel per reference length), denoted ws           , and (b) a
+   small set of latent scalar/vector channels; these become inputs to hi+1 . If i = H, instead output
+   the named physical fields at the query points, usually in the interior of the domain.
+
+6. Final calibration. After the last hyperlayer only (i = H), a lightweight per-field linear calibration
+   is applied: scalars use an affine map (scale and bias), vectors use a scale-only map. This preserves
+   rotational equivariance while allowing data-driven calibration of magnitudes and offsets.
+
+These steps implement boundary-to-boundary message passing across H hyperlayers, followed by a
+boundary-to-interior evaluation, enabling long-range coupling across BC partitions.
+
+
+Inductive bias. The architecture of the communication hyperlayers is inspired by the linear solve
+step of traditional boundary-element methods. There, the strengths w associated with each Green’s
+function kernel are obtained by solving a linear system of the form Aw = b, where A corresponds to
+influence coefficients between Green’s functions and is typically square and dense; b are the boundary
+condition residuals in the w = 0 case. While future work could explore using this linear solve step,
+we choose to use this hyperlayer architecture instead for several reasons:
+
+       • This linear solve would quickly dominate the computational cost of the overall model,
+         particularly as the number of boundary faces grows - indeed, this is often seen with traditional
+         boundary-element methods. This is particularly egregious in the case of a direct linear
+         solve (which introduces O(Ns3 ) time complexity). If we instead use an iterative linear
+         solve, the compute cost may be better; however, if we compute parameter gradients using
+         typical automatic differentiation, the memory requirements explode due to the need to store
+         intermediate iterations. We could bypass the memory issue with a custom vector-Jacobian
+         product rule, but this (a) introduces significant implementation complexity and (b) yields
+         gradients that are only approximate (since the truncation error in the forward iterative solve
+         is not reflected in the backward pass).
+
+       • This linear solve step requires symbolic knowledge of the governing PDEs (to evaluate
+         boundary condition residuals). This is not necessarily a problem, though it does increase
+         implementation complexity, especially since the need for symbolics has so far been avoided
+         in this architecture.
+
+       • The hyperlayer architecture allows information about boundary condition values to propagate
+         from boundary to boundary, which is critical in some PDE scenarios. For illustrative
+         purposes, consider an external aerodynamics problem which is formulated with an explicit
+         “freestream” boundary mesh at some large finite distance to the body13 . Here, the freestream
+         velocity is implemented as a Dirichlet condition on the velocity field at the freestream
+         boundary. Of course, the direction and magnitude of this freestream velocity vector has a
+         massive impact on the near-field flow around the object of interest. Without the hyperlayer
+         architecture, these effects would need to be mediated by the (nonphysical and distant)
+         freestream boundary. Instead, the hyperlayer architecture allows the freestream boundary to
+         propagate its information onto the body boundary, allowing the body boundary in turn to
+         handle near-field effects without high-magnitude, long-range kernel behavior.
+
+   13
+      This could be contrasted with an infinite-far-field boundary condition - which, in accordance with Section
+2.2.4, is both possible and likely more performant. However, this explicit freestream boundary formulation is an
+equally-valid PDE formulation, and it serves as a useful example case here.
+
+
+                                                      15
+3    M ODELING TASKS , DATASETS , AND T RAINING C ONSIDERATIONS
+We evaluate GLOBE on AirFRANS, a public benchmark by Bonnet et al. (2023) consisting of steady,
+incompressible RANS solutions over NACA 4- and 5-digit airfoils spanning high-Reynolds, subsonic
+conditions. The dataset comprises 1,000 simulations with Reynolds numbers in [2, 6] × 106 and
+angles of attack ranging from −5◦ to 15◦ . It is released in both raw OpenFOAM format and a
+preprocessed VTU/VTP format with clipping to a near-field region, a mid-span slice at z = 0.5,
+inward airfoil normals, and a distance function, retaining pressure, velocity, and turbulent viscosity
+fields; we use the latter. We adopt the four official evaluation regimes defined by the dataset authors:
+
+• Full (interpolation). 800 simulations for training and 200 for validation/test, drawn i.i.d. from the
+  same distribution.
+• Scarce (low-data interpolation). Same validation/test set as Full but with 200 simulations for
+  training.
+• Reynolds extrapolation. Train on cases with Re ∈ [3, 5] × 106 ; evaluate on cases outside this
+  range.
+• Angle-of-attack (AoA) extrapolation. Train on cases with α ∈ [−2.5◦ , 12.5◦ ]; evaluate on the
+  complementary set.
+
+Preprocessing and nondimensionalization. We use the preprocessed meshes and follow a strictly
+unitless pipeline implemented in our reference data pipeline. For each sample, we load the internal
+VTU and the two VTP boundaries (freestream and airfoil) and construct an explicit boundary mesh
+for the airfoil with a ‘no_slip‘ BC using the face centers and normals. Let U∞ denote the mean
+freestream velocity on the freestream boundary, with magnitude |U∞ |, density ρ = 1 kg/m314 , and
+kinematic viscosity ν = 1.56 × 10−5 m2 /s. We define the dynamic pressure q∞ = 12 ρ|U∞ |2 and
+compute the following nondimensional fields on the internal point set:
+                   U         ∆U     U − U∞
+                        ,         =        ,
+                  |U∞ |     |U∞ |    |U∞ |
+                                                                                    2
+                                       p               p+q                   U
+                               Cp =      ,      Cpt =        ,    q = q∞                ,
+                                      q∞                q∞                  |U∞ |
+                                                   2ν S n̂w
+                    ln 1 + νt /ν ,       CF,shear =          ,
+                                                      q∞
+where S = 21 (∇U + ∇UT ) is the symmetric strain-rate tensor and n̂w are per-point airfoil normals
+sampled at the surface-only points.
+
+Inputs and output fields for GLOBE. Each sample provides: (i) a list of prediction points (all
+internal mesh points), (ii) a single boundary mesh representing the airfoil surface with the boundary
+condition type labeled ‘no_slip’, (iii) global vectors containing U∞ /|U∞ |, and (iv) reference lengths.
+The model predicts a selected set of nondimensional fields at the prediction points. In our main
+experiments we predict the vector field ∆U /|U∞ | and scalars Cp , Cpt , ln(1 + νt /ν). We additionally
+include a wall-shear vector channel CF,shear , which is only interpreted at boundary points.
+During training, we mask out all points in the dataset with obviously non-physical total pressures
+(Cpt > 1.02), as these denote significant violations of energy conservation – this affects 0.003% of
+points across the entire dataset.
+
+      p lengths provided to GLOBE are ℓ ∈ {cref , δF S }, where cref is the airfoil chord and
+Reference
+δF S = ν cref /|U∞ | is a freestream viscous thickness scale.
+
+On excluding signed distance fields. While AirFRANS includes signed distance fields (SDFs), we
+deliberately exclude them as model input features. SDF features pose two fundamental problems in
+PDE surrogate modeling: (1) SDFs have no direct physical significance in the governing equations -
+   14
+      While some secondary sources report ρ = 1.204 kg/m3 , the OpenFOAM cases in AirFRANS are configured
+with ρ = 1. This choice preserves constant far-field total pressure, consistent with incompressible flow
+assumptions.
+
+
+                                                   16
+they are purely geometric constructs. If proximity information were physically meaningful, better
+approaches would use fields derived from physical PDEs, such as the signed heat method of Feng &
+Crane (2024). (2) More critically, SDFs are inherently non-smooth: gradients exhibit discontinuities at
+equidistant loci (medial axes/surfaces), violating the C ∞ continuity that GLOBE’s kernel architecture
+maintains (Section 2.2.2). The relative position rts (Eq. 1) provides sufficient geometric information
+without these pathologies.
+
+On redundant output fields, gradients, and self-consistency. Several output fields are not
+independent: for example, given velocity and Cp , one can infer Cpt (and conversely), and wall-shear
+vectors could be obtained from velocity gradients15 . Therefore, it would be possible to implement a
+Sobolev-style objective to enforce these relationships implicitly through the loss.
+However, we find that directly predicting both underlying and derived quantities yields measurably
+better accuracy and faster convergence, mirroring empirical observations in Sobolev training, where
+such redundancy stabilizes optimization and improves fidelity in sharp-gradient regions (e.g.,
+near-wall shear). A further practical benefit is trustworthiness assessment during extrapolation:
+redundant channels enable lightweight “self-inconsistency” diagnostics at inference (e.g., comparing
+the explicitly predicted Cpt to the value implied by U and Cp ). Elevated self-inconsistency
+flags untrustworthy predictions, an important consideration for CAE workflows that is often
+underemphasized in ML surrogate literature. That said, eliminating redundant channels and enforcing
+physical relationships through exact analytic relations is elegant and could strengthen inductive bias -
+we leave this as a promising direction for future work.
+
+
+4     R ESULTS AND D ISCUSSION
+
+For each of the four tasks identified in Section 3, we train a unique GLOBE model, with full training
+details and hyperparameter values in Appendix E. The following sections discuss the accuracy of
+these models, both quantitatively and qualitatively.
+
+4.1    E RROR M ETRICS
+
+Headline accuracy. As seen in Tables 3 and 4, GLOBE achieves substantial accuracy improvements
+over existing models. On the Full split, it reduces mean squared error (MSE) by roughly 200x on
+all fields relative to the reference baseline model architectures released by the AirFRANS dataset
+authors, Bonnet et al. (2023). Compared to the next-best-performing model, enf2enf by Catalani
+et al. (2025a), where only pressure metrics are available in the literature for comparison, we find that
+GLOBE achieves roughly 50x lower error.
+On the Scarce split, where the latest state-of-the-art models have been benchmarked by Catalani
+et al. (2025b), GLOBE reduces MSE by roughly 7x on velocity and pressure fields and 66x on
+surface-only pressure when compared to the next-best-performing model, MARIO. Compared to
+Transolver, a popular model architecture by Wu et al. (2024), GLOBE achieves reductions in MSE of
+over 100x on velocity and pressure fields and over 600x on surface-only pressure.
+
+Nondimensionalization and error metric reporting methodology. In Tables 3–6, the notations ūx
+and ūy correspond to z-score-normalized dimensional velocity components, i.e., (ux,pred − ux,true )/σ,
+where σ is the standard deviation of ux,true . Likewise, p̄ and p̄s refer to z-score-normalized
+dimensional pressure on the volume and surface, respectively. These metrics exactly match the
+methodology actually implemented in the AirFRANS reference code16 . While necessary for
+   15
+      Specifically: forward-mode differentiate the velocity field to obtain the velocity gradient tensor, apply the
+viscosity constitutive relation to compute the stress tensor, then contract with the surface normal vector to extract
+the wall shear force vector.
+   16
+      We note a discrepancy regarding normalization methodology in the AirFRANS work: while Bonnet et al.
+(2023) states that “each quantity is normalized either by u∞ the inlet velocity magnitude or ν the fluid viscosity,”
+indicating nondimensionalization based on reference quantities, the released code implementation instead uses
+z-score statistical normalization. To ensure valid quantitative comparison with prior benchmarks established
+using this code, we replicate the z-score normalization of the reference implementation here, despite the physical
+limitations discussed in this section.
+
+
+                                                        17
+Table 3: AirFRANS Full (interpolation) task: validation-set mean squared error on z-score-
+normalized fields; lower is better. Metrics with (–) were not reported in the associated citation.
+
+                                                                  Mean Squared Error, “Full” task
+   Model                                         ūx                        ūy                 p̄              p̄s
+                                                          −2                        −2               −2
+   GLOBE (our work)                      0.0047 ×10                0.0039 ×10             0.0031 ×10       0.0039 ×10−2
+   enf2enf∗                                    –                         –                0.1100 ×10−2     0.3200 ×10−2
+   CORAL∗∗                                     –                         –                0.3500 ×10−2     1.2000 ×10−2
+   Transolver‡                                 –                         –                0.3700 ×10−2     1.4200 ×10−2
+   MeshGraphNet††                              –                         –                2.1400 ×10−2     3.8700 ×10−2
+   GINO||                                      –                         –                2.9700 ×10−2     4.8200 ×10−2
+   MLP†                                  0.9490 ×10−2              0.9780 ×10−2           0.7370 ×10−2    11.3000 ×10−2
+   GraphSAGE†                            0.8320 ×10−2              0.9940 ×10−2           0.6610 ×10−2     6.6200 ×10−2
+   PointNet†                             3.5000 ×10−2              3.6450 ×10−2           1.1510 ×10−2     9.2500 ×10−2
+   GUNet†                                1.5170 ×10−2              2.0280 ×10−2           0.6570 ×10−2     3.8600 ×10−2
+   ∗
+        Architecture and metrics from Catalani et al. (2025a).
+   ∗∗
+         Architecture from Serrano et al. (2023), metrics from Catalani et al. (2025a).
+   ‡
+        Architecture and metrics from Wu et al. (2024).
+   ††
+         Architecture from Pfaff et al. (2021), metrics from Catalani et al. (2025a).
+   ||
+        Architecture from Li et al. (2023), metrics from Catalani et al. (2025a).
+   †
+        (AirFRANS dataset reference models) Implementations and metrics from Bonnet et al. (2023).
+
+
+Table 4: AirFRANS Scarce (low-data) task: validation-set mean squared error on z-score-normalized
+fields; lower is better.
+
+                                                                 Mean Squared Error, “Scarce” task
+   Model                                         ūx                        ūy                 p̄              p̄s
+                                                          −2                        −2               −2
+   GLOBE (our work)                      0.0208 ×10                0.0180 ×10             0.0286 ×10       0.0392 ×10−2
+   MARIO§                                0.1520 ×10−2              0.1130 ×10−2           0.2400 ×10−2     2.7000 ×10−2
+   Transolver¶                           2.1050 ×10−2              2.1080 ×10−2           4.4340 ×10−2    23.6700 ×10−2
+   MLP†                                  1.6470 ×10−2              1.4510 ×10−2           3.9040 ×10−2    21.9200 ×10−2
+   GraphSAGE†                            1.4570 ×10−2              1.4540 ×10−2           4.6960 ×10−2    19.4500 ×10−2
+   PointNet†                             3.1110 ×10−2              2.7760 ×10−2           3.2940 ×10−2    18.2700 ×10−2
+   GUNet†                                1.7490 ×10−2              1.8250 ×10−2           3.3880 ×10−2    14.7300 ×10−2
+   §
+        Architecture and metrics from Catalani et al. (2025b).
+   ¶
+        Architecture from Wu et al. (2024), metrics from Catalani et al. (2025b).
+   †
+        (AirFRANS dataset reference models) Implementations and metrics from Bonnet et al. (2023).
+
+
+Table 5: AirFRANS Reynolds (extrapolation) task: validation-set mean squared error on z-score-
+normalized fields; lower is better.
+
+                                                             Mean Squared Error, “Reynolds” task
+  Model                                         ūx                       ūy                  p̄               p̄s
+  GLOBE (our work)                      0.1897 ×10−2              0.0811 ×10−2            0.2446 ×10−2      0.2903 ×10−2
+  MLP†                                  9.5050 ×10−2              4.9240 ×10−2            4.3000 ×10−2    208.9800 ×10−2
+  GraphSAGE†                            7.5580 ×10−2              3.4980 ×10−2            3.8260 ×10−2     17.9700 ×10−2
+  PointNet†                             9.4220 ×10−2              7.1290 ×10−2            4.0110 ×10−2     20.1300 ×10−2
+  GUNet†                                8.3830 ×10−2              5.2500 ×10−2            4.4830 ×10−2     20.5900 ×10−2
+  †
+      (AirFRANS dataset reference models) Implementations and metrics from Bonnet et al. (2023).
+
+
+
+
+apples-to-apples comparison with prior work, we emphasize that z-score-based normalization is not
+recommended for aerodynamic applications, and is at odds with standard practice in fluid dynamics
+literature.
+
+
+                                                                       18
+Table 6: AirFRANS Angle of Attack (extrapolation) task: validation-set mean squared error on
+z-score-normalized fields; lower is better.
+
+                                                    Mean Squared Error, “Angle of Attack” task
+  Model                                     ūx                      ūy                           p̄             p̄s
+                                                    −2                       −2                         −2
+  GLOBE (our work)                  0.9706 ×10              1.1928 ×10                11.3786 ×10            21.8215 ×10−2
+  MLP†                              6.9650 ×10−2            10.6300 ×10−2             11.7110 ×10−2          87.6200 ×10−2
+  GraphSAGE†                        4.4350 ×10−2            9.4000 ×10−2              10.9080 ×10−2          76.3800 ×10−2
+  PointNet†                         8.6800 ×10−2            15.7960 ×10−2             16.2370 ×10−2          58.4600 ×10−2
+  GUNet†                            5.6890 ×10−2            10.3420 ×10−2             14.8870 ×10−2          69.6700 ×10−2
+  †
+      (AirFRANS dataset reference models) Implementations and metrics from Bonnet et al. (2023).
+
+
+
+
+Z-score-based normalization has three fundamental problems for physics applications: (1) the
+normalization scale varies across different flow conditions, geometries, and datasets, precluding
+meaningful cross-study comparisons; (2) it obscures the connection to physical quantities of interest –
+aerodynamicists care about drag coefficients and pressure recovery in absolute terms, not variance-
+normalized proxies; and (3) it can artificially inflate apparent performance by down-weighting errors
+in high-variance regions that may be physically critical (e.g., separated flows, wakes).
+The physically principled alternative, and the standard practice in fluid dynamics literature, is
+nondimensionalization by characteristic scales from the governing equations: velocities by |U∞ |,
+pressure by dynamic pressure 12 ρ|U∞ |2 (yielding the pressure coefficient Cp ), and viscosity by ν
+(yielding the turbulent viscosity ratio νt /ν). This yields dimensionless quantities with direct physical
+interpretation that are invariant to dataset statistics.
+For completeness, Table 9 in Appendix G reports performance using physical nondimensionalization,
+which we encourage practitioners to adopt moving forward. These metrics of MSE and MAE on fields
+such as U /|U∞ | and Cp provide the interpretable, physically-grounded performance assessment that
+should be standard practice in ML for physics applications.
+
+
+On reporting νt . We do not report error metrics on νt because the model is trained on ln (1 + νt /ν),
+not on νt or the turbulent viscosity ratio νt /ν. This is a deliberate choice made for practice-motivated
+reasons. For incompressible RANS closures, the quantity that actually alters the solution is the
+effective viscosity νeff = ν + νt . Distinguishing νt /ν of 0 vs. 1 (e.g., boundary-layer onset and
+growth) changes νeff and thus the flow meaningfully, whereas errors between very large values (e.g.,
+100 vs. 101) in separated recirculation regions have negligible impact on loads or pressure recovery17 .
+Benchmarking error on raw νt over-weights these uninformative regions and yields misleading scores.
+Using ln(νeff /ν), or equivalently, ln(1 + νt /ν), linearizes the near-zero regime, compresses the far
+tail, and aligns the objective with physical relevance; we therefore report metrics on fields that drive
+forces and pressure recovery.
+
+
+4.2      F IELD V ISUALIZATIONS
+
+Figures 4–7 show GLOBE predictions on validation samples from each of the four tasks,
+demonstrating sharp boundary-layer gradients, coherent wake structures, and maintained accuracy
+even under extrapolation.18 The higher errors in AoA extrapolation compared to Reynolds
+extrapolation (Table 6 vs. Table 5) likely reflect that angle-of-attack changes induce global shifts in
+flow topology (e.g., stagnation point movement, wake trajectory), which cause more severe physics
+changes than the boundary layer thickening associated with Reynolds number changes.
+
+   17
+      Recall that the physical purpose behind adding extreme νt production in recirculation regions in RANS
+closures is to capture that recirculation regions are “squishy” (i.e., unable to sustain a pressure gradient, which
+naturally follows from closed-streamline argument) by causing near-instantaneous diffusion.
+   18
+      Validation samples were selected systematically (first in alphabetical order for Full/Scarce; first low-
+Reynolds and first high-AoA sample for extrapolation splits) rather than cherry-picked for low error.
+
+
+                                                                  19
+                         Velocity U [m/s]                           Pressure p [Pa]                      Turbulent viscosity t [m2/s]
+
+Truth
+
+
+
+
+             0      10           20         30         40    400   200   0       200       400       0.000 0.001 0.002 0.003 0.004 0.005 0.006
+Prediction
+
+
+
+
+             0      10           20         30         40    400   200   0       200       400       0.000 0.001 0.002 0.003 0.004 0.005 0.006
+Error
+
+
+
+
+             0.0   0.1     0.2        0.3        0.4   0.5   4      2        0         2         4        0.0002 0.00010.0000 0.0001 0.0002
+
+
+Figure 4: GLOBE model predictions on the first validation sample of the Full split. Rows show
+ground truth, GLOBE predictions, and error, respectively. Each column corresponds to a different
+field of interest. For vector fields, the magnitude is shown.
+
+
+4.3           T RAINING AND I NFERENCE ON N ON -WATERTIGHT M ESHES
+
+A critical challenge in industrial CAE workflows is the preprocessing required to prepare CAD
+geometry for simulation. In many cases, defeaturing (the manual removal or simplification of
+small geometric features) is the most time-consuming step in traditional simulation pipelines. Even
+after defeaturing, practitioners frequently encounter issues with non-watertight meshes: small gaps,
+overlapping faces, or topological inconsistencies that cause traditional CFD solvers to fail or require
+further manual intervention. For ML surrogates to achieve practical deployment in industry, they
+must be robust to such geometric imperfections rather than requiring the idealized meshes typical of
+academic benchmarks.
+The GLOBE architecture is intrinsically well-suited to handling boundary mesh imperfections due to
+its boundary-element-method-like formulation. Because the kernel evaluation treats each boundary
+face centroid as an independent source point (Section 2.2), with influences aggregated via area-
+weighted summation (Eq. 7), the architecture has no explicit dependence on topological connectivity,
+shared vertices, or edge relationships between faces. Unlike volume-mesh-based methods or graph
+neural networks that rely on explicit connectivity, GLOBE operates on a cloud of oriented surface
+elements. This suggests that small gaps, overlaps, or topological defects should degrade performance
+gracefully rather than catastrophically.
+To rigorously test this hypothesis, we conducted an extreme stress test by training on the Full split
+with severely decimated boundary meshes using a two-step procedure. First, for each training
+sample, we randomly removed 50% of all airfoil boundary faces. Second, to maintain constant
+
+
+                                                                         20
+                         Velocity U [m/s]                      Pressure p [Pa]                          Turbulent viscosity t [m2/s]
+
+Truth
+
+
+
+
+             0       10         20     30      40   400       200       0       200       400       0.000 0.001 0.002 0.003 0.004 0.005 0.006
+Prediction
+
+
+
+
+             0       10         20     30      40   400       200       0       200       400       0.000 0.001 0.002 0.003 0.004 0.005 0.006
+Error
+
+
+
+
+             0.0   0.1    0.2    0.3   0.4   0.5    6     4         2       0   2     4         6      0.0004 0.0002 0.0000 0.0002 0.0004
+
+
+Figure 5: GLOBE model predictions on the first validation sample of the Scarce split. Rows show
+ground truth, GLOBE predictions, and error, respectively. Each column corresponds to a different
+field of interest. For vector fields, the magnitude is shown. Even with only 200 training samples,
+GLOBE results on validation cases qualitatively remain sharp and physically consistent.
+
+
+total boundary area (preserving the discretization-invariance property in Eq. 7), we doubled the area
+of each remaining face by moving its vertices radially outward from the face centroid. Critically,
+we treat the mesh as an unordered collection of triangular faces with no connectivity information;
+previously-adjacent faces no longer share edges after expansion.
+This procedure introduces two severe pathologies: (1) the random removal creates large gaps, riddling
+the airfoil surface with holes where faces were deleted; and (2) the geometric expansion of remaining
+faces causes them to mutually intersect and creates vertex/edge mismatches with neighbors, destroying
+all topological connectivity. The resulting meshes are geometrically degenerate by any conventional
+standard; no traditional CFD solver would accept such input without extensive repair.
+This test also serves as an extreme empirical validation of the discretization-invariance claim in
+Section 1.4: despite a radical change in the discrete representation (50% face removal), the integral
+formulation ensures the solution remains stable.
+Despite this severe degradation of input quality, GLOBE produces reasonable predictions. Table 7
+compares validation-set performance across three configurations: the standard Full model, the
+decimated-mesh model, and the Scarce model (included as a data-scarcity reference point). While
+errors increase under decimation (as expected when discarding half the boundary information), the
+model remains functional, with performance degradation comparable to the reduction in training data
+quantity (Scarce regime). Put another way, the error of GLOBE using this heavily-decimated training
+data is still far lower than the error of all other models from the literature that were compared in
+Table 3 and Table 4.
+
+
+                                                                        21
+                         Velocity U [m/s]                                      Pressure p [Pa]                    Turbulent viscosity t [m2/s]
+
+Truth
+
+
+
+
+             0      10        20         30         40                   400    200    0   200     400       0.000 0.002 0.004 0.006 0.008 0.010
+Prediction
+
+
+
+
+             0      10        20         30         40                   400    200    0   200     400       0.000 0.002 0.004 0.006 0.008 0.010
+Error
+
+
+
+
+             0.0   0.5     1.0     1.5        2.0        2.5         20        10      0    10     20        0.0075 0.0050 0.00250.0000 0.0025 0.0050 0.0075
+
+
+Figure 6: GLOBE model predictions on a validation sample from the Reynolds extrapolation split.
+Rows show ground truth, GLOBE predictions, and error, respectively. Each column corresponds to a
+different field of interest. For vector fields, the magnitude is shown.
+
+
+Most critically, the model does not collapse or exhibit pathological failures despite being trained
+exclusively on topologically invalid meshes and evaluated on intact validation meshes, demonstrating
+substantial robustness to geometric preprocessing artifacts.
+
+Table 7: Robustness to non-watertight meshes: GLOBE trained on severely decimated boundary
+meshes (50% of faces randomly removed, remaining faces doubled in area via vertex expansion,
+destroying topological connectivity) compared to baseline Full and Scarce models. Training uses
+decimated meshes; validation uses intact meshes. Metrics are mean squared error on z-score-
+normalized fields.
+
+                                                                                           Mean Squared Error
+     Model                                                         ūx                       ūy                      p̄                          p̄s
+                                                                               −2                       −2                     −2
+     GLOBE (Full)                                              0.0047 ×10              0.0039 ×10            0.0031 ×10                 0.0039 ×10−2
+     GLOBE (Full, decimated)                                   0.0510 ×10−2            0.0402 ×10−2          0.0311 ×10−2               0.0336 ×10−2
+     GLOBE (Scarce)                                            0.0208 ×10−2            0.0180 ×10−2          0.0286 ×10−2               0.0392 ×10−2
+
+
+Figure 8 shows a representative validation sample predicted by the decimated-mesh model. Even
+when trained exclusively on meshes with 50% missing faces and severe topological defects, the
+model recovers coherent flow structures, sharp boundary-layer gradients, and physically plausible
+wakes. This robustness has important practical implications: GLOBE can potentially be deployed on
+
+
+                                                                                      22
+                          Velocity U [m/s]                               Pressure p [Pa]                         Turbulent viscosity t [m2/s]
+
+Truth
+
+
+
+
+             0           20         40          60         80    3000    2000        1000       0        0.000       0.005    0.010     0.015
+Prediction
+
+
+
+
+             0           20         40          60         80    3000    2000        1000       0        0.000       0.005    0.010     0.015
+Error
+
+
+
+
+             0.0   0.2        0.4   0.6   0.8        1.0   1.2      10    5      0          5       10    0.00150.00100.00050.00000.00050.00100.0015
+
+
+Figure 7: GLOBE model predictions on a validation sample from the AoA extrapolation split.
+Rows show ground truth, GLOBE predictions, and error, respectively. Each column corresponds to a
+different field of interest. For vector fields, the magnitude is shown. Even when extrapolating beyond
+the range of angles of attack seen during training, results remain accurate.
+
+
+CAD-derived meshes with minor geometric imperfections without requiring the extensive manual
+cleanup that traditional solvers demand, significantly reducing preprocessing overhead in industrial
+workflows.
+Beyond handling defeaturing artifacts, this decimation robustness also provides a near-term
+path to scalability for large-scale 3D datasets. The results suggest that training on heavily
+downsampled boundary meshes does not catastrophically degrade accuracy - a critical property
+when extending to industrial-scale 3D geometries where boundary meshes can contain millions of
+faces. While hierarchical acceleration methods (Section 2.2.7) offer a long-term solution to the
+quadratic complexity of all-to-all kernel evaluation, downsampled training provides an immediately
+practical approach: we can train on heavily coarsened boundary representations with acceptable
+accuracy tradeoffs, then evaluate on full-resolution meshes at inference. This contrasts sharply
+with connectivity-dependent architectures (GNNs, volume-mesh CNNs) where downsampling
+fundamentally alters the graph structure or requires expensive interpolation, often leading to
+catastrophic performance collapse. The area-weighted aggregation in Eq. 7 ensures that as long as
+total boundary area is preserved, the discretization level primarily affects representational fidelity
+rather than architectural validity.
+
+
+
+
+                                                                                23
+                          Velocity U [m/s]                               Pressure p [Pa]                   Turbulent viscosity t [m2/s]
+
+Truth
+
+
+
+
+             0           10         20          30      40   400        200       0       200    400   0.000 0.001 0.002 0.003 0.004 0.005 0.006
+Prediction
+
+
+
+
+             0           10         20          30      40   400        200       0       200    400   0.000 0.001 0.002 0.003 0.004 0.005 0.006
+Error
+
+
+
+
+             0.0   0.2        0.4   0.6   0.8    1.0   1.2         10         5       0   5     10         0.0004 0.0002 0.0000 0.0002 0.0004
+
+
+Figure 8: GLOBE model predictions on a validation sample when trained on severely decimated
+meshes (50% boundary face removal). Rows show ground truth, GLOBE predictions, and error,
+respectively. Each column corresponds to a different field of interest. For vector fields, the magnitude
+is shown. Despite training exclusively on topologically invalid meshes with massive gaps and
+intersections, the model produces accurate predictions due to its formulation.
+
+
+5            C OMPUTATIONAL R EPRODUCIBILITY
+
+All source code used to generate the results in this publication will be available within the open-source
+NVIDIA PhysicsNeMo framework at https://github.com/NVIDIA/physicsnemo in its
+subsequent release; in the interim, interested readers may contact the authors to inquire about access.
+
+6            C ONCLUSIONS
+
+In this work, we show that rigorous incorporation of physical structure and domain-inspired inductive
+biases can yield substantial improvements in accuracy, generalizability, and practicality for ML-
+based PDE surrogates. By synthesizing insights from boundary-element methods, exact physical
+symmetries, and learned kernel representations, GLOBE achieves strong performance on aerodynamic
+surrogate modeling: roughly 200× error reduction over dataset baselines on interpolation tasks,
+roughly 10 to 100× improvement over state-of-the-art methods in low-data regimes, and robust
+extrapolation under Reynolds number and angle-of-attack distribution shifts. These gains are achieved
+with a compact architecture (117k parameters) that evaluates fields at arbitrary points, handles non-
+watertight meshes, and respects the necessary attributes of valid physics models established in Section
+1.4.
+The core architectural innovations (equivariant kernel functions, Padé-approximant MLPs, multiscale
+
+
+                                                                                  24
+composition, and communication hyperlayers) collectively encode the structural prior that solutions
+to boundary-driven elliptic PDEs can be represented as superpositions of source influences from
+boundaries. This boundary-centric formulation proves highly effective when combined with
+architecturally-enforced translation, rotation, and parity equivariances; discretization-invariance
+through area-weighted boundary integrals; units-invariance via rigorous nondimensionalization; and
+global receptive fields that respect elliptic PDE information flow requirements.
+Beyond the specific numerical results, this work provides broader lessons about the appropriate
+role of structure in machine learning for physics. The oft-cited “bitter lesson” of Sutton, which
+states that general-purpose methods leveraging computation ultimately outperform approaches with
+hand-coded knowledge, reflects legitimate insights from decades of progress in perception, language,
+and symbolic reasoning. However, physics presents some important differences. While domains
+like computer vision and linguistics have structure, exceptions and ambiguous cases are common.
+In physics, conservation laws, symmetries, and dimensional consistency are exact mathematical
+constraints that hold universally across problem instances, not approximate patterns to be learned
+from data.
+Empirical evidence supports this distinction. For example, even when using massive datasets like
+DrivAerML’s 31 terabytes of CFD data (Ashton et al. (2024)), ML surrogate models trained purely
+from data do not intrinsically learn rotational invariance - a symmetry that follows directly from
+conservation of angular momentum and is exactly preserved by even the simplest physics solvers.
+When architectures fail to capture such fundamental properties despite enormous data and compute,
+it suggests that pure scaling is insufficient; some structural encoding is beneficial or perhaps even
+necessary.
+This is not an argument for abandoning machine learning in favor of traditional physics-only
+approaches. Physics also contains genuine unknowns where general-purpose function approximators
+excel when surgically applied - turbulence closure, for instance19 . Recent hybrid approaches
+demonstrate the value of this synthesis: Zhang (2022) achieved substantial gains in integral boundary
+layer methods by using compact neural networks for specific closures while preserving overall
+physical structure, and Menter & Matyushenko (2025) showed that learning optimal coefficients
+for physics-based turbulence models from rich simulation datasets yields substantial accuracy
+improvements over traditional hand-tuned coefficients from canonical experiments. The most effective
+path forward appears to involve encoding substantial physical structure for the constraints we know
+to be exact, while applying machine learning surgically to the components that resist analytical
+derivation. Achieving this synthesis requires deep domain understanding.
+The robustness to severely decimated boundary meshes (Section 4) further illustrates the practical
+value of physics-inspired design. Traditional CFD solvers and many ML surrogates require carefully
+preprocessed, watertight geometries - a bottleneck that often consumes more engineering time than
+the simulation itself. GLOBE’s graceful degradation under geometric imperfections, a consequence
+of its boundary-element-inspired formulation, suggests a path toward surrogates that can operate
+directly on CAD-derived meshes with minor defects, dramatically reducing preprocessing overhead
+in design workflows.
+Beyond technical efficacy, the successful integration of ML into engineering workflows depends on a
+critical sociological factor: trust. The CAE community operates under strict standards of verification
+and validation (V&V), where adherence to physical laws is a prerequisite for credibility. Practitioners
+who certify safety-critical systems are skeptical of tools that function as black boxes; a model that
+violates basic symmetries (e.g., predicting different forces upon coordinate rotation) fails these
+fundamental validity checks regardless of its aggregate error metrics. By structurally enforcing these
+exact constraints, physics-informed architectures align more closely with the standards needed for
+acceptance among practicing CAE engineers. This physical interpretability and behavioral guarantees
+enable further use of ML-based PDE surrogates as reliable industrial tools.
+Looking ahead, we identify several directions for future work with GLOBE:
+
+       • Scaling to 3D aerodynamic datasets (e.g., DrivAerML) to extend the approach beyond 2D
+         airfoil analysis. The decimation results suggest training on downsampled boundary meshes
+  19
+     This is precisely why GLOBE employs learned Padé-approximant MLPs in its core rather than analytical
+Green’s functions.
+
+
+                                                   25
+         provides a near-term path; hierarchical kernel acceleration (reducing complexity from
+         O(n2src ) to O(nsrc log nsrc )) would enable longer-term full-resolution training on geometries
+         with hundreds of thousands of boundary faces.
+       • Evaluating on other PDE domains beyond aerodynamics (e.g., static structural analysis,
+         heat transfer, electromagnetics) to validate architectural generality.
+       • Systematic ablation studies isolating individual contributions of Padé MLPs, far-field
+         decay envelopes, multiscale composition, and communication hyperlayers to strengthen
+         understanding of which innovations drive performance.
+       • Mixed-BC problem evaluation (e.g., automotive aerodynamics with no-slip/free-slip
+         boundaries) to demonstrate architectural flexibility in settings requiring explicit BC type
+         encoding, beyond the single-BC problems in the current evaluation.
+       • Additional physical structure such as a) divergence- and curl-free conditions on appropriate
+         vector fields, or b) new forms of mass/momentum conservation constraints that avoid
+         the serious pitfalls of PINN-like strategies that use residual-based losses. Whether such
+         constraints improve performance or prove redundant given existing physical structure
+         remains an open question.
+
+We believe that the path to practical surrogates in physics is not only through scaling, but also
+through hybrid approaches that leverage analytical components where exact structure is known
+from first principles, and the flexibility of ML methods where it is not. GLOBE demonstrates that
+substantial gains remain achievable through careful architectural design - and that the pursuit of such
+physics-informed architectures, far from limiting ML’s flexibility, may be what ultimately enables its
+full potential in scientific computing.
+
+ACKNOWLEDGEMENTS
+
+We thank Corey Adams for valuable feedback and paper review, and the NVIDIA CSRG team for
+maintaining supercomputing resources that enabled this research.
+
+R EFERENCES
+
+Eytan J Adler, Alasdair Christison Gray, and Joaquim R.R.A. Martins. To CFD or not to CFD?
+  Comparing RANS and viscous panel methods for airfoil shape optimization. In Congress of the
+  International Council of the Aeronautical Sciences (ICAS 2022), Stockholm, Sweden, September
+  2022.
+
+Neil Ashton, Charles Mockett, Marian Fuchs, Louis Fliessbach, Hendrik Hetmann, Thilo Knacke,
+  Norbert Schonwald, Vangelis Skaperdas, Grigoris Fotiadis, Astrid Walle, Burkhard Hupertz, and
+  Danielle Maddix. DrivAerML: High-Fidelity Computational Fluid Dynamics Dataset for Road-Car
+  External Aerodynamics, August 2024.
+
+Simon Batzner, Albert Musaelian, Lixin Sun, Mario Geiger, Jonathan P. Mailoa, Mordechai Kornbluth,
+  Nicola Molinari, Tess E. Smidt, and Boris Kozinsky. E(3)-equivariant graph neural networks for
+  data-efficient and accurate interatomic potentials. Nature Communications, 13(1):2453, May 2022.
+  ISSN 2041-1723. doi: 10.1038/s41467-022-29939-5.
+
+Florent Bonnet, Ahmed Jocelyn Mazari, Paola Cinnella, and Patrick Gallinari. AirfRANS: High
+  Fidelity Computational Fluid Dynamics Dataset for Approximating Reynolds-Averaged Navier-
+  Stokes Solutions, June 2023.
+
+Albert Bou, Matteo Bettini, Sebastian Dittert, Vikash Kumar, Shagun Sodhani, Xiaomeng Yang,
+  Gianni De Fabritiis, and Vincent Moens. TorchRL: A data-driven decision-making library for
+  PyTorch, 2023.
+
+Giovanni Catalani, Daniel Costero, Michael Bauerheim, Luca Zampieri, Vincent Chapin, Nicolas
+  Gourdain, and Pierre Baqué. A comparative study of learning techniques for the compressible
+  aerodynamics over a transonic RAE2822 airfoil. Computers & Fluids, 251:105759, January 2023.
+  ISSN 00457930. doi: 10.1016/j.compfluid.2022.105759.
+
+
+                                                  26
+Giovanni Catalani, Michael Bauerheim, Frédéric Tost, Xavier Bertrand, and Joseph Morlier. Geometry
+  aware inference of steady state PDEs using Equivariant Neural Fields representations, September
+  2025a.
+Giovanni Catalani, Jean Fesquet, Xavier Bertrand, Frédéric Tost, Michael Bauerheim, and Joseph
+  Morlier. Towards scalable surrogate models based on Neural Fields for large scale aerodynamic
+  simulations, May 2025b.
+James G. Coder and Mark D. Maughmer. Comparisons of Theoretical Methods for Predicting Airfoil
+  Aerodynamic Characteristics. Journal of Aircraft, 51(1):183–191, January 2014. ISSN 0021-8669,
+  1533-3868. doi: 10.2514/1.C032232.
+P. Curie. Sur la symétrie dans les phénomènes physiques, symétrie d’un champ électrique et d’un
+   champ magnétique. Journal de Physique Théorique et Appliquée, 3(1):393–415, 1894. ISSN
+   0368-3893. doi: 10.1051/jphystap:018940030039300.
+Mark Drela. XFOIL: An Analysis and Design System for Low Reynolds Number Airfoils. In
+ C. A. Brebbia, S. A. Orszag, and Thomas J. Mueller (eds.), Low Reynolds Number Aerodynamics,
+ volume 54, pp. 1–12, Indiana, USA, 1989. Springer. ISBN 978-3-540-51884-6 978-3-642-84010-4.
+ doi: 10.1007/978-3-642-84010-4_1.
+Mark Drela. A User’s Guide to MSES 3.05. July 2007.
+Mark Drela. Flight Vehicle Aerodynamics. pp. 270, 2013a. ISSN 978-0262526449.
+Mark Drela. Three-Dimensional Integral Boundary Layer Formulation for General Configurations.
+ In 21st AIAA Computational Fluid Dynamics Conference, San Diego, CA, June 2013b. American
+ Institute of Aeronautics and Astronautics. doi: 10.2514/6.2013-2437.
+Mark Drela. Aerodynamics of Viscous Fluids. Massachusetts Institute of Technology, Cambridge,
+ Massachusetts, pre-publication draft edition, 2019.
+Nicole Feng and Keenan Crane. A Heat Method for Generalized Signed Distance. ACM Transactions
+  on Graphics, 43(4):1–19, July 2024. ISSN 0730-0301, 1557-7368. doi: 10.1145/3658220.
+Fabian B Fuchs, Daniel E Worrall, Volker Fischer, and Max Welling. SE(3)-Transformers: 3D
+  Roto-Translation Equivariant Attention Networks. NeurIPS 2020, 2020.
+Mario Geiger. cuEquivariance. GitHub repository, 2025. URL https://github.com/NVIDIA/
+ cuEquivariance. Version 0.7.0, accessed 2025-10-14.
+Mario Geiger and Tess Smidt. E3nn: Euclidean Neural Networks, July 2022.
+Keller Jordan, Yuchen Jin, Vlado Boza, Jiacheng You, Franz Cesista, Laker Newhouse, and Jeremy
+  Bernstein. Muon: An optimizer for hidden layers in neural networks, 2024. URL https:
+  //kellerjordan.github.io/posts/muon/.
+John Jumper, Richard Evans, Alexander Pritzel, Tim Green, Michael Figurnov, Olaf Ronneberger,
+  Kathryn Tunyasuvunakool, Russ Bates, Augustin Žídek, Anna Potapenko, Alex Bridgland,
+  Clemens Meyer, Simon A. A. Kohl, Andrew J. Ballard, Andrew Cowie, Bernardino Romera-
+  Paredes, Stanislav Nikolov, Rishub Jain, Jonas Adler, Trevor Back, Stig Petersen, David Reiman,
+  Ellen Clancy, Michal Zielinski, Martin Steinegger, Michalina Pacholska, Tamas Berghammer,
+  Sebastian Bodenstein, David Silver, Oriol Vinyals, Andrew W. Senior, Koray Kavukcuoglu,
+  Pushmeet Kohli, and Demis Hassabis. Highly accurate protein structure prediction with
+  AlphaFold. Nature, 596(7873):583–589, August 2021. ISSN 0028-0836, 1476-4687. doi:
+  10.1038/s41586-021-03819-2.
+Joseph Katz and Allen Plotkin. Low-Speed Aerodynamics, Second Edition. Journal of Fluids
+  Engineering, 126(2):293–294, March 2004. ISSN 0098-2202, 1528-901X. doi: 10.1115/1.
+  1669432.
+Alex Krizhevsky, Ilya Sutskever, and Geoffrey E. Hinton. ImageNet classification with deep
+  convolutional neural networks. Communications of the ACM, 60(6):84–90, May 2017. ISSN
+  0001-0782, 1557-7317. doi: 10.1145/3065386.
+
+
+                                               27
+Robin B. Langtry and Florian R. Menter. Correlation-Based Transition Modeling for Unstructured
+  Parallelized Computational Fluid Dynamics Codes. AIAA Journal, 47(12):2894–2906, December
+  2009. ISSN 0001-1452, 1533-385X. doi: 10.2514/1.42362.
+Zongyi Li, Nikola Borislavov Kovachki, Chris Choy, Boyi Li, Jean Kossaifi, Shourya Prakash Otta,
+  Mohammad Amin Nabian, Maximilian Stadler, Christian Hundt, Kamyar Azizzadenesheli, and
+  Anima Anandkumar. Geometry-Informed Neural Operator for Large-Scale 3D PDEs, September
+  2023.
+Liyuan Liu, Haoming Jiang, Pengcheng He, Weizhu Chen, Xiaodong Liu, Jianfeng Gao, and Jiawei
+  Han. On the Variance of the Adaptive Learning Rate and Beyond, October 2021.
+Per-Gunnar Martinsson. Fast Direct Solvers for Elliptic PDEs. Number 96 in CBMS-NSF Regional
+  Conference Series in Applied Mathematics. Society for Industrial and Applied Mathematics,
+  Philadelphia, PA, 2020. ISBN 978-1-61197-603-8.
+Nick McGreivy and Ammar Hakim. Weak baselines and reporting biases lead to overoptimism in
+  machine learning for fluid-related partial differential equations. Nature Machine Intelligence, 6
+  (10):1256–1269, September 2024. ISSN 2522-5839. doi: 10.1038/s42256-024-00897-5.
+Florian R Menter and Alexey Matyushenko. Generalized k- ω (GEKO) two-equation turbulence
+  model. AIAA Journal, pp. 1–17, 2025.
+J. Morgado, R. Vizinho, M.A.R. Silvestre, and J.C. Páscoa. XFOIL vs CFD performance predictions
+   for high lift low Reynolds number airfoils. Aerospace Science and Technology, 52:207–214, May
+   2016. ISSN 12709638. doi: 10.1016/j.ast.2016.02.031.
+Brian Nishida. Fully Simultaneous Coupling of the Full Potential Equation and the Integral Boundary
+  Layer Equations in Three Dimensions. PhD thesis, Massachusetts Institute of Technology, 1996.
+Tobias Pfaff, Meire Fortunato, Alvaro Sanchez-Gonzalez, and Peter W. Battaglia. Learning Mesh-
+  Based Simulation with Graph Networks, June 2021.
+Louis Serrano, Lise Le Boudec, Armand Kassaï Koupaï, Thomas X. Wang, Yuan Yin, Jean-Noël
+  Vittaut, and Patrick Gallinari. Operator Learning with Neural Fields: Tackling PDEs on General
+  Geometries, November 2023.
+Peter Sharpe and R. John Hansman. NeuralFoil: An Airfoil Aerodynamics Analysis Tool Using
+  Physics-Informed Machine Learning, March 2025.
+Peter Sharpe, Rishikesh Ranade, Kaustubh Tangsali, Mohammad Amin Nabian, Ram Cherukuri,
+  and Sanjay Choudhry. Accelerating Transient CFD through Machine Learning-Based Flow
+  Initialization, June 2025.
+Tess E Smidt. Euclidean Symmetry and Equivariance in Machine Learning. September 2020.
+Nathaniel Thomas, Tess Smidt, Steven Kearnes, Lusann Yang, Li Li, Kai Kohlhoff, and Patrick Riley.
+  Tensor field networks: Rotation- and translation-equivariant neural networks for 3D point clouds,
+  May 2018.
+C. S. Wu, E. Ambler, R. W. Hayward, D. D. Hoppes, and R. P. Hudson. Experimental Test of
+  Parity Conservation in Beta Decay. Physical Review, 105(4):1413–1415, February 1957. ISSN
+  0031-899X. doi: 10.1103/PhysRev.105.1413.
+Haixu Wu, Huakun Luo, Haowen Wang, Jianmin Wang, and Mingsheng Long. Transolver: A Fast
+  Transformer Solver for PDEs on General Geometries, June 2024.
+Shun Zhang. A Non-parametric Discontinuous Galerkin Formulation of the Integral Boundary
+  Layer Equations with Strong Viscous/Inviscid Coupling. PhD thesis, Massachusetts Institute of
+  Technology, Cambridge, Massachusetts, June 2017.
+Shun Zhang. Three-Dimensional Integral Boundary Layer Method for Viscous Aerodynamic Analysis.
+  PhD thesis, Massachusetts Institute of Technology, Cambridge, Massachusetts, 2022.
+
+
+                                                28
+A PPENDIX A          D ETAILED BACKGROUND ON I NTEGRAL B OUNDARY L AYER
+                     M ETHODS
+
+For 2D aerodynamic flows without massive separation, specialized integral boundary layer (IBL)
+methods such as XFOIL and MSES by Drela (1989; 2007) provide an existence proof that dramatically
+faster and more accurate methods are possible. IBL methods decompose the flow into a boundary
+layer and an inviscid outer region, which are then coupled. The key benefit is that the inviscid outer
+flow can often be modeled as a potential flow, which is a linear, homogeneous PDE. This allows
+discretization using the enormously efficient boundary-element method (BEM), which discretizes
+only boundaries rather than the entire volume, yielding 100- to 1,000-fold reductions in both degrees
+of freedom and computational cost, as shown by Drela (2013b); Martinsson (2020).
+Remarkably, IBL methods often achieve higher accuracy than RANS CFD20 on their target problems,
+as shown by Coder & Maughmer (2014); Morgado et al. (2016); Adler et al. (2022). Because of this,
+IBL methods are the gold standard for attached 2D aerodynamic flows among industry practitioners.
+However, extending IBL to 3D remains elusive despite substantial efforts, with notable advances in
+Nishida (1996); Drela (2013a;b; 2019); Zhang (2017; 2022). Challenges include wake treatment,
+stability on non-smooth geometries, and the enormous theoretical complexity of 3D IBL equations,
+as shown in derivations by Drela (2013b).
+Nevertheless, IBL’s success in 2D demonstrates that boundary-centric architectural ideas encode
+powerful inductive biases for fluid dynamics: explicitly decomposing flow into boundary and outer
+regions, with global information transfer mediated through boundary-only integrals. The GLOBE
+architecture draws inspiration from these principles while leveraging ML’s flexibility to extend beyond
+the constraints of analytical IBL methods.
+
+
+A PPENDIX B          I LLUSTRATIONS OF K ERNEL F UNCTIONS
+
+In this appendix we visualize an example kernel function K, which aids in demonstrating some of
+the kernel’s key mathematical properties, as well as its expressive range. While the example shown
+here is in 2D for ease of visualization, all constructions and guarantees (translation/rotation/parity
+equivariance, discretization invariance, and far-field behavior) are identical in 3D; see Sections 2.2–2.3
+for descriptions on the minor architectural changes associated with this.
+Each figure shows a scalar field ϕ and a vector field u produced by K when evaluated from boundary
+face “sources” to a dense set of “target” points (Eq. 1) in physical space (R2 ). The axes in all figures
+represent the x- and y-coordinates of the target points in nondimensional spatial coordinates (i.e.,
+divided by the reference length ℓ, as discussed in Section 2.2.1). For simplicity, and to facilitate a later
+discussion on symmetry, all visualizations use kernel functions that do not include any global scalars
+or global vectors as inputs; only per-source vectors (when present) are provided. The parameters of
+the kernel function’s learned Padé-approximant MLP core are their initial pseudorandomly-generated
+values, and are the same for the kernels across all figures.
+
+
+Single source at the origin. We begin with a single source at the origin. The source carries a
+vector-valued input (e.g., the unit normal of the boundary face, or a vector-valued boundary condition),
+which participates in the invariant feature construction (Section 2.2.2) and later vector reprojection
+(Section 2.2.5). Figure 9 shows the resulting fields, with the source denoted by a black dot and
+its associated vector-valued input denoted by a black arrow. Two asymptotic behaviors are worth
+                                                                                 2
+noting (Section 2.2.4): (i) self-influence is driven to zero by the (1 − e−∥rts ∥ ) factor, avoiding overly
+compact support; and (ii) as ∥rts ∥ → ∞, the envelope enforces ∼ 1/r decay in 2D and ∼ 1/r2 in
+3D, ensuring bounded, physically plausible far-field influence and stable spatial extrapolation.
+
+
+   20
+      Even then, for RANS CFD methods to reach accuracy parity with IBL on attached aerodynamic flows with
+transitional boundary layers, RANS solvers require sophisticated turbulence models like the Re-γ SST model by
+Langtry & Menter (2009) – a critical step that is often overlooked.
+
+
+                                                     29
+                      Scalar field                                               Vector field u
+          6                                                          6
+                                                   1.72                                                       0.35
+          4                                        1.29              4
+                                                                                                              0.30
+                                                   0.86
+          2                                                          2                                        0.25
+                                                   0.43
+                                                                                                              0.20
+(rts ey)/ 0                                        0.00 (rts ey)/    0
+                                                     0.43                                                     0.15
+          2                                                          2
+                                                     0.86                                                     0.10
+          4                                          1.29            4                                        0.05
+                                                     1.72
+          6                                                          6
+              6   4    2       0       2   4   6                         6   4    2       0       2   4   6
+                           (rts ex)/                                               (rts ex)/
+
+Figure 9: Single-source kernel evaluation in 2D. The source (black dot) is located at the origin and
+carries a vector input (black arrow). The far-field envelope (Section 2.2.4) drives self-influence to
+zero and enforces inverse-distance decay.
+
+
+Equivariance under translation and rotation. If we translate and rotate all inputs (the source
+location and any associated vectors), the outputs translate and rotate exactly. This follows directly
+from using only the relative position vector rts = (xt − xs )/ℓ (Eq. 1) and invariant scalar features;
+rotational information is reintroduced solely via local reprojection (Section 2.2.5). Because no global
+vectors or scalars are present and the single source vector in Figures 9–10 is vertical, the input set is
+invariant under the reflection x 7→ −x, and parity equivariance therefore implies mirror-symmetric
+outputs. Figure 10 shows the same single-source pattern after a rigid transformation of the inputs; the
+fields are correspondingly transformed, confirming exact translation- and rotation-equivariance.
+
+                      Scalar field                                               Vector field u
+          6                                                          6
+                                                   1.719                                                      0.35
+          4                                        1.289             4
+                                                                                                              0.30
+                                                   0.859
+          2                                                          2                                        0.25
+                                                   0.430
+                                                                                                              0.20
+(rts ey)/ 0                                        0.000 (rts ey)/   0
+                                                     0.430                                                    0.15
+          2                                                          2
+                                                     0.859                                                    0.10
+          4                                          1.289           4                                        0.05
+                                                     1.719
+          6                                                          6
+              6   4    2       0       2   4   6                         6   4    2       0       2   4   6
+                        (rts ex)/                                                     (rts ex)/
+
+Figure 10: Equivariance demonstration. Rigidly translating/rotating the inputs (source point and its
+vector) rigidly translates/rotates the output fields without distortion (Sections 2.2.1 and 2.2.5).
+
+
+Breaking left-right symmetry with an additional vector. Up to now, the configuration has one
+source-associated vector. The fields are left-right symmetric because, with no global vectors or scalars
+and a vertical source vector, the inputs are invariant under left-right reflection; parity-equivariance
+then mandates symmetry. To explicitly break this invariance, we provide a second source-associated
+vector (here oriented toward the right), so the input set is no longer reflection-symmetric. The
+resulting outputs need not be mirror-symmetric, as shown in Figure 11. This behavior follows from
+the invariant feature construction together with equivariant vector reprojection; the network receives
+no absolute coordinate frame, and directionality enters only through bases derived from the input
+vectors (Section 2.2.5).
+Note, however, that the resulting fields of Figure 11 are not simply a superposition of the kernel
+functions evaluated twice with different source-associated input vectors – the two input vectors
+mutually interact in a manner that is, in general, nonlinear with respect to the input vectors.
+
+
+                                                       30
+                      Scalar field                                               Vector field u
+          6                                                          6
+                                                   1.666
+          4                                        1.249             4                                         0.4
+                                                   0.833
+          2                                                          2                                         0.3
+                                                   0.416
+(rts ey)/ 0                                        0.000 (rts ey)/   0
+                                                                                                               0.2
+                                                     0.416
+          2                                                          2
+                                                     0.833
+                                                                                                               0.1
+          4                                          1.249           4
+                                                     1.666
+          6                                                          6
+              6   4    2       0       2   4   6                         6   4     2      0       2   4   6
+                           (rts ex)/                                                  (rts ex)/
+
+Figure 11: Adding a second source-associated vector breaks left-right symmetry, yielding richer,
+directional patterns (Section 2.2.5).
+
+
+
+
+Necessary radial symmetry without vector information. Conversely, if no source-associated
+vectors are provided, there is no directional information with which to break symmetry – this is a
+direct consequence of the symmetry principle described by Curie (1894). The only geometric input is
+rts ’s magnitude, and the learned core only processes (rotationally-invariant) scalars; therefore both ϕ
+and u must be radially symmetric. Figure 12 illustrates the resulting radially-symmetric fields. Once
+again, this symmetry is a consequence of the model’s invariants rather than an explicit hand-coded
+constraint.
+
+
+
+
+                      Scalar field                                               Vector field u
+          6                                                          6                                        0.10
+                                                   1.133
+          4                                        0.850             4
+                                                                                                              0.08
+                                                   0.566
+          2                                                          2
+                                                   0.283                                                      0.06
+(rts ey)/ 0                                        0.000 (rts ey)/   0
+                                                     0.283                                                    0.04
+          2                                                          2
+                                                     0.566
+                                                     0.850                                                    0.02
+          4                                                          4
+                                                     1.133
+          6                                                          6
+              6   4    2       0       2   4   6                         6   4    2      0        2   4   6
+                        (rts ex)/                                                  (rts ex)/
+
+Figure 12: With no source-associated input vectors, the scalar and vector outputs are necessarily
+radially symmetric. Directionality cannot be inferred without directional inputs.
+
+
+
+
+Superposition of multiple sources. The final aggregation over sources (Eq. 7) linearly superim-
+poses influences weighted by per-face strengths ws and face areas as . Figure 13 shows four sources
+placed along a parametric curve, each with its own associated vector. To preserve total influence,
+each source’s effective strength is reduced (∝ 1/4), mimicking the area scaling one would obtain
+from a coarser boundary discretization.
+
+
+                                                       31
+                       Scalar field                                             Vector field u
+          6                                                         6
+                                                  1.412
+                                                                                                          0.25
+          4                                       1.059             4
+                                                  0.706                                                   0.20
+          2                                                         2
+                                                  0.353
+                                                                                                          0.15
+(rts ey)/ 0                                       0.000 (rts ey)/   0
+                                                    0.353                                                 0.10
+          2                                                         2
+                                                    0.706
+          4                                         1.059           4                                     0.05
+                                                    1.412
+          6                                                         6
+              6   4     2    0        2   4   6                         6   4    2    0       2   4   6
+                         (rts ex)/                                                (rts ex)/
+
+Figure 13: Superposition from four sources placed along a parametric curve, with per-source strengths
+reduced to preserve total influence (cf. area weighting in Eq. 7).
+
+
+Refinement and discretization invariance. Refining the parametric sampling to twenty sources
+(each again with reduced strength to maintain the same total) yields fields that closely match those
+in Figure 13. This mirrors mesh refinement in practice: as boundary faces are subdivided, areas as
+         P the weighted sum converges. In the limit of vanishing face areas,
+decrease and                                                              R the discrete contraction
+in Eq. 7, s ws as Kts , converges to the exact boundary surface integral ∂Ω w(xs ) K(xt , xs ) dAs .
+Figure 14 shows this convergence in action, empirically illustrating the discretization-invariance
+discussed in Section 2.2.6.
+
+                       Scalar field                                             Vector field u
+          6                                                         6                                     0.30
+                                                  1.428
+          4                                       1.071             4                                     0.25
+                                                  0.714
+          2                                                         2                                     0.20
+                                                  0.357
+(rts ey)/ 0                                       0.000 (rts ey)/   0                                     0.15
+                                                    0.357
+          2                                                         2                                     0.10
+                                                    0.714
+          4                                         1.071           4                                     0.05
+                                                    1.428
+          6                                                         6
+              6   4     2    0        2   4   6                         6   4    2    0       2   4   6
+                         (rts ex)/                                                (rts ex)/
+
+Figure 14: Refinement of Figure 13 to twenty sources. Despite the increased sampling density,
+the summed fields converge, demonstrating discretization-invariance under face-area weighting
+(Section 2.2.6).
+
+
+A PPENDIX C           I LLUSTRATIONS OF PADÉ -A PPROXIMANT MLP S
+
+This appendix visualizes the functional behavior of randomly-initialized Padé-approximant MLPs
+introduced in Section 2.2.3. We use the notation Padé [N/D] to denote a Padé MLP with numerator
+order N and denominator order D, mirroring mathematical convention from traditional polynomial-
+based Padé approximants.
+To illustrate the diversity of functional forms that can be learned by Padé-approximant MLPs,
+Figure 15 shows 25 random initializations of a Padé [1/3] MLP. For comparison, Figure 16 shows 25
+random initializations of a standard MLP with the same layer sizes and activations.
+While both types of MLPs satisfy the universal approximation theorem, the classes of functions
+that these networks most readily express are quite different. We suggest that the functional forms
+expressed by Padé-approximant MLPs may be better suited for representing typical Green’s functions
+
+
+                                                      32
+arising in physics-based PDEs.
+
+
+                                              Padé approximant MLP
+            4
+            2
+Output 0
+            2
+            4
+
+                100                50                  0                   50                 100
+                                                     Input
+Figure 15: 25 random initializations of a R1 → R1 Padé [1/3] MLP with layer sizes [1, 64, 64, 1]
+and SiLU activations on each subnetwork, with each network represented as a different line.
+
+
+       15                                            Standard MLP
+       10
+        5
+Output 0
+        5
+       10
+       15
+                100                 50                  0                  50                 100
+                                                      Input
+Figure 16: 25 random initializations of a R1 → R1 standard MLP with layer sizes [1, 64, 64, 1] and
+SiLU activations, with each network represented as a different line.
+
+
+A PPENDIX D           F ORMAL P ROOFS OF GLOBE’ S M ATHEMATICAL P ROPERTIES
+We now formally establish that GLOBE satisfies the necessary attributes from Section 1.4.
+
+Translation-equivariance. All positional information enters the kernel through the relative position
+rts = (xt −xs )/ℓ (Eq. 1). Under translation x 7→ x+c, we have rts 7→ (xt +c)−(xs +c)/ℓ = rts ,
+unchanged. All subsequent operations depend only on rts and other translation-invariant quantities
+(normals, boundary data), so translating all inputs translates outputs identically.
+
+Rotation-equivariance. The kernel processes only rotationally-invariant scalars: magnitudes
+smoothlog(∥vi ∥) and pairwise angles via Legendre polynomials. Physical vectors are reconstructed
+by reprojecting onto local bases derived from input vectors (Section 2.2.5). Under rotation R, each
+input vector transforms as vi 7→ Rvi , but magnitudes and angles remain invariant. The basis vectors
+
+
+                                                33
+                                               P            P                  P          
+transform as bj 7→ Rbj , and the reprojection j cj bj 7→ j cj (Rbj ) = R          j cj b j   yields exact
+equivariance. The final calibration (linear for vectors) preserves this property.
+
+Parity-equivariance. The architecture respects parity when tangential/vortex basis vectors eθ , eϕ
+are disabled (these are pseudovectors), as is the default. With only true vectors in the reprojection
+basis (radial, axis, dipole directions), all bases transform correctly under reflection, and the Legendre
+polynomial features are parity-even. Full parity preservation including tangential bases requires
+tracking vector vs. pseudovector semantics (Section 2.2.5); this is left as future work.
+
+                                                         P each source by its face area as . As the
+Discretization-invariance. The aggregation in Eq. 7 weights
+boundary mesh is Rrefined with as → 0, the discrete sum s ws as Kts converges to the continuous
+boundary integral ∂Ω w(xs )K(xt , xs ) dAs . The kernel itself is mesh-independent (parameterized
+by continuous positions), so predictions converge to a well-defined limit as discretization is refined.
+
+Units-invariance. All positional features are nondimensionalized by reference lengths ℓi . All
+input scalars and vectors must be dimensionless, a requirement that should be enforced during data
+preprocessing. Our implementation for the case study in Section 3 demonstrates one approach to
+ensuring this property. Kernel operations preserve dimensionlessness throughout, and physical units
+are recovered only during post-processing. Therefore, the entire forward pass operates in a unitless
+regime, guaranteeing units-invariance.
+
+
+A PPENDIX E           H YPERPARAMETERS AND T RAINING D ETAILS
+
+Implementation note: TensorDict data structure. The reference implementation uses the
+T ENSOR D ICT data structure developed by Bou et al. (2023) to pass data between components.
+GLOBE differs from most other ML architectures for PDEs in that it explicitly tracks semantic
+information (i.e., which quantities are physical scalars and which are physical vectors) throughout the
+entire architecture - this is required to achieve rotational equivariance. Inputs and outputs of various
+components are therefore commonly dictionaries of scalars and vectors, rather than the single large
+concatenated tensor typical in other model architectures. This tends to result in many code patterns
+where an operation is performed for each tensor leaf of a dictionary, causing a speed penalty due to
+GPU kernel launch overhead. Fortunately, T ENSOR D ICT allows such operations to be fused into a
+single launch, yielding significant speedups21 .
+
+Training protocol. During training, we employ dynamic subsampling of prediction points: on
+each iteration, a limited number of prediction points are randomly chosen to be the query points
+for training (default: 4,096). The loss is a modified22 per-field Huber objective23 with scales
+  ∆U/|U∞ | : 1, Cp : 1, Cpt : 1, ln(1 + νt /ν) : 5, CF,shear : 10−2 , applied after masking invalid
+
+ground-truth entries. Optimization uses a combined optimizer: Muon by Jordan et al. (2024)
+for matrix-shaped parameters and RAdamW by Liu et al. (2021) for all other parameters, with
+ReduceLROnPlateau scheduling. We train in bfloat16 with automatic mixed precision24 and use
+torch.compile in the "max-autotune" mode (i.e., including CUDA Graphs). Distributed
+data-parallel training is used when multiple GPUs are available, and parallelization experiments show
+near-linear scaling of train-time effective throughput with increasing accelerator count, even at the
+largest-benchmarked configuration with 128 GB200 GPUs. Validation follows the official split per
+regime and uses the official prediction set (i.e., without any subsampling or masking) for both the
+accuracy metrics and qualitative visualizations in Section 4.
+
+   21
+      In our benchmarks on GB200-based systems with the case study described in Section 3, we observed
+a speedup of 1.7× on training epochs from using a T ENSOR D ICT-based GLOBE implementation vs. an
+implementation using Python dictionaries. torch.compile was used in both cases.
+   22
+      Naïve use of a Huber objective on individual components of a vector field breaks rotational invariance of
+the loss function; we correct for this.
+   23
+      Chosen to minimize the influence of any remaining nonphysical artifacts in the training data.
+   24
+      In the bfloat16 case, note that the aggregation step within kernel functions benefits from localized up-casting
+to float32 to mitigate catastrophic cancellation.
+
+
+                                                         34
+Table 8 lists all hyperparameters used in the main AirFRANS experiments. These values were
+selected through systematic but limited exploration: we compared 2-layer (128 neurons) versus
+3-layer (64 neurons) architectures, swept learning rate over {10−2 , 10−3 , 10−4 }, and explored three
+weight decay values. No extensive hyperparameter tuning was performed; the reported configuration
+represents a reasonable baseline rather than an exhaustively optimized setup, suggesting that further
+improvements may be possible with more thorough search. In total, these hyperparameters lead to a
+model with 117,282 trainable parameters.
+
+                      Table 8: Hyperparameters for AirFRANS experiments.
+
+      Hyperparameter                                    Value
+      Architecture
+        Number of communication hyperlayers (H)         2
+        Hidden layer sizes                              [64, 64, 64]
+        Number of latent scalars per hyperlayer         6
+        Number of latent vectors per hyperlayer         3
+        Number of spherical harmonics (nharmonics )     1
+        Padé numerator order (N )                       2
+        Padé denominator order (D)                      2
+        Reference lengths                               {cref , δF S }
+      Training
+        Query points per iteration                      4,096
+        Boundary face downsampling ratio                1.0 (No downsampling)
+        Learning rate (base)                            10−3
+        Weight decay                                    10−4
+        Scheduler                                       ReduceLROnPlateau
+           Patience                                     400 epochs
+           Factor                                       0.5
+           Min LR                                       6.25 × 10−5
+        Optimizer                                       Muon (matrices) + RAdamW (others)
+        Precision                                       bfloat16 (with AMP)
+        Huber loss delta                                1.0
+
+
+
+A PPENDIX F        C OMPUTATIONAL E FFICIENCY
+
+Beyond accuracy, computational efficiency is critical for practical deployment. We analyze the
+scaling characteristics of GLOBE during both training and inference.
+
+Training efficiency. Training was performed using distributed data parallelism, with linear
+throughput scaling observed when tested up to the largest-benchmarked configuration of 128 NVIDIA
+GB200 GPUs. This efficient scaling is enabled by the dense compute intensity of the O(n2src )
+boundary-to-boundary interactions, which dominates communication overhead.
+With a training configuration of 40 GB200 GPUs, using the Full split dataset described in Section
+3 and the hyperparameters listed in Table 8, we record an epoch loop time of 6.83 seconds. With
+800 training samples and 40 GPUs, this corresponds to a training speed of 0.341 GPU-seconds per
+training sample.
+Validation samples evaluated for metrics computation are substantially faster, as this consists solely
+of a forward pass with no need to save primals. Using the same methodology as above, we record a
+validation speed of 0.083 GPU-seconds per validation sample.
+
+Inference efficiency. Inference performance is substantially lower than validation performance, as
+the number of query points is equal to the number of vertices in the volume mesh (approximately
+180 × 103 points), rather than allowing downsampling. Because of this, we record an inference speed
+of 2.326 seconds per inference sample on a single GB200 GPU.
+
+
+                                                 35
+Inference memory footprint can be driven down to very low levels by chunking over query points.
+With a chunk size of 128 points, peak memory consumption is held to approximately 700 MB,
+allowing deployment on consumer-grade hardware.
+
+A PPENDIX G         P HYSICALLY N ONDIMENSIONALIZED P ERFORMANCE M ETRICS
+As discussed in Section 4.1, the primary results in Tables 3–4 use z-score-based normalization to
+enable direct comparison with prior work on AirFRANS. However, this approach obscures physical
+meaning. Here we report performance using proper physical nondimensionalization, where velocity
+fields are normalized by the freestream velocity magnitude |U∞ |, pressure by the dynamic pressure
+1        2
+2 ρ|U∞ | (yielding the pressure coefficient Cp ), and turbulent viscosity by the kinematic viscosity ν.
+Table 9 presents mean squared error (MSE) and mean absolute error (MAE) on both the Full
+and Scarce validation sets using these physically meaningful nondimensional quantities. Unlike
+Tables 3–4, values are reported without the ×102 multiplier (which was used in the main tables only
+for consistency with AirFRANS reporting style). We report MAE as the primary metric: it provides
+direct physical interpretability in the base units of each field. For example, an MAE of 2.1 × 10−3
+on Cp indicates that typical errors are ±0.0021 in pressure coefficient – immediately meaningful to
+practitioners. In contrast, MSE values require taking the square root for physical interpretation, and
+overweight outliers in ways that may not align with engineering significance.
+
+Table 9: GLOBE model performance on the AirFRANS validation set, reported using physical
+nondimensionalization. All fields are nondimensionalized by physical characteristic scales (|U∞ |
+for velocity, 12 ρ|U∞ |2 for pressure). These metrics provide physically interpretable performance
+assessment, in contrast to the z-score-based metrics in Tables 3–4.
+
+                                          Full Dataset               Scarce Dataset
+            Field                     MSE           MAE           MSE            MAE
+            Nondimensional velocity
+            Ux /|U∞ |          9.53 × 10−6       1.57 × 10−3   4.53 × 10−5    2.38 × 10−3
+            Uy /|U∞ |          5.45 × 10−6       1.14 × 10−3   4.62 × 10−5    2.11 × 10−3
+            Pressure coefficient
+            Cp                     3.49 × 10−5   2.07 × 10−3   1.30 × 10−3    5.02 × 10−3
+            Cp (surface only)      1.06 × 10−4   3.71 × 10−3   6.04 × 10−3    1.09 × 10−2
+            Cpt                    2.59 × 10−5   1.73 × 10−3   5.19 × 10−4    3.41 × 10−3
+            Cpt (surface only)     1.54 × 10−4   5.08 × 10−3   8.32 × 10−3    1.47 × 10−2
+            Turbulent viscosity ratio
+            ln(1 + νt /ν)         1.97 × 10−3    8.30 × 10−3   6.24 × 10−3    1.40 × 10−2
+            Skin friction coefficient (surface only)
+            CF,shear,x             6.88 × 10−9 3.38 × 10−5     5.82 × 10−8    6.92 × 10−5
+            CF,shear,y             1.38 × 10−8 3.94 × 10−5     1.40 × 10−7    9.10 × 10−5
+
+
+Interpretation. These physically nondimensionalized metrics reveal GLOBE’s strong performance
+in aerodynamically meaningful terms. On the Full split, velocity MAE is ∼ 1.4 × 10−3 (0.14% of
+freestream), pressure coefficient MAE is 2.1 × 10−3 in the volume and 3.7 × 10−3 on the surface,
+and skin friction MAE is ∼ 3.5 × 10−5 – all well within engineering accuracy requirements. The
+Scarce split shows graceful degradation with roughly 2–3× higher MAE errors, maintaining practical
+utility despite 4× less training data.
+In contrast, the z-score-based metrics in Tables 3–4 obscure this physical interpretation: without
+knowing dataset statistics, one cannot infer whether a given error magnitude corresponds to 0.1%, 1%,
+or 10% physical error. This demonstrates why physical nondimensionalization should be standard
+practice for ML surrogates in engineering domains, and is indeed longstanding practice in the fluid
+dynamics literature.
+
+
+
+
+                                                   36
+

@@ -1,0 +1,718 @@
+                                               ShardTensor: Domain Parallelism for Scientific
+                                                            Machine Learning
+                                                  Corey Adams                  Peter Harrington               Akshay Subramaniam               Mohammad Shoaib Abbas
+                                                     NVIDIA                         NVIDIA                            NVIDIA                            NVIDIA
+                                              Santa Clara, CA, USA          Santa Clara, CA, USA               Santa Clara, CA, USA              Santa Clara, CA, USA
+                                               coreya@nvidia.com           pharrington@nvidia.com            asubramaniam@nvidia.com           mohammadshoa@nvidia.com
+
+                                                           Jaideep Pathak                         Mike Pritchard                          Sanjay Choudhry
+                                                              NVIDIA                                  NVIDIA                                  NVIDIA
+                                                       Santa Clara, CA, USA                   Santa Clara, CA, USA                     Santa Clara, CA, USA
+arXiv:2605.11111v1 [cs.DC] 11 May 2026
+
+
+
+
+                                                        jpathak@nvidia.com                    mpritchard@nvidia.com                    schoudhry@nvidia.com
+
+
+
+                                            Abstract—Scientific Machine Learning (SciML) faces unique         breakthrough results, from the first ever images of a black
+                                         challenges for extreme-resolution data, with mitigations that        hole [16] to achieving atomic-resolution protein structures in
+                                         often fail to scale or degrade the accuracy of trained mod-          cryo-electron microscopy [17], and mapping human cerebral
+                                         els. While some specialized methods have achieved remarkable
+                                         results in training models or performing inference on massive        cortexes at petavoxel scales [18]. In multi-decadal Earth
+                                         spatial datasets with bespoke techniques, there is no generalized    System projection, climate-critical cloud-forming turbulent
+                                         framework for parallelization over input data below batch size       processes require tens of meters in space and seconds in
+                                         one per device. In this work we introduce ShardTensor:               time to satisfyingly resolve, which remains far beyond the
+                                         a novel paradigm of domain parallelism that enables flexible         computational capacity of even the most ambitious global
+                                         scaling of input data to arbitrary sizes. By decoupling the
+                                         spatial dimensionality of input data from hardware constraints,      simulation frameworks [19]–[22].
+                                         ShardTensor enables scientific machine learning workloads               From a scientific perspective, high resolution data is an as-
+                                         to reach new levels of high fidelity training and inference. We      piration. But from a computational perspective, high resolution
+                                         demonstrate both strong and weak scaling of workloads during         data is a challenge; and from a machine learning perspective,
+                                         training and inference, showing improved latency with strong         where GPU memory resources can quickly become a bottle-
+                                         scaling and demonstrating the capacity to process higher data
+                                         sizes with weak scaling. Additionally, we demonstrate multiple       neck, high resolution data is a major challenge.
+                                         dimensions of parallelization, removing barriers to SciML on            Further, scientific data suffer from a computational curse
+                                         extreme-scale inputs.                                                of dimensionality: doubling the length of text for a language
+                                            Index Terms—HPC for ML; Parallel and distributed learning         model will increase the number of input tokens by approx-
+                                         algorithms; Model, pipeline, and data parallelism                    imately double; doubling the resolution of N dimensional
+                                                                                                              data will increase the size of scientific data by 2N . Scientific
+                                                               I. I NTRODUCTION                               machine learning models rapidly encounter challenges in GPU
+                                            Scientific machine learning applications have become a            memory management, especially for model training.
+                                         vehicle for accelerated simulation, scientific discovery, and           Building machine learning tools and techniques that can
+                                         industrial design. Machine learning has found applications in        train and run inference on models at the native resolution of
+                                         an incredible breadth of domains: healthcare and medicine            scientific data is a challenge the High Performance Computing
+                                         [1], [2], industrial design [3]–[5], fluid dynamics [6] and          community is well-positioned to address. Our contribution in
+                                         aerodynamics [7], weather and climate forecasting [8], [9],          this paper is a framework for high-resolution SciML that pro-
+                                         fundamental sciences [10]–[12], and many, many more [13]–            vides the simplicity and accessibility expected of PyTorch and
+                                         [15]. It is not an overstatement to say that machine learning        its ecosystem while enabling this native-resolution paradigm.
+                                         methods are fundamentally changing scientific research, all             In this paper, we will describe ShardTensor, an abstraction
+                                         the way from early development to end user and industrial            and extension to a PyTorch tensor that allows domain
+                                         applications.                                                        parallelism, defined here as parallelism across devices for
+                                            Scientific data has several attributes that make it especially    the input data, below even batch size one. As an example,
+                                         challenging to use for both training and inference, leading to       an input batch of 3D Tensors of shape [B, C, H, W, D]
+                                         reduced adoption or degraded applications of these scientific        (B=batch, C=channels, H=height, W=width, D=depth) would
+                                         ML models. First, the data in scientific models is typically         be partitioned across the B axis in a standard “data parallel”
+                                         of high spatial resolution, with scientists working with a           distribution. In domain parallelism, we extend this to partition
+                                         “more is better” philosophy - and rightly so. Higher resolution      further: when the limit of B=1 is reached, and each GPU has a
+                                         imaging across a breadth of scientific domains often leads to        single image, further subdivision is possible along the spatial
+dimensions. The name “domain parallelism” is taken from                  additional information. Typically, in 32-bit precision,
+the analogous techniques in classical solvers in Computational           this is a multiplicative factor of the storage required for
+Fluid Dynamics, numerical methods and other fields, in which             the model parameters: a factor of two or three is typical.
+this type of domain decomposition has existed for decades             4) Intermediate Activations hold the cached primals of
+[23]–[25].                                                               a layer to enable reverse mode auto differentiation. For
+   In this paper, we proceed as follows. First, we will provide          each layer, depending on the specifics of the layer, one
+a simplified overview of the origins of GPU memory usage                 or more input or output tensors are saved during the
+for scientific machine learning, especially as it relates to high        forward pass. During the backward pass, these tensors
+resolution data. The goal here is to motivate why domain                 are reused to propagate the gradients backward through
+parallelism is an avenue worth pursuing. Next, we will provide           the network, according to the chain rule. As we will
+a short overview of some common techniques for reducing                  show below, for high resolution input data and modest
+memory usage in scientific machine learning, followed by a               parameter counts, intermediate activations are the
+description of related works focused on parallelism techniques           dominant GPU memory consumer during training.
+in machine learning.
+   Finally, we will introduce ShardTensor, starting with the        A. An Example of Memory Usage
+design principles and goals, differentiation from DTensor             As a concrete example, let us consider the basic building
+[26], and expected use cases. We highlight some existing            block of many machine learning models, the Linear layer:
+applications, performance results, and expected areas where it
+might be of use to users. ShardTensor is already available                                   z = Wx + B                          (1)
+for use, open source, through the NVIDIA PhysicsNeMo
+framework [27].                                                        Where x ∈ RNin is the input vector, and z ∈ RNout is the
+                                                                    output vector. W is the weight matrix of shape [Nout , Nin ] and
+     II. W HAT C AUSES H IGH GPU M EMORY U SAGE ?                   B is a learnable bias vector. The total number of parameters in
+   To motivate our discussion of domain parallelism tech-           the layer is therefore Np = Nin ×Nout +Nout . The total mem-
+niques, we begin with an overview of the dominant origins           ory usage by the layer’s parameters is simply αNp , measured
+of GPU memory usage in most scientific machine learning             in bytes, which depends on the floating point precision used.
+workloads. Of course, with the diversity of scientific work-        For float32, α is 4; for half precision, α is 2. Additionally,
+loads, it is impossible to provide an exhaustive and prescrip-      during training, an optimizer such as AdamW [30] must track
+tive description of every source of memory usage; unique            the gradients (an additional copy of αNp ) as well as both the
+workloads that require second order optimizers or non-reverse-      momentum and variance vectors for the gradients.
+mode auto-differentiation techniques will not necessarily fit          Now let’s consider, from the other perspective, the impact of
+this categorization.                                                the intermediate activation on GPU memory allocations. For
+   For a standard machine learning workload, we categorize          a Linear layer, the gradient formulas are
+the dominant memory drivers into four broad categories, two
+of which are specific to training only. For simplicity we                              dL   dL dz   dL
+only discuss 32-bit numerical precision in this section, but                              =       =    W                         (2)
+                                                                                       dx   dz dx   dz
+a discussion of reduced precision is found in Section II-B.                           dL    dL dz    dL
+                                                                                          =        =    x                        (3)
+   1) Model Parameters (weights, biases, encodings, etc.)                             dW    dz dW    dz
+      contribute substantial GPU memory usage in Large                                 dL   dL dz    X dL
+                                                                                          =       =                              (4)
+      Language Models (LLMs) but typically only modest                                 dB   dz dB        dz
+                                                                                                         batch
+      usage in scientific models - though that is a trend that
+      is changing. Every parameter in 32-bit precision will            Where L is the loss, and dL          dL        dL
+                                                                                                      dx , dW , and dB represent
+      require 4 bytes of GPU storage, meaning 1 million pa-         the gradients with respect to the inputs, weights, and bias
+      rameters requires approximately 1 MB of GPU storage.          respectively. In this case, computing the gradients with respect
+      Model parameters require storage in both training and         to the weights requires x, so the forward pass will save the
+      inference.                                                    inputs x for the backwards pass - holding these intermediate
+   2) Active Data, or the transient working memory for a            activations in memory until the backward pass has used them,
+      single operation - including input/output buffers and any     and they can be released. The size of this allocation is directly
+      temporary workspace the kernel requires - occupies GPU        proportional to the input tensor shape, and it is the total
+      memory only for the duration of the currently executing       number of elements that matters. For high resolution scientific
+      computation. Naturally, this is necessary during both         data, and especially high dimensional data in 3D or higher
+      training and inference.                                       dimensions where the total number of elements scales to the
+   3) Optimizer States represent the gradients, moments,            power of the dimension D, memory allocations can grow
+      or other related tensors required to apply updates like       exceedingly quickly.
+      Adam [28], RMSProp [29], and other extensions of                 Further, since memory allocation by intermediate activation
+      stochastic gradient descent that store gradients and other    accumulates per layer, the overall depth of a model in number
+ Spatial          Model    Features   Nparams   Weights   Activations     • Spatial Downsampling is perhaps the most obvious
+ Dimension        Layers                         (MB)       (MB)
+                                                                            and simplest path towards reducing the memory cost of
+ (256,)            20       1024   21.0M         80.1          20           intermediate activations in training a scientific ML model.
+ (256,)            20       8192   1.3B         5120.6        160
+ (256,256)         20       1024   21.0M         80.1         5120          Many problems, especially neural operators [31]–[33],
+ (256,256)         20       8192   1.3B         5120.6      40,960          [37], [38] are trained very successfully at reduced spatial
+ (256,256, 256)    20       1024   21.0M         80.1      1,310,720        sampling, though some evidence [39], [40] indicates
+ (256,256, 256)    20       8192   1.3B         5120.6    10,485,760
+                             TABLE I
+                                                                            higher spatial resolution during training can in fact lead to
+ S UMMARY OF THE MEMORY USAGE OF A SEQUENCE OF LINEAR LAYERS                better convergence of operator models. Other problems,
+    ON VARIOUS INPUT DATA SHAPES , AS A FUNCTION OF NUMBER OF               especially imaging problems, inherently suffer lack of
+   LAYERS , SPATIAL SHAPE ( INCLUDING DIMENSION ), AND NUMBER OF
+  FEATURES . F OR SIMPLICITY, EACH LAYER HAS THE SAME NUMBER OF
+                                                                            information when downsampling and can not be trivially
+FEATURES FOR INPUT AND OUTPUT. A LL CALCULATIONS ASSUME BATCH               downsampled without more sophisticated algorithmic im-
+                                SIZE 1.                                     provements.
+                                                                          • Model Reduction can also lead to significant reduction
+                                                                            in memory usage for high resolution scientific models,
+of layers (and type of layer) will impact the total amount of               though not because of the reduction in parameter storage;
+data that must be saved for a backward pass. In other words,                the reduction in saved activations by reducing the number
+for high resolution data, deeper models often require more                  of layers, or number of channels per layer, can be
+memory in training primarily due to the increased activations               significant. Unfortunately, this can often come at the cost
+saved, and not because of the increased number of parameters                of reduced application accuracy.
+- that is a secondary effect.                                             • Activation Checkpointing and CPU Offloading are the
+
+   Typical LLM models use Nin and Nout in the range                         most promising, flexible, and versatile techniques avail-
+of O(10,000) or higher, while frequently scientific operator-               able for resolving memory constraints due to intermediate
+learning AI models like FNOs [31], Transolver [32], DoMINO                  activations. Recalling our Linear layer’s backwards
+[33], and others work at lower dimensional latent spaces below              example, since the input x is not needed until the model
+1,000. Table I summarizes the impacts of parameters, opti-                  reaches this layer in the backward pass, x can be safely
+mizer states, and intermediate activations on memory usage,                 moved to CPU memory or further-away storage until
+as the number of features or number of input points vary.                   needed. Even more extreme, several consecutive layers
+   As seen in Table I, despite being a contrived example, higher            could drop all but the first x activations and recompute
+resolution data quickly outpaces the memory usage of model                  them on-the-fly in the backward pass from the single
+weights - especially in higher dimensions. It is exactly this               saved tensor. Both methods incur extra computational
+explosion in GPU memory usages that we seek to parallelize                  bottlenecks: host-to-device transfers, extra GPU com-
+over with domain parallelism and ShardTensor.                               putations, or both. However, both methods can reduce
+                                                                            GPU memory usage on high resolution data with no
+B. Reducing GPU Memory Consumption for High Resolution                      detrimental impacts on data resolution or model accuracy.
+Data                                                                        Better still, these optimizations are only needed during
+   For scientific data, training even modest parameter-count                training, and inference can proceed fully optimized.
+models at high resolution can become computationally im-                  • Sparsity or Lower Dimensional Representations can
+practical due to memory constraints, leading to a number                    enable alternative methods such as SparseConvNets [41],
+of workarounds. Naturally, the users of scientific machine                  Minkowski Networks [42], FigConvNet [43] and other
+learning are interested in, first and foremost, achieving their             methods. In many cases, especially as spatial dimension-
+scientific mission with the least computational difficulties. A             ality rises, taking advantage of inherent structure and
+number of strategies can be employed to enable high resolution              sparsity of the data structures of scientific data is crucial
+training and inference. Parallelization strategies are discussed            to achieving both accurate results and high performance
+instead in Section III, on related works.                                   for machine learning.
+   • Reduced Precision is a common and effective method
+      that is, practically speaking, the first line of attack at                            III. R ELATED W ORK
+      reducing both activation and model weight memory us-                 Other methods and techniques of parallelization for machine
+      age. Both bfloat16 and float16 training [34] are                  learning have seen success over the past decade, including
+      stable and convergent for most models, and LLMs have              some recent developments upon which this work is built. Here
+      pioneered many techniques for further lower-precision             we summarize the most impactful and relevant works to this
+      optimizations [35], [36]. In scientific machine learning,         research.
+      there can sometimes be challenges with sufficient dy-
+      namic range in model outputs for surrogate simulations,           A. Within PyTorch
+      and computationally reduced precision offers only modest             The work described in this paper is built on top of the
+      memory savings - typically a factor of 2x when using half         PyTorch framework, so we first describe the related work
+      precision.                                                        in the PyTorch ecosystem. The earliest forms of parallelism
+in machine learning were data parallel learning, first via           including Ring Attention [54], Makani [55], and techniques
+horovod [44], and now most commonly through PyTorch’s                in Transolver++ [39]. While all excellent demonstrations of
+DDP [45]. Data parallel learning, as the name implies, allows        the power of domain parallelism at reaching higher spatial or
+parallelizing over the batch dimension to arbitrary scale (pro-      input resolution, they are not easily extendable nor as broadly
+vided the computational resource allows it, and the dataset size     applicable to new models as ShardTensor, as described
+is large enough). With data parallel learning came significant       below. Many of the operations and algorithms in those works
+research into strong-scaling machine learning algorithms, with       have been adopted and implemented in ShardTensor as
+focus on optimizers [46], [47] to accelerate convergence and         optimized dispatch paths for certain layers.
+set record training times for challenging problems [48].
+   As model parameter counts grew in the early 2020s, the era        B. Outside of PyTorch
+of Large Language Models led to new developments in model               The largest deep learning frameworks outside of PyTorch,
+parallelization. Some of the earliest billion parameter models       such as TensorFlow [56], JAX [57], and PaddlePaddle [58]
+via the Megatron [49] framework from NVIDIA led to break-            all support some form of data parallel training. TensorFlow
+throughs in convergence of language models. Subsequent work          also has native support for a distributed tensor, very similar to
+from DeepSpeed [50] made multi-billion parameter model               PyTorch’s DTensor.
+training possible. As of publication of this manuscript, simi-          JAX uniquely has a very interesting and composable
+lar technology as DeepSpeed is available through PyTorch’s           shard_map decorator to build single-program, multi-data
+DTensor and FullyShardedDataParallel abstrac-                        programs from arbitrary tensor shapes. In many ways,
+tions [26], [51].                                                    shard_map is something of a Swiss-army-knife of parallel
+   DTensor is a distributed Tensor abstraction that enables          programming for scientific computing, and domain parallelism
+parallelization of a generic tensor over a set of GPUs, targeting    could be implemented for many operations in JAX. However,
+model parallel training. It uses placement specifications such       we are restricting to a single popular framework (PyTorch)
+as Shard and Replicate to describe how a tensor is                   and technique here. We encourage interested readers to learn
+distributed across a logical device mesh, and automatically          more [57].
+inserts the necessary collective communications (e.g., all-
+reduce, all-gather) when operating on distributed tensors.                                IV. S HARD T ENSOR
+   At first glance, DTensor itself might possibly be used for
+domain parallelism on the input data, but it is not possible.           We have, to this point, motivated the challenges facing
+Baked into DTensor is an assumption on static distribution           scientific machine learning when it comes to managing high
+shapes: because DTensor is designed to represent weights,            resolution data and memory management. The goal, then, is
+not inputs or outputs, it is not expected to change shapes           to build a usable and generic framework that enables paral-
+dynamically. As a concrete example, consider a convolution           lelization along dimensions that, to date, have not generically
+operation: an evenly distributed input tensor, when processed        been parallelizable: the high resolution data dimensions. We
+with a convolution that changes the global shape, will produce       emphasize a performance limitation of this design from the
+output chunks that are no longer evenly distributed – violating      start: it is almost always more performant to parallelize over
+DTensor’s assumption. Further, simplifying assumptions can           the batch dimension, if possible. Domain parallelization should
+be made about the distributed memory layout of DTensor               be employed to train models when batch size 1 training is not
+that can not be made about distributed input and output              possible.
+tensors to a machine learning layer. However, the sophisticated         We seek to build a framework to enable generic, simple, and
+machinery of DTensor is sufficient to provide the bulk of the        performant domain parallelism, and a number of design deci-
+operations needed to build ShardTensor, as will be seen              sions emerge clearly from the discussion above and successes
+below. We extend where necessary and interoperate smoothly           of other paradigms.
+where we can.                                                           The most flexible framework for domain parallelism must
+   Additionally, an alternative paradigm of parallelism known        be imperative rather than static. That is, it must dispatch
+as Pipeline Parallelism [52], [53] is useful in certain scenarios.   collectives on-demand: the framework must be able to work
+While not necessarily a computationally efficient technique in       within the PyTorch paradigm of not necessarily knowing what
+terms of scaling without careful tuning, pipeline parallelism        operation will come next, and therefore every single layer must
+can offer memory efficiency and has significantly lower overall      be computable in a domain parallel way. Further, since domain
+networking requirements than alternatives such as data par-          parallelism will often require communication between devices
+allel training. For inference, and especially with well tuned        at any particular layer, an intimate relationship between the
+pipelines, pipeline parallelism can be a compelling option. For      collective devices, current GPU operation, and data-under-
+the high resolution challenges we seek to address in this paper,     operation must be maintained. The natural choice is to utilize
+it is not necessarily a universally suitable option, and we will     PyTorch’s dispatch methods for torch.Tensor extensions,
+not discuss it further here.                                         and to extend their distributed tensor class DTensor.
+   Finally, a number of bespoke parallelization efforts have            At its core, ShardTensor is an extension to PyTorch’s
+been made that should be considered domain parallelism,              DTensor with a few critical extensions necessary for
+                                TABLE II                                       kernels, layers, or models, through both a high-level functional
+   C OMPARISON OF DT E N S O R AND S H A R D T E N S O R , FEATURES AND        interface and a low-level dispatch interface.
+ EXPECTED USE CASE . S H A R D T E N S O R IS AN EXTENSION OF DT E N S O R ,
+                   DESIGNED FOR DOMAIN PARALLELISM                                Finally, since performance with PyTorch is already excellent
+                                                                               in most cases, we focus performance for domain parallelism
+                     DTensor                      ShardTensor                  where it matters most: when the input data is extremely large.
+Primary use case     Model      parallelism       Domain parallelism (in-      B. Implementation and Performance
+                     (weights)                    put data)
+Tensor metadata      Global shape, mesh,          Global shape, mesh,A key consideration of ShardTensor is flexibility in user
+                     placement                    placement,      space: distributed operations must be flexibly dispatched by
+                                                                   sharding
+                                                  shapes          PyTorch depending on user code, and not based on any pre-
+ Chunk distribu-   Even (torch.chunk)             Arbitrary per-rank sizes
+ tion
+                                                                  compiled computational graphs or models. To enable this,
+ Shape             Static (model weights)  Dynamic         (data- we follow closely the philosophy of DTensor in upstream
+ assumptions                               dependent)             PyTorch, though with several user-facing entry points for
+ User extensibil-  __torch_dispatch__ __torch_dispatch__, extensibility deliberately designed for better interoperability
+ ity                                       __torch_function__, with custom user operations.
+                                           and @custom_op
+                                                                     1) PyTorch Dispatch: PyTorch uses a dispatch mechanism
+                                                                  [59] to route operations from Python to the correct device
+                                                                  and kernel, at run time, dynamically launching kernels onto
+domain parallelism. As background, a distributed tensor com- devices like GPUs or dispatching memory transfers from
+bines three pieces of information: global shape information host to device, or device collectives. The torch.Tensor
+for the tensor, a description of the devices the tensor resides interface allows extensions to PyTorch Tensor objects to
+on (known as a Mesh) and a description of how the tensor implement custom dispatch mechanisms: Python objects
+has been sharded across the devices. A Mesh can be multi- inheriting from torch.Tensor will first pass through
+dimensional, and a tensor can be sharded across more than __torch_function__ and __torch_dispatch__
+one dimension as well.                                            Python functions for torch “function” and “aten” level
+    DTensor, working with statically-shaped model weights, operations, respectively. In the standard use case, the dispatch
+assumes that tensors are always distributed according to of these operations to a device like the GPU is handled by
+torch.chunk syntax across a dimension of the Mesh. Since PyTorch’s C++-based dispatcher for optimal performance.
+the input and output shapes of a function are not static, in DTensor implements a custom __torch_dispatch__
+general, through any given operation, we can not make a to override this layer, and ShardTensor extends this. We
+similar assumption in ShardTensor – as illustrated by the specifically allow users to interface with the dispatcher at
+convolution example above.                                        three locations. At the lowest level, users can implement
+    Therefore a fourth component of information is essential logic to parallelize aten operations, the low-level PyTorch
+to describe a ShardTensor but not a DTensor: “sharding operations. Most DTensor operations are implemented at this
+shapes”, making each tensor aware of the local chunk shape level.
+of each tensor along its sharded mesh axis. This information         At a higher level, ShardTensor also allows users to
+also enables arbitrary chunking of unstructured or non-uniform override operations at the __torch_function__ level,
+data, such as point clouds and meshes.                            enabling differentiable overrides of PyTorch functions as well
+    Both DTensor and ShardTensor support sharding over as custom named functions through PyTorch’s @custom_op
+an arbitrary number of GPU mesh dimensions, however, it interface. In fact, by defining such a custom operation, a user
+should not be expected (for either tensor extension) that all is capable of inserting parallelism into their application at
+operations support an arbitrary amount of shardings.              whichever depth of complexity they prefer.
+                                                                     Within PhysicsNeMo, where ShardTensor is implemented,
+A. User Facing Considerations                                     many common operations for domain parallelism are imple-
+    First, and most importantly, with ShardTensor we seek mented. Many operations, such as matrix multiplications and
+to provide - as much as reasonably possible - a non-invasive elementwise operations, use a fallback path via DTensor
+style of domain parallelism in the style of DDP and FSDP. We in upstream PyTorch. Outputs from the fallback path are
+expect users to, in general, not apply bespoke patches to layers promoted to ShardTensor before being returned to the user.
+or models to enable parallelisms; we instead expect users to         The dispatch path and operations can also be seen in
+want to apply a thin wrapper to their model inputs that will Figure 1. We note that, like DTensor, this python-based
+enable a set of under-the-hood dispatch paths, in turn enabling dispatch mechanism carries some additional overhead and for
+layer-by-layer domain parallelism.                                small operations the CPU launch latency can be significant.
+    Second, we recognize that models, frameworks, and opera- However, it should be specifically noted that small operations
+tions evolve, and the pace of evolution has never been more are not the regime that ShardTensor has been designed
+rapid. To this end, ShardTensor is inherently extensible. for: we are targeting the highest resolution data and large,
+Users can extend both PyTorch operations, as well as custom compute- and memory-bound operations. Further, ongoing
+Layer 1: Python-level
+                                                                                              Operation on ShardTensor                                                                             Algorithm 1 ShardTensor Application Programming Model
+                                                          __torch_function__                                                                                                                        1: Initialize PyTorch Distributed Environment with a 1- or
+                                                                                                                                                                                                       2-D GPU mesh.
+                                                                                                                                                                                                    2: Load PyTorch model and wrap with FSDP along one
+                Handler → return             hit
+         register_function_handler()
+                                                               _function_registry
+                                                                                                                          Layer 2: aten-level
+
+
+                                                                         miss
+                                                                                                                                    __torch_dispatch__
+                                                                                                                                                                                                       dimension of the GPU mesh.
+            Handler → return           hit
+                                                                                                                                                                                                    3: Load data and promote to ShardTensor via collectives
+  register_named_function_handler()
+                                                       _named_function_registry
+
+                                                                                                                                     _dispatch_registry
+                                                                                                                                                               hit          Handler → return
+                                                                                                                                                                     register_dispatch_handler()
+                                                                                                                                                                                                       along the perpendicular dimension of the mesh, if using
+                                                                         miss
+
+                                                                                                                                                miss
+                                                                                                                                                                                                       a 2-D mesh.
+                                                     DTensor.__torch_function__
+                                                                                                                                     Convert args to DTensor
+                                                                                                                                                                                                    4: Proceed with standard PyTorch syntax as usual.
+                                                         Promote results (idempotent)
+                                                                                                                           DTensor._op_dispatcher.dispatch()
+
+
+
+
+                                                                                                                               Promote DTensor → ShardTensor
+                                                          Result (ShardTensor)
+
+                                                                                                                                                                                                     1) Ring Attention: As a first step in benchmarking
+                                             User-extensible             Built-in / DTensor            Result promotion
+                                                                                                                                                                                                   ShardTensor to understand the scale out performance,
+                                 Fig. 1. Dispatch architecture of ShardTensor.
+                                                                                                                                                                                                   we will look at the performance of the standard attention
+                                                                                                                                                                                                   mechanism [60]. The computational complexity of attention
+                                                                                                                                                                                                   has been the subject of much research [61], [62] and here we
+work to enable torch.compile for static compute graphs                                                                                                                                             implement the algorithm “Ring Attention”, which naturally
+will significantly mitigate CPU overheads from the dispatch                                                                                                                                        enables domain parallelism [54]. Ring attention computes
+mechanism.                                                                                                                                                                                         scaled dot product attention locally with Ki , Qi , Vi , using the
+   It should be emphasized that often, in the “Handler” compo-                                                                                                                                     optimized flash-attention backend dispatched by PyTorch, and
+nents of Figure 1, collective operations must be dispatched. As                                                                                                                                    then passes Ki and Vi around the domain in a ring to complete
+an example, a convolution must fetch the adjacent pixels from                                                                                                                                      the attention computation. Computation of the current attention
+neighboring devices for numerical consistency, sometimes                                                                                                                                           block overlaps with message passing of the next K, V tensors,
+referred to as a “halo” operation. Alternatively, a normalization                                                                                                                                  and for numerical stability accumulation of the softmax is
+layer must aggregate statistics across all ranks to produce                                                                                                                                        performed in log space.
+global normalizations.
+
+                                 V. B ENCHMARKS AND A PPLICATIONS
+   To validate the framework, we first test performance on
+single layers and models with synthetic data. All benchmarks
+and applications are open source and available for repro-
+duction, in the PhysicsNeMo package. All benchmarks and
+applications were run on Nvidia Blackwell GPUs, installed in
+an NV72 system, except the StormScope application which
+used an H100 Cluster instead. Performance benchmarks were
+run multiple times and the mean latencies are shown.
+
+A. Performance Benchmarks
+   The ShardTensor dispatch model prioritizes flexibility,
+user friendliness, and performance focused on the usage model
+it has been designed for: large operations on large data. It
+is a known limitation that the dispatch and communication
+overhead of ShardTensor on small operations can offset
+any possible parallelization gains. However, it must be em-
+phasized that small data operations can almost always be
+parallelized, if necessary, in a more efficient way than via
+domain decomposition.
+   In the following sections, we will highlight several bench-
+marks and applications that we have used to show the per-
+formance and benefits of ShardTensor and domain par-                                                                                                                                               Fig. 2. Ring attention with ShardTensor: each device computes full global
+                                                                                                                                                                                                   attention by computing blockwise attention on Q, K, V , while passing K
+allelism. Performance benchmarks are designed to be repro-                                                                                                                                         and V around the GPU ring, overlapping computation with communication.
+ducible, and applications are also meant to be reproducible but                                                                                                                                    Algorithm first published in [54].
+require extra steps of data access and preparation. In all cases,
+the application programming model follows the same steps:                                                                                                                                            As seen in Figure 2, the ring attention layer performance
+is poor on many GPUs compared to a single GPU for very                          Figure 3 shows the latency of the ViT model in 2D and
+small sequence sizes - as expected. After all, there is nearly               3D for training and inference, as the data size is increased,
+no benefit to parallelizing such small domains. However, at                  for a variety of run sizes. All experiments were performed on
+very large sequence sizes, the scaling becomes nearly linear                 NVIDIA GB200 GPUs. Each set of bars at fixed resolution
+with GPU count, in both inference and train mode.                            in Figure 3 represents strong scaling of the same problem via
+   2) Vision Transformer: As a more complicated perfor-                      ShardTensor. At small resolutions, where the image size
+mance benchmark, we next turn our attention to a Vision                      is not a computational challenge, the strong scaling efficiency
+Transformer model, as popularized in [63]. We use a synthetic                is poor: the model is slower in training at 10242 resolution.
+data source to perform computational benchmarking and build                  However, at larger sizes, the efficiency improves: 20482 is 5x
+the model with either 2D or 3D data, using a convolutional                   faster at training with 8GPUs than a single GPU, and 15x
+tokenizer and 16 layers of standard attention, with approx-                  faster at inference at 40962 resolution on 16 GPUs. In 3D, the
+imately 115 million parameters total. The model, though it                   memory benefits are even more stark: with 16 GPUs, we can
+is using synthetic data, undergoes a synthetic training loop                 train on over 1 billion input points.
+with the AdamW [30] optimizer and FSDP parallelization                          The benefits of ShardTensor are seen clearly in the
+over the data axis. Since FSDP enables both Data and Model                   memory behavior of the model training. As discussed in
+parallelization (over the same axis of GPUs), and Shard Tensor               Section II, most of the memory usage when training on
+enables domain parallelization (over a perpendicular set of                  high resolution data will be from intermediate activations.
+GPUs), this application simulates 2D or 3D parallelism in both               Indeed, the observed memory usage for 2D data is fit very
+training and inference.                                                      well by a quadratic function of the spatial resolution, as
+                                                                             shown in Figure 4, confirming that intermediate activations
+                                                                             dominate. For 3D data, the memory growth follows a cubic
+                                                                             relationship as expected. The memory savings achieved by
+                                                                             strong scaling the training with ShardTensor aligns well
+                                                                             with expectations, and even extremely high resolution 3D
+                                                                             data is manageable with ShardTensor on standard GPU
+                                                                             hardware.
+
+
+
+
+                                                                             Fig. 4. GPU memory usage during ViT training as a function of spatial
+                                                                             resolution for 2D data. Quadratic fits confirm that intermediate activations
+                                                                             dominate memory consumption. Strong scaling with ShardTensor reduces
+                                                                             per-device memory proportionally.
+
+
+                                                                             B. Applications
+                                                                                To demonstrate the numerical stability and accuracy of
+                                                                             ShardTensor, we showcase two applications from indus-
+                                                                             trial use cases that have high-resolution data requirements.
+                                                                                1) Transolver: Transolver [32] is a transformer-like archi-
+                                                                             tecture that implements the PhysicsAttention layer to learn
+                                                                             physical-state approximations to the attention mechanism,
+                                                                             enabling a low rank approximation to standard attention that
+                                                                             performs well on physical systems. Transolver++ [39] demon-
+                                                                             strated a parallelization strategy that showcased techniques to
+Fig. 3. Latency of the Vision Transformer model for inference on 2D data
+(top), training on 2D data (middle) and training on 3D data (bottom) as a
+                                                                             scale to high resolution input data using methods that are,
+function of spatial resolution, for varying numbers of GPUs. Each group of   in effect, domain parallelization. Interestingly, Transolver and
+bars at fixed resolution represents strong scaling via ShardTensor.          ShardTensor are both implemented in the PhysicsNeMo
+framework. The algorithm described for parallelization in [39]                 preprocessing pipeline, from the data loading all the way to
+is precisely the path ShardTensor takes to parallelize both                    model ingestion, is also parallelized via ShardTensor. This
+Transolver and Transolver++, when automatically dispatching                    enables the entire end-to-end application to scale efficiently,
+collective operations.                                                         not just the model training.
+   For this experiment, we train Transolver on the DrivaerML                      2) StormScope: Convective storms are among the most
+automotive aerodynamics [64] dataset for 200 epochs, with                      impactful weather phenomena, frequently producing heavy
+a minibatch size of 8, and a per-gpu resolution of 200,000                     precipitation, strong winds, and hail. Individual thunderstorm
+points. We use a Transolver configuration with 8 layers, a                     cells have a spatial extent from a few kilometers to a few tens
+hidden dimension of 256, MLP ratio of 2, 512 “slices” in the                   of kilometers. In order to resolve individual storms, a weather
+PhysicsAttention layer, and predict the pressure, velocity, and                forecasting model needs to have sufficient spatial resolution.
+turbulent velocity properties of the volumetric fields. For the                Additionally, convective storms involve interactions across
+experiments, we increase the domain size by a factor of two                    many different length scales and are affected by the large-
+per experiment: from 1, to 2, to 4, to 8, for a total of 1.2                   scale environment such as fronts, which can have a spatial
+million points in the domain.                                                  extent of several hundred kilometers. Thus, storm-scale models
+   Figure 5 shows the training and validation performance of                   represent processes spanning scales from a few kilometers to
+Transolver, at a fixed minibatch size of 8, as resolution in-                  hundreds or thousands of kilometers [65]. In practice, this
+creases with domain size. We see the training is stable over all               means that the spatial resolution of the model needs to be on
+resolutions, and the final values for pressure and velocity are                the order of a few kilometers and the domain size needs to be
+competitive with the original Transolver publication [32]. We                  on the order of thousands of kilometers. Numerical Weather
+note that newer models have exceeded the accuracy predictions                  Prediction (NWP) models address this requirement through
+of these models [37], [38] and some are in progress for domain                 varying approaches, including nested approaches that couple
+parallelization; the goal of this study was to demonstrate                     coarse-resolution models to fine-resolution regional models
+stability of high resolution training and inference, as compared               (e.g., RAP/HRRR [66]). Beyond weather prediction, for cli-
+to standard data-parallel training. Domain-parallel training is                mate projection, achieving km-scale resolution globally for
+both stable and complementary to data parallel training: the                   multi-decadal ensemble prediction remains a grand scientific
+400k, 800k, and 1.2M point resolution runs were all 2D                         challenge fundamentally limited by the compute demands of
+parallelism runs (data parallel + domain parallel).                            spatial resolution [67].
+                                                                                  Numerical models with the ability to resolve convection
+                                                                               explicitly are known as convection-allowing models (CAMs).
+                                                                               These models are operationally used in several countries and
+                                                                               often run on rapidly updating forecast cycles. Numerical
+                                                                               models have some limitations. They have a long spin-up
+                                                                               time, which can be on the order of one to several hours or
+                                                                               longer, overlapping with the predictability window of convec-
+                                                                               tive events, which can range from minutes to a few hours.
+                                                                               They also have limitations related to convective-scale data
+                                                                               assimilation which constrains how well the initial condition
+                                                                               fed to the forecast model represents the true state of the
+                                                                               atmosphere at the initial time.
+                                                                                  StormScope [68] is a data-driven AI/ML model that is
+                                                                               designed to address some of the limitations of numerical
+                                                                               storm-scale models. It operates on a continental-sized domain
+                                                                               spanning the contiguous US at 3 km resolution. The model
+                                                                               ingests and directly forecasts rapidly updating geostationary
+                                                                               satellite imagery and ground-based radar observations, en-
+                                                                               abling initialization as frequently as every 2–4 minutes with
+                                                                               no spin-up time. The high resolution allows the model to
+                                                                               resolve the small scale features of convective storms, while
+                                                                               the large domain extent preserves the synoptic-scale context
+                                                                               that governs storm evolution and structures.
+Fig. 5. L2 error for pressure (top) and velocity (bottom) predictions of the      In practice the model processes tensors that have the dimen-
+Transolver model as domain resolution increases. Domain-parallel training      sion (T × C × H × W ) representing geostationary satellite and
+with ShardTensor maintains accuracy competitive with the original single-
+GPU Transolver across all resolutions. All runs are compatible with standard   radar observations, where T represents the stacked timesteps
+uncertainty at 200 epochs.                                                     processed by the model and C represents the channels con-
+                                                                               sisting of different observations at varying sensor wavelengths
+   One notable component of this application is that the entire                obtained from the satellite and slices of radar reflectivity
+Fig. 6. GOES-16 visible channel composite with MRMS composite reflec-
+tivity (dBZ, color shading) overlaid for a forecast initialized at 2024-04-26
+21:00 UTC. Left column shows the model forecast; right column shows the           Fig. 7. Validation loss as a function of training step for StormScope,
+corresponding satellite and radar observations (verification). Top row: +10 min   comparing single-GPU 6km resolution runs and ShardTensor-distributed
+lead time; bottom row: +120 min lead time. State boundaries and coastlines        training runs at 3km resolution.
+are shown in white. The GOES-16 composite is derived from the 0.47, 0.64,
+and 0.86 µm Advanced Baseline Imager channels.
+                                                                                  distributing the spatial dimensions across multiple devices,
+                                                                                  ShardTensor enables StormScope to train at the resolution
+composited from a network of ground-based radars across                           required to resolve individual convective storms – a capability
+the US. The model processes 8 channels from geostationary                         that was previously inaccessible without sacrificing domain
+satellite observations and two channels from composite radar                      extent or spatial fidelity.
+mosaics representing composite and base radar reflectivity.
+The model takes in six previous timesteps [t−50, t] min                                          VI. I MPACT AND C ONCLUSIONS
+with a temporal resolution of ∆t = 10 min as input and                               Domain parallelism, as realized through ShardTensor,
+produces a single timestep at t+10 min as output. The model                       addresses a bottleneck in scientific machine learning: the in-
+then performs autoregressive inference out to 2 hours. The                        ability to train and perform inference on data at the resolution
+(H, W ) dimensions for the model representing the Continental                     scientists actually need. The results presented in this work
+United States (CONUS) are (1024, 1792) for an effective grid                      demonstrate several concrete impacts and open the door to
+spacing of 3km. The resolution of 3km combined with the                           future developments. The framework to deploy these methods
+large domain size spanning ∼5000km allows the model to                            is already in production, used in scientific workloads, and
+learn dynamics of storm evolution across a large range of                         rigorously tested. Across our benchmarks and applications,
+interacting spatial length scales.                                                we observe near-linear strong scaling for ring attention at
+   For this experiment, the model is trained on about 300,000                     large sequence lengths, up to 15× inference speedups for a
+input-output pairs of data from the GOES-16 satellite obser-                      Vision Transformer on 16 GPUs, numerically stable training
+vations. The model is trained with a denoising diffusion loss                     of Transolver at over one million mesh points, and continental-
+following Ref. [69]. The model architecture is based on the                       scale storm forecasting at 3 km resolution that would not fit
+Diffusion Transformer [70] with the all-to-all self-attention                     on a single device.
+layers replaced by neighborhood attention (NATTEN [71])
+using a neighborhood size of 49. The model has 195 million                        A. Unblocking Resolution-Limited Workloads
+parameters. We train the model with 32 GPUs by splitting                             The most immediate impact of ShardTensor is the
+them into 16 data-parallel groups of 2 GPUs each. Within each                     removal of single-GPU memory as a hard ceiling on input
+data-parallel group, we split the activations across 2 GPUs                       resolution. By distributing these activations across a mesh of
+(domain-parallel group) using ShardTensor. The peak memory                        GPUs, ShardTensor converts what was previously an im-
+usage of the model is estimated to be 114GB, beyond the                           possibility into a tractable computation. This directly enables
+80GB limit of a single H100 GPU.                                                  scientific domains such as volumetric medical imaging, high-
+   Figure 6 shows an example forecast of visible channels                         fidelity computational fluid dynamics, and climate modeling to
+from GOES-16 and radar reflectivity using Stormscope with                         leverage machine learning at resolutions that were previously
+the corresponding verification (ground truth).                                    accessible only to classical numerical solvers.
+   As shown in Figure 7, StormScope training at 3 km reso-
+lution converges stably and tracks the loss trajectory of the                     B. Composability with Existing Parallelism
+single-GPU 6 km baseline. At 3 km resolution, the CONUS-                            A key impact of the design philosophy behind
+scale input tensors of shape (1024 × 1792) per channel                            ShardTensor is its composability with existing parallelism
+exceed the memory capacity of a single GPU during training,                       paradigms. As demonstrated in the experiments, domain
+making domain parallelism via ShardTensor essential. By                           parallelism operates on an orthogonal mesh axis to data
+and model parallelism, enabling 2D and potentially higher-                            VII. ACKNOWLEDGEMENTS
+dimensional parallelization strategies. This composability          On the use of AI Assistants: This paper was written, first
+means that scaling scientific ML workloads is no longer a         and foremost, by humans. AI assistants were used for assisting
+choice between more data, larger models, or higher resolution.    with latex compilation errors, bibliography errors, spelling and
+                                                                  grammar checking, and small miscellaneous tasks. Figure 1
+C. Lowering the Barrier to Adoption                               was generated in first draft form via AI. The AI tool used was
+                                                                  Claude from Anthropic [72].
+   By providing a non-invasive programming model, domain
+parallelism becomes accessible to practitioners who are not                                     R EFERENCES
+distributed systems experts. The extensibility of the dispatch     [1] A. Esteva et al., “Dermatologist-level classification of skin cancer with
+interface further ensures that new layers, custom kernels, and         deep neural networks,” Nature, vol. 542, no. 7639, pp. 115–118, 2017.
+evolving model architectures can be accommodated without               [Online]. Available: https://doi.org/10.1038/nature21056
+                                                                   [2] E. J. Topol, “High-performance medicine: the convergence of human
+redesigning the parallelism strategy from scratch. This stands         and artificial intelligence,” Nature Medicine, vol. 25, no. 1, pp. 44–56,
+in contrast to prior bespoke efforts, where parallelization was        2019. [Online]. Available: https://doi.org/10.1038/s41591-018-0300-7
+tightly coupled to a specific model architecture.                  [3] A. Merchant et al., “Scaling deep learning for materials discovery,”
+                                                                       Nature, vol. 624, no. 7990, pp. 80–85, 2023. [Online]. Available:
+                                                                       https://doi.org/10.1038/s41586-023-06735-9
+                                                                   [4] N. J. Szymanski et al., “An autonomous laboratory for the accelerated
+D. Limitations                                                         synthesis of inorganic materials,” Nature, vol. 624, no. 7990, pp. 86–91,
+                                                                       2023. [Online]. Available: https://doi.org/10.1038/s41586-023-06734-w
+   The imperative, layer-by-layer dispatch model that gives        [5] M. G. Kapteyn, J. V. R. Pretorius, and K. E. Willcox, “A probabilistic
+ShardTensor its flexibility also imposes overhead. Each                graphical model foundation for enabling predictive digital twins at
+operation incurs Python-level dispatch latency and, when halo          scale,” Nature Computational Science, vol. 1, no. 5, pp. 337–347, 2021.
+                                                                       [Online]. Available: https://doi.org/10.1038/s43588-021-00069-0
+exchanges or other collectives are required, inter-device com-     [6] D. Kochkov et al., “Machine learning–accelerated computational
+munication that cannot be amortized across consecutive layers.         fluid dynamics,” Proceedings of the National Academy of Sciences,
+For small operations or low-resolution data, this overhead             vol. 118, no. 21, p. e2101784118, 2021. [Online]. Available:
+                                                                       https://www.pnas.org/doi/abs/10.1073/pnas.2101784118
+can offset parallelization gains; domain parallelism is most       [7] S. L. Brunton, B. R. Noack, and P. Koumoutsakos, “Machine
+beneficial when operations are large and compute- or memory-           learning for fluid mechanics,” Annual Review of Fluid
+bound. Scaling efficiency also depends on interconnect band-           Mechanics, vol. 52, no. Volume 52, 2020, pp. 477–508, 2020.
+                                                                       [Online]. Available: https://www.annualreviews.org/content/journals/10.
+width: hardware with slower interconnects than those bench-            1146/annurev-fluid-010719-060214
+marked here will see correspondingly degraded communica-           [8] R. Lam et al., “Learning skillful medium-range global weather
+tion performance. Not all PyTorch operations have domain-              forecasting,” Science, vol. 382, no. 6677, pp. 1416–1421, 2023. [Online].
+                                                                       Available: https://www.science.org/doi/abs/10.1126/science.adi2336
+parallel dispatch paths implemented today; unsupported oper-       [9] K. Bi et al., “Accurate medium-range global weather forecasting with
+ations fall back to DTensor semantics or require user-written          3d neural networks,” Nature, vol. 619, no. 7970, pp. 533–538, 2023.
+extensions. Finally, torch.compile integration is not yet              [Online]. Available: https://doi.org/10.1038/s41586-023-06185-3
+                                                                  [10] J. Degrave et al., “Magnetic control of tokamak plasmas through deep
+complete, meaning that static-graph optimizations such as              reinforcement learning,” Nature, vol. 602, no. 7897, pp. 414–419, 2022.
+kernel fusion and communication/computation overlap across             [Online]. Available: https://doi.org/10.1038/s41586-021-04301-9
+layers are not yet available. More broadly, a framework de-       [11] G. Carleo et al., “Machine learning and the physical sciences,” Rev.
+                                                                       Mod. Phys., vol. 91, p. 045002, Dec 2019. [Online]. Available:
+signed for generality across model architectures and scientific        https://link.aps.org/doi/10.1103/RevModPhys.91.045002
+domains cannot simultaneously be optimal for every individual     [12] A. Karthikeyan and U. D. Priyakumar, “Artificial intelligence:
+workload.                                                              machine learning for chemical sciences,” Journal of Chemical
+                                                                       Sciences, vol. 134, no. 1, p. 2, 2021. [Online]. Available: https:
+                                                                       //doi.org/10.1007/s12039-021-01995-2
+                                                                  [13] J. Jumper et al., “Highly accurate protein structure prediction with
+E. Future Directions                                                   alphafold,” Nature, vol. 596, no. 7873, pp. 583–589, 2021. [Online].
+                                                                       Available: https://doi.org/10.1038/s41586-021-03819-2
+   Several avenues remain for further development. First,         [14] H. Wang et al., “Deep learning enables cross-modality super-
+tighter integration with activation checkpointing and CPU of-          resolution in fluorescence microscopy,” Nature Methods, vol. 16,
+floading could compound the memory savings of domain par-              no. 1, pp. 103–110, 2019. [Online]. Available: https://doi.org/10.1038/
+                                                                       s41592-018-0239-0
+allelism, enabling even deeper models at extreme resolutions.     [15] G. E. Karniadakis et al., “Physics-informed machine learning,” Nature
+Second, compiler-level optimizations, such as those enabled            Reviews Physics, vol. 3, no. 6, pp. 422–440, 2021. [Online]. Available:
+by torch.compile, present an opportunity to reduce the                 https://doi.org/10.1038/s42254-021-00314-5
+                                                                  [16] T. E. H. T. Collaboration et al., “First m87 event horizon telescope
+dispatch overhead observed at small problem sizes, broadening          results. i. the shadow of the supermassive black hole,” The Astrophysical
+the regime in which domain parallelism is beneficial. These            Journal Letters, vol. 875, no. 1, p. L1, apr 2019. [Online]. Available:
+optimizations are already underway, though not complete as             https://doi.org/10.3847/2041-8213/ab0ec7
+                                                                  [17] K. M. Yip et al., “Atomic-resolution protein structure determination by
+of this manuscript. It is our hope, as we enter an era of              cryo-em,” Nature, vol. 587, no. 7832, pp. 157–161, 2020. [Online].
+scientific foundation models, that high domain parallelism will        Available: https://doi.org/10.1038/s41586-020-2833-4
+become as commonplace in scientific machine learning as data      [18] A. Shapson-Coe et al., “A petavoxel fragment of human cerebral cortex
+                                                                       reconstructed at nanoscale resolution,” Science, vol. 384, no. 6696, p.
+parallelism is today. It is our goal that ShardTensor is a             eadk4858, 2024. [Online]. Available: https://www.science.org/doi/abs/
+step in that direction.                                                10.1126/science.adk4858
+[19] M. Satoh et al., “Global cloud-resolving models,” Current Climate            [42] C. Choy, J. Gwak, and S. Savarese, “4d spatio-temporal convnets:
+     Change Reports, vol. 5, no. 3, pp. 172–184, 2019. [Online]. Available:            Minkowski convolutional neural networks,” 2019. [Online]. Available:
+     https://doi.org/10.1007/s40641-019-00131-0                                        https://arxiv.org/abs/1904.08755
+[20] C. R. Terai et al., “The impact of resolving subkilometer                    [43] C. Choy et al., “Factorized implicit global convolution for automotive
+     processes on aerosol-cloud interactions of low-level clouds in                    computational fluid dynamics prediction,” 2025. [Online]. Available:
+     global model simulations,” Journal of Advances in Modeling                        https://arxiv.org/abs/2502.04317
+     Earth Systems, vol. 12, no. 11, p. e2020MS002274, 2020,                      [44] A. Sergeev and M. D. Balso, “Horovod: fast and easy distributed deep
+     e2020MS002274 10.1029/2020MS002274. [Online]. Available: https:                   learning in TensorFlow,” arXiv preprint arXiv:1802.05799, 2018.
+     //agupubs.onlinelibrary.wiley.com/doi/abs/10.1029/2020MS002274               [45] S. Li et al., “PyTorch Distributed: Experiences on Accelerating Data
+[21] L. Peng et al., “Improving stratocumulus cloud amounts in a 200-m                 Parallel Training,” arXiv e-prints, p. arXiv:2006.15704, Jun. 2020.
+     resolution multi-scale modeling framework through tuning of its interior     [46] Y. You, I. Gitman, and B. Ginsburg, “Large Batch Training of Convo-
+     physics,” Journal of Advances in Modeling Earth Systems, vol. 16,                 lutional Networks,” arXiv e-prints, p. arXiv:1708.03888, Aug. 2017.
+     no. 3, p. e2023MS003632, 2024, e2023MS003632 2023MS003632.                   [47] Y. You et al., “Large Batch Optimization for Deep Learning: Training
+     [Online]. Available: https://agupubs.onlinelibrary.wiley.com/doi/abs/10.          BERT in 76 minutes,” arXiv e-prints, p. arXiv:1904.00962, Apr. 2019.
+     1029/2023MS003632                                                            [48] Y. You et al., “ImageNet Training in Minutes,” arXiv e-prints, p.
+[22] H. Segura et al., “nextgems: entering the era of kilometer-                       arXiv:1709.05011, Sep. 2017.
+     scale earth system modeling,” EGUsphere, vol. 2025, pp. 1–39,                [49] M. Shoeybi et al., “Megatron-lm: Training multi-billion parameter
+     2025. [Online]. Available: https://egusphere.copernicus.org/preprints/            language models using model parallelism,” 2020. [Online]. Available:
+     2025/egusphere-2025-509/                                                          https://arxiv.org/abs/1909.08053
+[23] G. Karypis and V. Kumar, “A fast and high quality multilevel                 [50] R. Y. Aminabadi et al., “Deepspeed inference: Enabling efficient
+     scheme for partitioning irregular graphs,” SIAM Journal on Scientific             inference of transformer models at unprecedented scale,” 2022.
+     Computing, vol. 20, no. 1, pp. 359–392, 1998. [Online]. Available:                [Online]. Available: https://arxiv.org/abs/2207.00032
+     https://doi.org/10.1137/S1064827595287997
+                                                                                  [51] PyTorch Contributors, “PyTorch DTensor: Distributed tensor primitives
+[24] C. Farhat and F.-X. Roux, “A method of finite element tearing
+                                                                                       for SPMD distributed training,” https://github.com/pytorch/pytorch/
+     and interconnecting and its parallel solution algorithm,” International
+                                                                                       issues/88838, 2022, RFC for PyTorch DistributedTensor. Accessed:
+     Journal for Numerical Methods in Engineering, vol. 32, no. 6, pp.
+                                                                                       2026. [Online]. Available: https://github.com/pytorch/pytorch/issues/
+     1205–1227, 1991. [Online]. Available: https://onlinelibrary.wiley.com/
+                                                                                       88838
+     doi/abs/10.1002/nme.1620320604
+                                                                                  [52] Y. Huang et al., “Gpipe: Efficient training of giant neural networks
+[25] A. Toselli and O. Widlund, Domain Decomposition Methods – Algo-
+                                                                                       using pipeline parallelism,” 2019. [Online]. Available: https://arxiv.org/
+     rithms and Theory, ser. Springer Series in Computational Mathematics.
+                                                                                       abs/1811.06965
+     Springer Science & Business Media, 2005, vol. 34.
+                                                                                  [53] D. Narayanan et al., “Pipedream: generalized pipeline parallelism
+[26] Y. Zhao et al., “Pytorch fsdp: Experiences on scaling fully sharded data
+                                                                                       for dnn training,” in Proceedings of the 27th ACM Symposium
+     parallel,” 2023. [Online]. Available: https://arxiv.org/abs/2304.11277
+                                                                                       on Operating Systems Principles, ser. SOSP ’19. New York, NY,
+[27] PhysicsNeMo Contributors, “NVIDIA PhysicsNeMo: An open-
+                                                                                       USA: Association for Computing Machinery, 2019, p. 1–15. [Online].
+     source framework for physics-based deep learning in science and
+                                                                                       Available: https://doi.org/10.1145/3341301.3359646
+     engineering,” https://github.com/NVIDIA/physicsnemo, 2023, accessed:
+     2026. [Online]. Available: https://github.com/NVIDIA/physicsnemo             [54] H. Liu, M. Zaharia, and P. Abbeel, “Ring attention with blockwise
+[28] D. P. Kingma and J. Ba, “Adam: A method for stochastic optimization,”             transformers for near-infinite context,” arXiv preprint arXiv:2310.01889,
+     2017. [Online]. Available: https://arxiv.org/abs/1412.6980                        2023.
+[29] T. Tieleman and G. Hinton, “Lecture 6.5-rmsprop: Divide the gradient         [55] B. Bonev et al., “Fourcastnet 3: A geometric approach to probabilistic
+     by a running average of its recent magnitude,” COURSERA: Neural                   machine-learning weather forecasting at scale,” 2025. [Online].
+     networks for machine learning, vol. 4, no. 2, pp. 26–31, 2012.                    Available: https://arxiv.org/abs/2507.12144
+[30] I. Loshchilov and F. Hutter, “Decoupled weight decay regularization,”        [56] M. Abadi et al., “TensorFlow: Large-scale machine learning on
+     2019. [Online]. Available: https://arxiv.org/abs/1711.05101                       heterogeneous systems,” 2015, software available from tensorflow.org.
+[31] Z. Li et al., “Fourier Neural Operator for Parametric Partial Differential        [Online]. Available: https://www.tensorflow.org/
+     Equations,” arXiv e-prints, p. arXiv:2010.08895, Oct. 2020.                  [57] J. Bradbury et al., “JAX: composable transformations of Python+NumPy
+[32] H. Wu et al., “Transolver: A Fast Transformer Solver for PDEs on                  programs,” http://github.com/jax-ml/jax, 2018, version 0.3.13.
+     General Geometries,” arXiv e-prints, p. arXiv:2402.02366, Feb. 2024.         [58] Y. Ma et al., “Paddlepaddle: An open-source deep learning platform
+[33] R. Ranade et al., “DoMINO: A Decomposable Multi-scale Iterative                   from industrial practice,” Frontiers of Data and Domputing, vol. 1,
+     Neural Operator for Modeling Large Scale Engineering Simulations,”                no. 1, p. 105, 2019. [Online]. Available: http://www.jfdc.cnic.cn/EN/
+     arXiv e-prints, p. arXiv:2501.13350, Jan. 2025.                                   abstract/article 2.shtml
+[34] D. Kalamkar et al., “A study of bfloat16 for deep learning training,”        [59] J. Ansel et al., “Pytorch 2: Faster machine learning through
+     2019. [Online]. Available: https://arxiv.org/abs/1905.12322                       dynamic python bytecode transformation and graph compilation,”
+[35] P. Micikevicius et al., “Fp8 formats for deep learning,” 2022. [Online].          in Proceedings of the 29th ACM International Conference on
+     Available: https://arxiv.org/abs/2209.05433                                       Architectural Support for Programming Languages and Operating
+[36] X. Sun et al., “Ultra-low precision 4-bit training of deep neural net-            Systems, Volume 2, ser. ASPLOS ’24. New York, NY, USA:
+     works,” in Proceedings of the 34th International Conference on Neural             Association for Computing Machinery, 2024, p. 929–947. [Online].
+     Information Processing Systems, ser. NIPS ’20. Red Hook, NY, USA:                 Available: https://doi.org/10.1145/3620665.3640366
+     Curran Associates Inc., 2020.                                                [60] A. Vaswani et al., “Attention Is All You Need,” arXiv e-prints, p.
+[37] C. Adams et al., “GeoTransolver: Learning Physics on Irregular Do-                arXiv:1706.03762, Jun. 2017.
+     mains Using Multi-scale Geometry Aware Physics Attention Trans-              [61] T. Dao et al., “FlashAttention: Fast and memory-efficient exact attention
+     former,” arXiv e-prints, p. arXiv:2512.20399, Dec. 2025.                          with IO-awareness,” in Advances in Neural Information Processing
+[38] B. Alkin et al., “AB-UPT: Scaling Neural CFD Surrogates for High-                 Systems (NeurIPS), 2022.
+     Fidelity Automotive Aerodynamics Simulations via Anchored-Branched           [62] T. Dao, “FlashAttention-2: Faster attention with better parallelism and
+     Universal Physics Transformers,” arXiv e-prints, p. arXiv:2502.09692,             work partitioning,” in International Conference on Learning Represen-
+     Feb. 2025.                                                                        tations (ICLR), 2024.
+[39] H. Luo et al., “Transolver++: An Accurate Neural Solver for PDEs on          [63] A. Dosovitskiy et al., “An Image is Worth 16x16 Words: Transformers
+     Million-Scale Geometries,” arXiv e-prints, p. arXiv:2502.02414, Feb.              for Image Recognition at Scale,” arXiv e-prints, p. arXiv:2010.11929,
+     2025.                                                                             Oct. 2020.
+[40] H. Zhou et al., “Transolver-3: Scaling Up Transformer Solvers to             [64] N. Ashton et al., “DrivAerML: High-Fidelity Computational Fluid
+     Industrial-Scale Geometries,” arXiv e-prints, p. arXiv:2602.04940, Feb.           Dynamics Dataset for Road-Car External Aerodynamics,” arXiv e-prints,
+     2026.                                                                             p. arXiv:2408.11969, Aug. 2024.
+[41] B. Graham and L. van der Maaten, “Submanifold sparse convolutional           [65] P. Markowski and Y. Richardson, Mesoscale meteorology in midlati-
+     networks,” arXiv preprint arXiv:1706.01307, 2017.                                 tudes. John Wiley & Sons, 2011.
+[66] D. C. Dowell et al., “The high-resolution rapid refresh (hrrr): An hourly
+     updating convection-allowing forecast model. part i: Motivation and
+     system description,” Weather and Forecasting, vol. 37, no. 8, pp. 1371–
+     1395, 2022.
+[67] H. Segura et al., “nextgems: entering the era of kilometer-
+     scale earth system modeling,” EGUsphere, vol. 2025, pp. 1–39,
+     2025. [Online]. Available: https://egusphere.copernicus.org/preprints/
+     2025/egusphere-2025-509/
+[68] J. Pathak et al., “Learning accurate storm-scale evolution from observa-
+     tions,” arXiv preprint arXiv:2601.17268, 2026.
+[69] T. Karras et al., “Elucidating the design space of diffusion-based
+     generative models,” Advances in neural information processing systems,
+     vol. 35, pp. 26 565–26 577, 2022.
+[70] W. Peebles and S. Xie, “Scalable diffusion models with transformers,”
+     in Proceedings of the IEEE/CVF international conference on computer
+     vision, 2023, pp. 4195–4205.
+[71] A. Hassani et al., “Neighborhood attention transformer,” in IEEE/CVF
+     Conference on Computer Vision and Pattern Recognition (CVPR), 2023.
+[72] Anthropic, “Claude,” https://www.anthropic.com/claude, 2025, aI assis-
+     tant. Accessed: 2026.
+

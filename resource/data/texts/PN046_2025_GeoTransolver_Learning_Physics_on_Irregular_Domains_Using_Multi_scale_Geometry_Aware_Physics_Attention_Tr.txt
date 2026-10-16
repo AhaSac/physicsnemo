@@ -1,0 +1,1190 @@
+                                               GeoTransolver: Learning Physics on Irregular
+                                             Domains using Multi-scale Geometry Aware Physics
+                                                          Attention Transformer
+
+
+                                                     Corey Adams∗, Rishikesh Ranade∗, Sheel Nidhan, Mohammad Amin Nabian
+                                                              Deepak Akhare, Ram Cherukuri, Sanjay Choudhry
+                                                                       NVIDIA Corporation, Santa Clara, US
+arXiv:2512.20399v3 [cs.LG] 22 Jun 2026
+
+
+
+
+                                                                   coreya@nvidia.com, rranade@nvidia.com
+
+
+
+                                                                                         Abstract
+                                                     We present GeoTransolver, a multiscale geometry-aware physics attention trans-
+                                                     former for Computer Aided Engineering (CAE). GeoTransolver extends the Tran-
+                                                     solver backbone with GALE (Geometry-Aware Latent Embeddings) attention,
+                                                     which pairs physics-aware self-attention on learned state slices with cross-attention
+                                                     to a shared geometry and global context computed via multi-scale ball queries
+                                                     (inspired by Domino) and reused in every block. Implemented and released in
+                                                     NVIDIA PhysicsNeMo, GeoTransolver persistently projects geometry and global
+                                                     parameters, into physical state spaces to anchor computations to domain struc-
+                                                     ture and operating regimes. We benchmark on DrivAerML, SHIFT-SUV, and
+                                                     SHIFT-Wing against Domino, Transolver (PhysicsNeMo implementation), and
+                                                     literature-reported AB-UPT, evaluating drag/lift R2 and relative L1 errors on field
+                                                     variables. As an additional nonlinear structural mechanics application, we also
+                                                     report Transolver and GeoTransolver results on bumper-beam and full-vehicle
+                                                     Body-in-White (BIW) crash-dynamics benchmarks, evaluating relative L2 tra-
+                                                     jectory error and probe-level kinematic MSE. GeoTransolver delivers improved
+                                                     accuracy, robustness to geometry and regime shifts, and favorable data efficiency;
+                                                     we include DrivAerML ablations and qualitative contour and design-trend results,
+                                                     advancing operator learning for high-fidelity surrogates on complex, irregular,
+                                                     non-linear domains.
+
+
+                                         1     Introduction
+                                         Computer-aided engineering (CAE) increasingly depends on AI-based surrogates to accelerate design
+                                         exploration and reduce reliance on costly high-fidelity simulation [1–4]. Despite rapid progress
+                                         in neural operators and physics-informed architectures, deploying these models on industrial CAE
+                                         workloads exposes three persistent failure modes that limit their trustworthiness for engineering
+                                         decision-making:
+                                                 1. Geometry dilution across depth. Industrial meshes contain millions of surface and volume
+                                                    elements with heterogeneous refinement near boundaries, wakes, and separation regions.
+                                                    In transformer-based operators that inject geometric information only at the input layer,
+                                                    boundary and shape detail is progressively diluted as latent representations evolve through
+                                                    successive attention blocks. Later layers lose access to fine-grained domain structure,
+                                                    degrading predictions precisely where near-wall physics matters most – for example, wall-
+                                                    shear stress near the A-pillar or wheel arches of a vehicle, or contact surfaces in crash
+                                                    dynamics [5, 6].
+                                             ∗ Equal contribution.
+
+
+
+
+                                         Preprint.
+      2. Scale mismatch on non-uniform discretizations. Automotive and aerospace meshes
+         exhibit orders-of-magnitude differences in cell size between boundary-layer regions and
+         far-field elements. A single-radius neighborhood either floods with boundary-layer detail or
+         misses it entirely; global attention with uniform tokens averages over the disparity. Capturing
+         both near-boundary gradients and far-field coupling requires explicit multi-scale geometric
+         aggregation that spans both regimes simultaneously.
+      3. Single-shot regime conditioning. CAE surrogates must generalize across operating regimes
+         (Mach number, angle of attack, impact velocity) and boundary conditions. Existing condi-
+         tional operator learners typically concatenate regime parameters to input tokens – a single
+         conditioning event that does not persist as the latent state evolves through depth. Just as
+         U-Net skip connections were introduced to prevent high-resolution spatial features from
+         being lost through successive pooling layers [7], persistent conditioning is needed to prevent
+         geometry and regime information from being washed out through successive attention
+         layers. Without it, the model’s internal state becomes decoupled from the imposed operating
+         conditions in deeper layers.
+This paper introduces GeoTransolver, a transformer architecture for CAE in which each design
+choice directly addresses one of these domain-specific failure modes. GeoTransolver builds on the
+Transolver [6] backbone and introduces Geometry-Aware Latent Embeddings (GALE) attention,
+which pairs physics-aware self-attention on learned state slices with cross-attention to a shared
+geometry and global context at every block. To address scale mismatch, multi-scale ball queries with
+radii spanning boundary-layer to far-field scales extract local neighborhood features; geometry and
+global operating parameters are then projected into the same latent slice-token space used by the
+attention layers, providing persistent conditioning that prevents both geometry dilution and regime
+drift. Prior methods condition on geometry only at the input [8, 9] or at encoder/decoder boundaries
+[10]; GeoTransolver maintains geometry and regime context in the same learned basis as the evolving
+latent state at every layer.
+GeoTransolver is implemented and released as open-source software in the NVIDIA PhysicsNeMo
+framework [11], which provides geometry data pipelines, multi-physics conditioning utilities, and
+scalable training/inference infrastructure necessary for high-resolution CAE workloads.
+We benchmark GeoTransolver against Domino [8], AB-UPT [9], and Transolver [6] on three indus-
+trial CAE datasets: DrivAerML [12] (500 parametric vehicle variants on 140M-element meshes),
+Luminary SHIFT-SUV [13], and Luminary SHIFT-Wing [14], using the benchmarking framework in
+PhysicsNeMo [15]. These tasks span aerodynamic flows over parameterized vehicle and wing ge-
+ometries across diverse operating regimes. We evaluate field-level reconstruction (velocity, pressure,
+wall shear) and integral quantities (drag and lift coefficients), along with generalization to unseen
+geometries and design trends. We further include crash-dynamics benchmarks (bumper-beam impact
+and full-vehicle Body-in-White frontal impact) to evaluate whether geometry-aware conditioning
+transfers beyond external aerodynamics to transient, contact-driven structural mechanics with large
+deformations, and to demonstrate that the geometric context pathway can be paired with alternative
+efficient attention backends [16].
+Our contributions are two-fold:
+      1. A geometry-persistent transformer design (GeoTransolver) in which each architectural
+         choice addresses a specific failure mode: GALE cross-attention at every block prevents
+         geometry dilution (failure mode 1); multi-scale ball queries with radii spanning boundary-
+         layer to far-field scales resolve the scale mismatch (failure mode 2); and a global-parameter
+         context projector that injects operating-regime information at every depth prevents regime
+         drift (failure mode 3). The geometry-aware context enters through a modular cross-attention
+         path, so the self-attention backend can be swapped – we demonstrate this by replacing
+         physics attention with FLARE [16] on crash-dynamics benchmarks.
+      2. Industrial-scale evaluation and open-source release within NVIDIA PhysicsNeMo, bench-
+         marked on DrivAerML (500 vehicle variants, 140M-element meshes), SHIFT-SUV, SHIFT-
+         Wing, and two crash-dynamics datasets. GeoTransolver delivers improved accuracy and
+         robustness across all benchmarks, with ablations validating each design choice indepen-
+         dently.
+
+
+
+
+                                                   2
+2     Background and related work
+
+AI-based surrogates for CAE span operator learning, mesh/geometry-aware representations, multi-
+scale architectures, and physics-informed training. Below we survey the most relevant lines of work
+and position GeoTransolver relative to them.
+
+2.1   Neural operators
+
+Neural operators learn mappings between function spaces for resolution-agnostic PDE surrogates
+[17]. DeepONet [18] introduced branch–trunk architectures; FNO [19, 20] uses spectral convolution
+for nonlocal interactions; and GNO [21, 22] targets irregular discretizations via message passing.
+Transformer-based operators [6, 23–28] improve long-range coupling via global attention over latent
+fields. GeoTransolver replaces standard attention with GALE, structuring self-attention around
+physics-aware state slices and cross-attending to geometry and global context at every block.
+
+2.2   Geometry and mesh-aware encoders
+
+MeshGraphNet and related GNNs [29–32] popularized message passing on simulation meshes;
+extensions add learnable stencils and multigrid coarsening [33, 34]. Point-cloud networks [35–37]
+introduced multi-scale local aggregation for unstructured geometry. Domino [8] demonstrated that
+multi-scale ball queries paired with global shape descriptors improve generalization across shape
+families. AB-UPT [9] explores unified physics transformers with geometry-grounded tokens.
+GAOT [10] is the most closely related prior work: it combines multiscale attentional graph neural
+operator (GNO) encoders and decoders with geometry embeddings, achieving strong results on
+DrivAerML and other industrial-scale datasets. A concurrent 3D extension [10] further scales this
+approach. The key architectural difference is where geometry enters the network: GAOT injects
+geometric information at encoder and decoder boundaries, so the transformer processor layers
+between them operate without direct geometric recall. GeoTransolver instead projects geometry into
+the same slice-token basis used by the latent state and cross-attends at every layer, providing persistent
+conditioning throughout the forward pass. The two approaches also differ in metrics (GAOT reports
+MSE/MAE; GeoTransolver reports relative L1 and R2 ), precluding direct numerical comparison on
+shared datasets at this time. Beyond geometry-aware encoders, U-Net hierarchies, graph coarsening,
+and multigrid networks [38–40] and spectral methods [19, 41] also target multi-scale coupling, the
+latter struggling on irregular domains. GeoTransolver addresses the scale-mismatch failure mode by
+using multi-scale ball-query neighborhoods while preserving a dedicated global-context channel via
+cross-attention at every depth.
+
+2.3   Physics-aware conditioning and constraints
+
+PINNs [42] and PINO [43] enforce PDEs via residual losses; equivariant architectures [44–46]
+encode symmetries (e.g., SE(3)); and conditional operator learning introduces regime metadata but
+typically conditions only once, risking representation drift. GeoTransolver projects geometry and
+global context into aligned physical-state tokens at every block for persistent conditioning, and is
+compatible with PINN/PINO-style losses.
+
+2.4   AI modeling for CAE
+
+Industrial CAE surrogates must handle irregular, heterogeneous geometries (vehicles, wings, struc-
+tural assemblies), capture multiscale physics from boundary layers to far-field wakes, and remain
+conditioned on operating regimes across design families. As identified in Section 1, these re-
+quirements converge on three failure modes that expose fundamental gaps in current architectures:
+geometry dilution across depth, scale mismatch on non-uniform discretizations, and single-shot
+regime conditioning. No single prior method addresses all three.
+Table 1 maps each baseline to the three failure modes. Methods that encode geometry only at the input
+(Domino, AB-UPT) or at encoder/decoder boundaries (GAOT) leave later transformer layers without
+direct geometric recall. Methods without multi-scale neighborhoods (FNO, DeepONet, Transolver)
+cannot resolve the 1000:1 resolution ratios typical of industrial meshes. No prior method provides
+
+
+                                                    3
+Table 1: Failure-mode coverage across methods. Only GeoTransolver provides persistent geometric
+context at every transformer layer.
+                                                    Mesh                                           Geo
+                   FNO       DeepONet Transolver            DoMINO AB-UPT              GAOT
+                                                   GraphNet                                     Transolver
+    Geometry      spectral    branch      input       edge       ball        geo      GNO       ball queries
+    encoding        grid        net      tokens     features   queries     tokens   (multi-sc.) + projector
+                                                               multi-                             multi-
+    Multi-scale     —           —          —         local                   ✓         ✓
+                                                                radii                              radii
+    Context                                                     input      input     enc/dec every layer
+                    —           —          —          —
+    depth                                                       only        only      only       (x-Attn)
+
+
+persistent context conditioning at every layer in the same latent basis as the evolving physical state.
+GeoTransolver is designed to close all three gaps simultaneously.
+
+3      GeoTransolver
+GeoTransolver takes three inputs – query points with local field values, a geometry surface mesh, and
+optional global operating parameters (e.g., Mach number, angle of attack) – and predicts output fields
+at the query positions. Each component of the architecture addresses one of the three failure modes
+from Section 1: a shared context encodes geometry and global parameters in a latent slice-token space
+and is reused at every layer to prevent geometry dilution; multi-scale ball queries within the context
+construction resolve boundary-layer-to-far-field scale mismatch and additionally augment input
+tokens with local geometric features; and a global parameter projector injects regime information
+into the same slice-token space, providing persistent regime conditioning across depth. Local field
+embeddings then pass through a stack of GALE (Geometry-Aware Latent Embedding) blocks, each
+performing physics-aware self-attention on learned slices followed by cross-attention to the shared
+context, blended via a learnable gate (Figure 1).
+
+Notation. Throughout this section we use: N for the number of query points, M for geometry
+points, H for attention heads, S for slices (latent states) per head, D for head dimension, df for input
+feature dimension, dp for global parameter dimension, dh for geometric processor output dimension,
+and Ns for the number of ball-query scales.
+
+3.1     GeoTransolver inputs
+
+GeoTransolver operates on a set of N query points, input Geometry G, and global operating parame-
+ters p:
+        1. Query points with positions and features:
+                                       X = {(xi , fi )}N
+                                                       i=1 ,   xi ∈ R3 ,    fi ∈ Rdf                           (1)
+           where fi may include surface normals, signed distance fields, Fourier embeddings, or any
+           task-specific encoding. The model predicts output fields at each query position xi .
+        2. Geometry point cloud G = {gj }M              3
+                                           j=1 , gj ∈ R , representing the surface mesh or boundary
+           of the domain.
+        3. Global parameters p ∈ Rdp (e.g., Mach number, angle of attack, Reynolds number).
+Both the geometry G and global parameters p are projected into the shared geometry context as
+described in Section 3.3, which continuously augments the model’s latent space.
+
+3.2     Persistent geometry recall via GALE
+
+Transolver’s physics attention [6] avoids the quadratic cost of full attention by projecting input tokens
+onto a small set of learned slices (latent basis vectors) and performing self-attention in that reduced
+space, scaling to input sizes where full self-attention is infeasible.
+This design is efficient but introduces the geometry dilution failure mode identified in Section 1:
+because each layer receives only the output of the previous layer, geometric and boundary information
+
+
+                                                        4
+Figure 1: GeoTransolver architecture. Right: the context projector constructs a shared geometry and
+global context by projecting multi-scale ball-query features and global parameters into slice-token
+space via a half-attention operation; learned geometric features are also concatenated onto local
+input tokens. Center: The learned context is continually injected to the model to provide persistent
+geometrical recall. Left: each GALE block extends Transolver’s Physics Attention with the addition
+of cross attention to the shared global context.
+
+
+
+present in the original inputs isz progressively diluted with depth. Later layers have no mechanism to
+recall fine-grained domain structure, degrading predictions in near-wall regions where boundary-layer
+physics depends on local geometry. GALE (Geometry-Aware Latent Embeddings) addresses this
+directly by adding cross-attention from the slice tokens to a shared context that encodes geometry
+and global parameters in the same slice-token space, ensuring every layer retains direct access to
+domain structure.
+The key deviations for a GALE layer occur after the latent state self attention, as seen in Figure 1
+(left). The learned projections for a given layer are used in a cross-attention mechanism with the
+‘context’ embedding, learned directly from the input points and geometries. This cross-attention
+is then blended with the self-attention output via a learnable scalar gate α = σ(η), where η is a
+per-layer parameter and σ is the sigmoid function. This allows the model to adapt its balance between
+geometric context and self-attended state at each depth. After mixing, the slice tokens are de-sliced
+back to the input dimensionality as in Transolver [6].
+Although we use Transolver’s physics attention as the default self-attention backend, the GALE
+formulation is not restricted to this choice. The geometry-aware context enters through a separate
+cross-attention path, so the self-attention branch can be replaced by other efficient token-mixing
+mechanisms. In the crash-dynamics experiments, we include a lightweight backend-swap demonstra-
+tion in which the physics-attention backend is replaced with FLARE attention [16] while keeping the
+GeoTransolver geometry-context pathway unchanged.
+
+
+3.3   Multi-scale context for boundary-layer to far-field coupling
+
+The second and third failure modes – scale mismatch and single-shot regime conditioning – are
+addressed by the context construction stage. Before any GALE block is applied, GeoTransolver
+builds a shared context that encodes the geometry G and global parameters p in the same slice-
+token space used by GALE attention. The context is assembled from two reusable building blocks
+– a context projector T and a geometric processor Π – composed in three independent paths: a
+geometry tokenizer, a global tokenizer, and a multi-scale feature extractor (see Figure 1, right). Each
+
+
+                                                  5
+path produces slice tokens in the same latent space as the GALE attention slices; the outputs are
+concatenated into a single context tensor C, computed once per input and reused at every depth.
+The multi-scale extractor also produces geometric embedding for each input query xi that are
+concatenated onto each input token before the first GALE block, giving every point direct access to
+nearby boundary geometry information.
+
+3.3.1   Context projector
+The context projector T implements the encoding half of Transolver’s physics attention [6]: it maps
+a variable-length token sequence into a fixed set of slice tokens in the same latent space as the GALE
+attention slices, but never decodes back. Given N tokens X ∈ RN ×C , learned projections yield
+Q, K ∈ RH×N ×D . A per-head map Ws ∈ RD×S produces slice logits P = QWs ; temperature-
+scaled softmax and normalised aggregation with K yield slice tokens Z:
+
+                                                            ⊤
+                                                       Z = A K ∈ RH×S×D ,
+                                       
+                       A = softmaxS P/τ ,                                                            (2)
+
+where A denotes column-normalised A. The same architecture T is instantiated with separate
+learned parameters for each context source below.
+
+3.3.2   Geometric processor
+A geometric processor Πrs ,ks (q, t) extracts local geometric context at scale s. For each point in
+q ∈ RNq ×3 , a ball query retrieves up to ks neighbours within radius rs from t ∈ RNt ×3 ; the flattened
+coordinates are mapped by a learned MLP ϕs to a bounded embedding:
+
+
+                        Nrs ,ks (q, t) = BQrs ,ks (q, t) ∈ RNq ×ks ×3 ,                              (3)
+                                   vs = flatten Nrs ,ks (q, t) ∈ RNq ×3ks ,
+                                                              
+                                                                                                     (4)
+                        Πrs ,ks (q, t) = tanh ϕs (vs ) ∈ RNq ×dh .
+                                                       
+                                                                                                     (5)
+
+Each geometric processor is parameter-light and independently parameterised; one is instantiated per
+scale and per cross-cloud direction.
+
+3.3.3   Context construction
+The three context paths below each produce slice tokens via the context projector (Eq. 2); the results
+are concatenated along the feature dimension to form the shared context C.
+
+Geometry and global tokenizers. The geometry point cloud G = {gj }M
+                                                                  j=1 and the global operating
+                 dp
+parameters p ∈ R (e.g. Mach number, free-stream velocity) are each projected into slice-token
+space by independent context projectors:
+                                         Zglob = Tglob p ∈ RH×S×D .
+                                                       
+                     Zgeo = Tgeo G ,                                                        (6)
+No de-slicing is performed; both outputs remain in slice-token space for cross-attention context at
+every GALE layer.
+
+Multi-scale feature extractor. The multi-scale feature extractor applies geometric processors
+Πrs ,ks at Ns scales {(rs , ks )}Ns
+                                 s=1 , where short-range radii capture boundary-layer detail and long-
+range radii enable non-local coupling (Section 5.1). Each scale uses Πrs ,ks in two symmetric
+cross-cloud directions and a per-scale context projector Ts .
+Input-to-geometry (context path). For each geometry point gj , nearby input points x are gathered,
+processed, and tokenized into slice space:
+                                                         M ×dh
+                                 hctx
+                                                   
+                                   s = Πrs ,ks x, g ∈ R          ,                             (7)
+                                            ctx      H×S×D
+                                                
+                                   Zs = Ts hs     ∈ R         .                                (8)
+
+
+                                                   6
+Geometry-to-input (local augmentation path). Symmetrically, for each input point xi , nearby
+geometry points are gathered:
+                                                     N ×dh
+                              hloc
+                                               
+                               s = Πrs ,ks g, x ∈ R        .                              (9)
+
+Per-scale features are concatenated to form a local augmentation vector u = [hloc              loc
+                                                                                 1 , . . . , h Ns ] ∈
+RN ×Ns dh , which is appended to each input token before the first GALE block, giving every query
+point direct access to nearby boundary geometry.
+
+Assembled context.     The shared context C concatenates all slice tokens along the feature dimension:
+                        C = Zgeo , Zglob , Z1 , . . . , ZNs ∈ RH×S×dc ,
+                                                           
+                                                                                                 (10)
+where dc = (2 + Ns ) · D and the concatenation is along the last (feature) dimension. All three
+sources share the same slice count S and head count H.
+Separately, the local augmentation vectors ui ∈ RNs dh from the geometry-to-input path (Eq. 9) are
+concatenated onto each input token after the initial MLP projection and before the first GALE block:
+                            x̃i = MLP(fi ), ui ∈ Rdmodel +Ns dh .
+                                                    
+                                                                                                (11)
+Together, C provides persistent geometric and global context via cross-attention at every GALE
+layer, while ui enriches the initial per-point representation with local boundary information. Both are
+computed once per forward pass.
+
+4     Experiment details
+4.1   Datasets
+
+The benchmarking, validation and ablation studies are carried out on 3 datasets, DrivAerML [12],
+Luminary SHIFT-SUV [13] and Luminary SHIFT-Wing [14]. As an additional example beyond
+the three aerodynamics datasets, we evaluate GeoTransolver on two crash-dynamics benchmarks:
+a bumper-beam impact dataset and a full-vehicle Body-in-White (BIW) frontal-impact dataset.
+Additional details about each of these datasets with information such as training, validation and
+testing splits are provided in the Appendix.
+
+4.2   Models
+
+We evaluate GeoTransolver on SHIFT-SUV and SHIFT-Wing against Transolver [6], DoMINO
+[8], and literature-reported AB-UPT [47], and probe architectural sensitivity via an ablation on
+DrivAerML (Section 5.1). Additional configuration and training details are provided in the appendix.
+For the crash-dynamics benchmarks, we compare Transolver, GeoTransolver, and GeoTransolver
+with a FLARE attention [16] backend under matched training protocols.
+
+4.3   Metrics
+                                                           P              P
+We evaluate field-level accuracy via the relative L1 norm j ∥uj − ũj ∥      j ∥u  ∥, and for surface
+                                                                                Hj
+predictions report drag and lift R2 computed from integrated surface forces F = S (−(ps − p∞ )n̂ +
+τw ) dS. For crash dynamics we report relative L2 error over the spatiotemporal structural response
+and probe-level kinematic MSE (details in Appendix).
+
+5     Results
+5.1   DrivAerML and ablation studies
+
+Table 2 reports relative L1 errors (%) on the DrivAerML test set (48 designs) and consolidates
+ablations over three architectural axes: GALE depth, multi-scale ball-query radii, and ball-query
+kernel size. Each group varies one axis while holding others at the best-found setting; bold marks the
+overall best row, which achieves below-5% surface and volume field error and near-perfect drag/lift
+agreement.
+
+
+                                                  7
+Table 2: Relative L1 errors (%) on DrivAerML test geometries across three ablation axes. CD /CL
+are R2 values.
+                                                                      Surface               Volume
+              Axis     Setting          Size       ps            τw       CD        CL     pv        u
+                       6                9M         3.52          5.88     0.996    0.987   3.79   4.44
+                       10               14M        3.25          5.51     0.995    0.987   3.31   4.21
+
+              Layers
+                       14               20M        3.11          5.29     0.995    0.983   3.34   4.24
+                       18               26M        2.95          5.19     0.994    0.987   3.08   4.08
+                       20               29M        2.86           4.9     0.996    0.991   3.09   4.02
+                       0.05             12M        3.14          5.38     0.993    0.989   3.60   4.34
+              Radii
+
+
+                       2.5              12M        3.09          5.38     0.995    0.986   3.24   4.20
+                       0.05–2.5 (4)     21M        3.03          5.23     0.993    0.989   3.06   4.06
+                       0.01–5.0 (6)     29M        2.86           4.9     0.996    0.991   3.09   4.02
+                       k=8              13M        3.12          5.32     0.994    0.984   3.37   4.06
+              Kernel
+
+
+
+
+                       k=16             18M        3.07          5.27     0.993    0.989   3.12   4.11
+                       k=32             29M        2.86           4.9     0.996    0.991   3.01   4.02
+
+
+Table 3: Volume-field relative L1 errors (%) across SHIFT-SUV (Estate, Fastback) and SHIFT-Wing
+(Ma=0.5, Ma=0.85). DoMINO is trained per-Mach on SHIFT-Wing; other models share the combined
+dataset. Surface-field counterparts are in Appendix Table 7.
+                                      Estate            Fastback                Ma=0.5     Ma=0.85
+               Model              pv           u        pv            u     pv       u     pv     u
+               GeoTransolver 0.0026 1.36 0.0023 1.30 0.022 1.92 0.099 2.00
+               AB-UPT        0.0025 2.25 0.0024 2.21 0.027 9.56 0.125 9.51
+               DoMINO        0.0062 8.14 0.0067 7.73 2.25 21.34 3.17 29.2
+               Transolver     0.004 1.87 0.0039 1.81 1.19 3.60 1.34 3.72
+
+
+
+Across all three axes, accuracy improves monotonically with capacity, with diminishing returns.
+The best configuration (20 layers, 6 radii spanning r=0.01–5.0, k=32; 29M params) achieves the
+bold-row results. Fine radii aid near-wall detail while large radii capture global couplings; larger
+kernels enrich local geometric aggregation. A separate study on query and geometry token counts
+(Appendix Table 6) shows that adequate geometric coverage is critical for volume accuracy.
+
+Computational cost. On 8×H100 with batch size 8, single-scale ball queries add 1.1–1.2× through-
+put overhead and the 4- and 6-scale multi-radii configurations add approximately 2×; the 6-scale
+config requires reducing query points from 200k to 160k to fit within H100’s 80 GB. Full per-
+configuration training and inference throughput data are in Appendix A.4, Table 5.
+
+5.2   SHIFT-SUV, SHIFT-Wing, and crash dynamics
+
+Table 3 reports relative L1 errors on the volume fields (pressure pv and velocity u) across all four
+SHIFT test conditions: SHIFT-SUV Estate and Fastback bodies, and SHIFT-Wing at Mach 0.5 and
+0.85. GeoTransolver attains the lowest error on every column except Estate pv , where AB-UPT
+is lower by 0.0001. On surface metrics (Appendix Table 7), GeoTransolver leads on most fields
+with two exceptions: surface pressure at Mach 0.85 (AB-UPT) and wall-shear stress at Mach 0.5
+(DoMINO, trained per-Mach). For SHIFT-SUV drag and lift R2 , GeoTransolver achieves the highest
+scores (Estate CD /CL =0.98/0.88, Fastback 0.99/0.99); on SHIFT-Wing all models reach R2 =1.0
+on CD /CL at both Mach numbers, so integral force metrics do not discriminate.
+On the crash-dynamics benchmarks (Table 4), GeoTransolver reduces relative L2 error vs. Transolver
+on both bumper-beam and BIW frontal-impact, and replacing the physics-attention backend with
+FLARE further improves both, demonstrating that the geometry-aware context pathway is backend-
+agnostic. Contours, design trends, deformation evolution, and probe-level kinematic MSE are reported
+in the Appendix.
+
+
+                                                             8
+Table 4: Crash-dynamics relative L2 error on bumper-beam and BIW frontal-impact datasets (lower
+is better).
+                      Model                          Bumper Beam        BIW Crash
+                                                                −3
+                      Transolver                     9.12 × 10        1.60 × 10−2
+                      GeoTransolver                  7.32 × 10−3      1.33 × 10−2
+                      GeoTransolver with FLARE       6.80 × 10−3      8.95 × 10−3
+
+
+6     Conclusion
+Industrial CAE surrogate modeling demands that transformer-based operators retain geometry aware-
+ness across depth, resolve multi-scale features on non-uniform meshes, and maintain regime condi-
+tioning throughout the forward pass. In this work, we identified these three failure modes in existing
+architectures and introduced GeoTransolver, a transformer design in which each component directly
+addresses one: GALE cross-attention prevents geometry dilution, multi-scale ball queries resolve
+boundary-layer-to-far-field scale mismatch, and a global-parameter context projector prevents regime
+drift.
+We benchmarked GeoTransolver on DrivAerML, SHIFT-SUV, SHIFT-Wing, and two crash-dynamics
+datasets, demonstrating improved accuracy and robustness compared to Domino, Transolver, and
+AB-UPT. Ablations on DrivAerML validate each design choice independently, confirming that
+multi-scale radii, deeper GALE stacks, and adequate geometric token coverage each contribute
+measurably. The crash-dynamics results further show that geometry-aware conditioning transfers
+beyond aerodynamics to transient, contact-driven structural mechanics, and that the GALE context
+pathway is compatible with alternative attention backends (FLARE). GeoTransolver is released
+as open-source software in NVIDIA PhysicsNeMo, making it accessible to CFD researchers and
+application engineers.
+
+6.1   Limitations
+
+GeoTransolver has several limitations that frame the scope of the results presented here. The multi-
+scale ball-query context pathway increases per-step training and inference cost relative to baseline
+(Table 5, ∼2.1×). The DrivAerML out-of-distribution designs (lowest and highest drag) are never
+seen during training and remain the hardest cases (see Appendix A.1.1); accuracy on these extremes
+can likely be improved with augmented training data but is not directly addressed here. Finally, the
+crash-dynamics evaluation is limited to two datasets (bumper beam and a single BIW frontal-impact
+configuration) over short impact horizons, and broader transferability of the geometry-aware context
+is an active research area.
+
+6.2   Broader impacts
+
+GeoTransolver targets industrial CAE surrogate modelling. On the positive side, faster surrogate-
+based design iteration can reduce the number of high-fidelity CFD/FEM runs required during product
+development, lowering the HPC energy and carbon footprint of engineering workflows, and the
+open-source release in NVIDIA PhysicsNeMo lowers the barrier to high-fidelity CAE for academic
+and industrial users. On the negative side, learned surrogates that look qualitatively correct can be
+misused in safety-critical decisions – e.g., crashworthiness or structural sign-off – if their predictions
+are treated as ground truth without validation against high-fidelity simulation or experiment.
+
+References
+ [1] Xu-Wen Zhao, Xiao-Meng Tong, Fang-Wei Ning, Mao-Lin Cai, Fei Han, and Hong-Guang Li. Review of
+     empowering computer-aided engineering with artificial intelligence. Advances in Manufacturing, pages
+     1–41, 2025.
+ [2] Sofos Filippos. Advancing fluid mechanics with artificial intelligence and machine learning. Fluids, 10
+     (11):297, 2025.
+ [3] Steven L Brunton, Bernd R Noack, and Petros Koumoutsakos. Machine learning for fluid mechanics.
+     Annual review of fluid mechanics, 52(1):477–508, 2020.
+
+
+                                                     9
+ [4] Pushan Sharma, Wai Tong Chung, Bassem Akoush, and Matthias Ihme. A review of physics-informed
+     machine learning in fluid mechanics. Energies, 16(5):2343, 2023.
+ [5] Neil Ashton, Johannes Brandstetter, and Siddhartha Mishra. Fluid intelligence: A forward look on ai
+     foundation models in computational fluid dynamics. arXiv preprint arXiv:2511.20455, 2025.
+ [6] Haixu Wu, Huakun Luo, Haowen Wang, Jianmin Wang, and Mingsheng Long. Transolver: A fast
+     transformer solver for pdes on general geometries. arXiv preprint arXiv:2402.02366, 2024.
+ [7] Olaf Ronneberger, Philipp Fischer, and Thomas Brox. U-net: Convolutional networks for biomedical
+     image segmentation. In International Conference on Medical image computing and computer-assisted
+     intervention, pages 234–241. Springer, 2015.
+ [8] Rishikesh Ranade, Mohammad Amin Nabian, Kaustubh Tangsali, Alexey Kamenev, Oliver Hennigh, Ram
+     Cherukuri, and Sanjay Choudhry. Domino: A decomposable multi-scale iterative neural operator for
+     modeling large scale engineering simulations. arXiv preprint arXiv:2501.13350, 2025.
+ [9] Benedikt Alkin, Maurits Bleeker, Richard Kurle, Tobias Kronlachner, Reinhard Sonnleitner, Matthias
+     Dorfer, and Johannes Brandstetter. Ab-upt: Scaling neural cfd surrogates for high-fidelity automo-
+     tive aerodynamics simulations via anchored-branched universal physics transformers. arXiv preprint
+     arXiv:2502.09692, 2025.
+[10] Shizheng Wen, Arsh Kumbhat, Levi Lingsch, Sepehr Mousavi, Yizhou Zhao, Praveen Chandrashekar, and
+     Siddhartha Mishra. Geometry aware operator transformer as an efficient and accurate neural surrogate for
+     pdes on arbitrary domains. 2025.
+[11] NVIDIA. NVIDIA PhysicsNeMo, 2025. URL https://developer.nvidia.com/physicsnemo.
+[12] Neil Ashton, Charles Mockett, Marian Fuchs, Louis Fliessbach, Hendrik Hetmann, Thilo Knacke, Norbert
+     Schonwald, Vangelis Skaperdas, Grigoris Fotiadis, Astrid Walle, et al. Drivaerml: High-fidelity com-
+     putational fluid dynamics dataset for road-car external aerodynamics. arXiv preprint arXiv:2408.11969,
+     2024.
+[13] Luminary Cloud. Shift-suv: High-fidelity computational fluid dynamics dataset for suv external aerody-
+     namics. URL https://huggingface.co/datasets/luminary-shift/SUV/, 2025.
+[14] Luminary Cloud. Shift-wing: High-fidelity computational fluid dynamics dataset for transonic wing
+     external aerodynamics. URL https://huggingface.co/datasets/luminary-shift/WING/, 2025.
+[15] Kaustubh Tangsali, Rishikesh Ranade, Mohammad Amin Nabian, Alexey Kamenev, Peter Sharpe, Neil
+     Ashton, Ram Cherukuri, and Sanjay Choudhry. A benchmarking framework for ai models in automotive
+     aerodynamics. arXiv preprint arXiv:2507.10747, 2025.
+[16] Vedant Puri, Aditya Joglekar, Sri Datta Ganesh Bandreddi, Kevin Ferguson, Yu-hsuan Chen, Yongjie Jes-
+     sica Zhang, and Levent Burak Kara. Flare: Fast low-rank attention routing engine. arXiv preprint
+     arXiv:2508.12594, 2025.
+[17] Nikola Kovachki, Zongyi Li, Burigede Liu, Kamyar Azizzadenesheli, Kaushik Bhattacharya, Andrew
+     Stuart, and Anima Anandkumar. Neural operator: Learning maps between function spaces with applications
+     to pdes. Journal of Machine Learning Research, 24(89):1–97, 2023.
+[18] Lu Lu, Pengzhan Jin, Guofei Pang, Zhongqiang Zhang, and George Em Karniadakis. Learning nonlinear
+     operators via deeponet based on the universal approximation theorem of operators. Nature machine
+     intelligence, 3(3):218–229, 2021.
+[19] Zongyi Li, Nikola Kovachki, Kamyar Azizzadenesheli, Burigede Liu, Kaushik Bhattacharya, Andrew
+     Stuart, and Anima Anandkumar. Fourier neural operator for parametric partial differential equations. arXiv
+     preprint arXiv:2010.08895, 2020.
+[20] Zongyi Li, Nikola Kovachki, Kamyar Azizzadenesheli, Burigede Liu, Andrew Stuart, Kaushik Bhat-
+     tacharya, and Anima Anandkumar. Multipole graph neural operator for parametric partial differential
+     equations. Advances in Neural Information Processing Systems, 33:6755–6766, 2020.
+[21] Zongyi Li, Nikola Kovachki, Kamyar Azizzadenesheli, Burigede Liu, Kaushik Bhattacharya, Andrew
+     Stuart, and Anima Anandkumar. Neural operator: Graph kernel network for partial differential equations.
+     arXiv preprint arXiv:2003.03485, 2020.
+[22] Zongyi Li, Daniel Zhengyu Huang, Burigede Liu, and Anima Anandkumar. Fourier neural operator with
+     learned deformations for pdes on general geometries. Journal of Machine Learning Research, 24(388):
+     1–26, 2023.
+[23] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz
+     Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing systems,
+     30, 2017.
+[24] Zhongkai Hao, Zhengyi Wang, Hang Su, Chengyang Ying, Yinpeng Dong, Songming Liu, Ze Cheng, Jian
+     Song, and Jun Zhu. Gnot: A general neural operator transformer for operator learning. In International
+     Conference on Machine Learning, pages 12556–12569. PMLR, 2023.
+
+
+                                                      10
+[25] Andrey Bryutkin, Jiahao Huang, Zhongying Deng, Guang Yang, Carola-Bibiane Schönlieb, and Angelica
+     Aviles-Rivero. Hamlet: Graph transformer neural operator for partial differential equations. arXiv preprint
+     arXiv:2402.03541, 2024.
+[26] Benjamin Shih, Ahmad Peyvan, Zhongqiang Zhang, and George Em Karniadakis. Transformers as neural
+     operators for solutions of differential equations with finite regularity. Computer Methods in Applied
+     Mechanics and Engineering, 434:117560, 2025.
+[27] Qibang Liu, Weiheng Zhong, Hadi Meidani, Diab Abueidda, Seid Koric, and Philippe Geubelle. Geometry-
+     informed neural operator transformer. arXiv preprint arXiv:2504.19452, 2025.
+[28] Oded Ovadia, Adar Kahana, Panos Stinis, Eli Turkel, Dan Givoli, and George Em Karniadakis. Vito:
+     Vision transformer-operator. Computer Methods in Applied Mechanics and Engineering, 428:117109,
+     2024.
+[29] Tobias Pfaff, Meire Fortunato, Alvaro Sanchez-Gonzalez, and Peter Battaglia. Learning mesh-based
+     simulation with graph networks. In International conference on learning representations, 2020.
+[30] Ugo Pelissier, Augustin Parret-Fréaud, Felipe Bordeu, and Youssef Mesri. Graph neural networks for mesh
+     generation and adaptation in structural and fluid mechanics. Mathematics, 12(18):2933, 2024.
+[31] Pourya Pilva and Ahmad Zareei. Learning time-dependent pde solver using message passing graph neural
+     networks. arXiv preprint arXiv:2204.07651, 2022.
+[32] Rini Jasmine Gladstone, Helia Rahmani, Vishvas Suryakumar, Hadi Meidani, Marta D’Elia, and Ahmad
+     Zareei. Mesh-based gnn surrogates for time-independent pdes. Scientific reports, 14(1):3394, 2024.
+[33] Mohammad Amin Nabian, Chang Liu, Rishikesh Ranade, and Sanjay Choudhry. X-meshgraphnet: Scalable
+     multi-scale graph neural networks for physics simulation. arXiv preprint arXiv:2411.17164, 2024.
+[34] Meire Fortunato, Tobias Pfaff, Peter Wirnsberger, Alexander Pritzel, and Peter Battaglia. Multiscale
+     meshgraphnets. arXiv preprint arXiv:2210.00612, 2022.
+[35] Chris Choy, Alexey Kamenev, Jean Kossaifi, Max Rietmann, Jan Kautz, and Kamyar Azizzadenesheli.
+     Factorized implicit global convolution for automotive computational fluid dynamics prediction. arXiv
+     preprint arXiv:2502.04317, 2025.
+[36] Qian Chen, Mohamed Elrefaie, Angela Dai, and Faez Ahmed. Tripnet: Learning large-scale high-fidelity
+     3d car aerodynamics with triplane networks. arXiv preprint arXiv:2503.17400, 2025.
+[37] Moshe Eliasof, Eldad Haber, and Eran Treister. Pde-gcn: Novel architectures for graph neural networks
+     motivated by partial differential equations. Advances in neural information processing systems, 34:
+     3836–3849, 2021.
+[38] Rishikesh Ranade, Chris Hill, Lalit Ghule, and Jay Pathak. A composable machine-learning approach for
+     steady-state simulations on high-resolution grids. Advances in Neural Information Processing Systems, 35:
+     17386–17401, 2022.
+[39] Wenzhuo Liu, Mouadh Yagoubi, and Marc Schoenauer. Multi-resolution graph neural networks for pde
+     approximation. In International Conference on Artificial Neural Networks, pages 151–163. Springer, 2021.
+[40] Yuying Liu, Colin Ponce, Steven L Brunton, and J Nathan Kutz. Multiresolution convolutional autoencoders.
+     Journal of Computational Physics, 474:111801, 2023.
+[41] John Guibas, Morteza Mardani, Zongyi Li, Andrew Tao, Anima Anandkumar, and Bryan Catanzaro.
+     Adaptive fourier neural operators: Efficient token mixers for transformers. arXiv preprint arXiv:2111.13587,
+     2021.
+[42] Maziar Raissi, Paris Perdikaris, and George E Karniadakis. Physics-informed neural networks: A deep
+     learning framework for solving forward and inverse problems involving nonlinear partial differential
+     equations. Journal of Computational Physics, 378:686–707, 2019.
+[43] Zongyi Li, Hongkai Zheng, Nikola Kovachki, David Jin, Haoxuan Chen, Burigede Liu, Kamyar Aziz-
+     zadenesheli, and Anima Anandkumar. Physics-informed neural operator for learning partial differential
+     equations. ACM/IMS Journal of Data Science, 1(3):1–27, 2024.
+[44] Vıctor Garcia Satorras, Emiel Hoogeboom, and Max Welling. E (n) equivariant graph neural networks. In
+     International conference on machine learning, pages 9323–9332. PMLR, 2021.
+[45] Johannes Brandstetter, Rob Hesselink, Elise van der Pol, Erik J Bekkers, and Max Welling. Geometric and
+     physical quantities improve e (3) equivariant message passing. arXiv preprint arXiv:2110.02905, 2021.
+[46] Yi-Lun Liao and Tess Smidt. Equiformer: Equivariant graph attention transformer for 3d atomistic graphs.
+     arXiv preprint arXiv:2206.11990, 2022.
+[47] Benedikt Alkin, Richard Kurle, Louis Serrano, Dennis Just, and Johannes Brandstetter. Ab-upt for
+     automotive and aerospace applications. arXiv preprint arXiv:2510.15808, 2025.
+
+
+                                                      11
+[48] Philippe R Spalart, Shur Deck, Michael L Shur, Kyle D Squires, M Kh Strelets, and Andrei Travin. A new
+     version of detached-eddy simulation, resistant to ambiguous grid densities. Theoretical and computational
+     fluid dynamics, 20(3):181–195, 2006.
+[49] Bruno Chaouat. The state of the art of hybrid rans/les modeling for the simulation of turbulent flows. Flow,
+     turbulence and combustion, 99(2):279–327, 2017.
+[50] Stefan Heinz. A review of hybrid rans-les methods for turbulent flows: Concepts and applications. Progress
+     in Aerospace Sciences, 114:100597, 2020.
+[51] Neil Ashton, Paul Batten, Andrew W Cary, Kevin R Holst, and Vangelis Skaperdas. Hlpw-4/gmgw-3:
+     Hybrid rans/les technology focus group workshop summary. In AIAA Aviation 2022 Forum, page 3293,
+     2022.
+[52] Burkhard Hupertz, Neil Lewington, Charles Mockett, Neil Ashton, and Lian Duan. Towards a standardized
+     assessment of automotive aerodynamic cfd prediction capability-autocfd 2: Ford drivaer test case summary.
+     Technical report, SAE Technical Paper, 2022.
+[53] Chenyi Zhang, Max Tanneberger, Timo Kuthada, Felix Wittmeier, Jochen Wiedemann, and Juliane Nies.
+     Introduction of the aerosuv-a new generic suv model for aerodynamic research. Technical report, SAE
+     Technical Paper, 2019.
+[54] Angelina I Heft, Thomas Indinger, and Nikolaus A Adams. Experimental and numerical investigation of
+     the drivaer model. In Fluids engineering division summer meeting, volume 44755, pages 41–51. American
+     Society of Mechanical Engineers, 2012.
+[55] Chenyi Zhang. Aerodynamic study on the vehicle shape parameters with respect to ground simulation.
+     Springer, 2021.
+[56] T Economon D Engwirda J Ho M Mara and R Mansharamani. Luminary contribution to the autocfd4
+     workshop. URL https://autocfd.org/autocfd4/, 2024.
+[57] Joshua Krakos, Pedro Gomes, Jonathan Ho, Michael Mara, Gonzalo Sáez, Adrien Loseille, Thomas
+     Economon, and Juan J Alonso. Gpu-based and adaptive solution technology for the 5th aiaa high lift
+     prediction workshop. In AIAA SCITECH 2025 Forum, page 0496, 2025.
+[58] Nasa common research model project. high speed common                           research    model    (crm).
+     https://commonresearchmodel.larc.nasa.gov/home-2/high-speed-crm/.
+[59] Chongjie Si, Debing Zhang, and Wei Shen. Adamuon: Adaptive muon optimizer. arXiv preprint
+     arXiv:2507.11005, 2025.
+
+
+
+
+                                                      12
+A     Model configuration and training details
+A.1     Datasets
+
+The benchmarking, validation and ablation studies are carried out on 3 datasets, DrivAerML [12],
+Luminary SHIFT-SUV [13] and Luminary SHIFT-Wing [14]. Below we provide details about each
+of these datasets with information such as training, validation and testing splits.
+
+A.1.1    DrivAerML
+DrivAerML [12] is a public, high-fidelity dataset tailored for AI-based surrogates in automotive
+external aerodynamics. It comprises 500 parametrically morphed variants of the DrivAer Notchback,
+providing broad geometric diversity for studying drag and flow behavior at scale. Each case is
+simulated with a scale-resolving hybrid RANS/LES approach representative of industry practice
+[48–51], on extremely large meshes—on the order of 140 to 150 million volume elements and roughly
+9 to 10 million surface points/elements [12, 52].
+For every geometry, time-averaged fields are released in VTK formats: VTP files contain surface
+quantities (pressure and wall shear stress), and VTU files contain volume fields (velocity, pressure, and
+turbulence-related variables such as vorticity or turbulent viscosity). The geometry is exported as a
+coarse STL with around 0.3 million points. The dataset was created to address the lack of open-source,
+large-scale CFD data suitable for high-fidelity ML research in automotive aerodynamics.
+In our study, we adopt a drag-aware split strategy. 10 % of the samples are held out for test-
+ing, and approximately 20% of this test set is designated out-of-distribution (OOD) based on
+drag ranges. These OOD cases correspond to some of the lowest and highest drag configurations
+and are not exposed during training, enabling assessment of generalization to extreme geometries
+and regimes. Details related to the exact training and validation split may be found in Physic-
+sNeMo [11] here: https://github.com/NVIDIA/physicsnemo-cfd/tree/main/workflows/
+bench_example/drivaer_ml_files.
+
+A.1.2    Luminary SHIFT-SUV
+SHIFT-SUV is an open-source, high-fidelity database of external aerodynamics developed by Lumi-
+nary Cloud in collaboration with Honda, comprising thousands of transient simulations of parametri-
+cally morphed variants of the AeroSUV platform from FKFS (Forschungsinstitut für Kraftfahrwesen
+und Fahrzeugmotoren Stuttgart) [53]. AeroSUV shares design lineage and geometric characteristics
+with the widely used DrivAer platform in sedan aerodynamics [54]. Distributed under a CC-BY-NC
+license and hosted on HuggingFace [13], SHIFT-SUV is purpose-built for high-fidelity aerodynamic
+inference without requiring CFD or meshing expertise, supporting both surface- and volume-based
+surrogate training, real-time inference, and exploration of shape–performance correlations.
+Geometry generation uses a deformation-cage approach implemented in ANSA (BETA-CAE Sys-
+tems). Cage vertex motions are structured to emulate vehicle design parameters familiar to stylists
+and defined with guidance from Honda; the parameters are non-orthogonal (multiple parameters
+may affect shared control points). Configuration options—such as body style (Estate vs. Fastback)
+and underbody detail (smooth vs. detailed)—are treated as non-parametric toggles. Regions that
+should not vary across designs (e.g., wheels, tires, suspension) are excluded from morphing to
+preserve consistency. Specific parameter values are selected via Latin hypercube sampling. The
+initial dataset varies geometry while keeping boundary conditions fixed. The deformation space uses
+a morphing-cage workflow to apply stylist relevant surface translations relative to the baseline model,
+with ranges specified as target displacements in millimeters that guide, but do not strictly enforce, the
+final geometry.
+The geometric parameters are varied as follows. Because the morphing cage couples nearby regions,
+these bounds serve as design targets for the cage control points rather than exact, per-point displace-
+ment limits on the surface. Additional details may be found in the dataset provided by Luminary et
+al. [13].
+
+        • Front end changes include hood height (−50 to +50 mm), front (FR) overhang (−150 to
+          +150 mm), windshield angle implemented via forward/backward shifts (−150 to +100
+          mm), and planview adjustments near the front (−75 to +75 mm),
+
+
+                                                   13
+        • Global and chassis-related shifts cover overall vehicle height (−150 to +150 mm) and ride
+          height (−30 to +30 mm),
+        • Rear end modifications include backlight angle via surface translation (−100 to +200 mm),
+          rear (RR) overhang (−150 to +100 mm), and tapering at both the windshield and rear (−100
+          to +100 mm and −90 to +70 mm, respectively).
+
+Variants are organized into four groups by scale and body style—full-scale Estate, full-scale Fastback,
+quarter-scale Estate, and quarter-scale Fastback—with 998 samples in each group. Quarter-scale
+cases validate the setup against FKFS wind-tunnel experiments for a 1/4-scale model [55], while
+full-scale cases follow the same methodology with refinements informed by best practices from
+AutoCFD [56].
+Each sample has a unique volume mesh created in ANSA, yielding hex-dominant and polyhedral
+meshes. A grid refinement study for the validation configuration selected settings of approximately
+45 million cells as a balance between accuracy and cost. All cases were run on the Luminary Cloud
+platform using a GPU-native, second-order (space and time) finite-volume solver [56, 57]. The
+turbulence model is transient delayed detached eddy simulation (DDES)—a scale-resolving DES
+variant—with a shear-layer–adapted length scale and a vortex tilting measure (VTM) to mitigate
+grey-area effects. The Spalart–Allmaras (SA) model is employed in RANS regions, and a hybrid
+centered/upwind convective scheme with proprietary blending limits dissipation in LES regions.
+An advanced shielding function prevents modeled stress depletion, avoiding premature separation.
+Boundary conditions include a rolling road (translating floor) and rotating wheels, with all other
+vehicle surfaces treated as no-slip walls. For the full-scale datasets—used in our training—the inflow
+is a uniform 30 m/s [56, 57].
+For training we use 1996 simulations from the full-scale dataset split randomly into 80/10/10. We
+match the exact simulations in each split with the AB-UPT benchmarking work in Alkin et al. [47].
+
+A.1.3    Luminary SHIFT-Wing
+SHIFT-Wing is an open-source database centered on the NASA Common Research Model (CRM)
+[58] for high-speed transonic transport aerodynamics [14]. The CRM spans a wide range of config-
+urations—from cruise to high-lift with deployed flaps/slats, optional nacelles/pylons, and empen-
+nage—and has been extensively studied experimentally and through community CFD efforts (e.g.,
+AIAA Drag Prediction and High-Lift workshops). Developed in collaboration with Otto Aviation,
+the dataset is purpose-built for high-fidelity aerodynamic inference of non-linear flow fields without
+requiring CFD or meshing expertise, supporting both surface- and volume-based surrogate training,
+real-time inference, and exploration of shape–performance trade-offs.
+The current release focuses on the high-speed cruise configuration with only fuselage and wing,
+emphasizing planform design. A fully parametric CRM was constructed in OnShape by importing the
+NASA reference, deconstructing it, and reassembling it with exposed variables. The parameterization
+separates wing and fuselage and proceeds as follows:
+
+        • Wing: intersect the reference wing at six spanwise stations to extract airfoil profiles; expose
+          parameters controlling profile translation and rotation (twist); re-loft the wing and reconstruct
+          the tip geometry.
+        • Fuselage: parameterize fuselage length and radius; size the wing–body fairing from the
+          local chord of the newly lofted wing.
+        • Assembly: combine fuselage and wing via Boolean operations. While many micro-
+          parameters are used internally, the dataset varies a compact set of macro planform/fuselage
+          parameters (seven in the current release), with micro-parameters derived from these.
+
+Datasets are generated in batches at fixed Mach numbers; geometry parameters and angle of attack
+are selected via Latin hypercube sampling to span distinct flow regimes intentionally. Lower-
+Mach batches avoid shocks, whereas higher-Mach batches exhibit complex three-dimensional shock
+structures, enabling targeted evaluation of AI/ML methods across qualitatively different physics. The
+SHIFT-Wing design space targets classical wing planform and fuselage variables around the NASA
+CRM reference.
+
+
+                                                    14
+The design and operating parameters are varied as follows. Additional details may be found in the
+dataset provided by Luminary et al. [14].
+        • On the fuselage, aspect ratio varies from 7.5 to 11 with a reference value of 9. The
+          quarter-chord sweep angle spans 25 to 37.5 (reference 35). The root-chord extension factor
+          ranges from 1.0 to 1.4 (reference 1.373). Fuselage diameter ranges from 240 to 258 inches,
+          with 240 inches as the reference.
+        • On the wing, root twist varies from 3 to 9 (reference 6.717). Spanwise twist is controlled
+          via deltas: root-to-break ranges from −7 to −3 (reference −5.953), and break to tip ranges
+          from −7.5 to −1.5 (reference −4.513).
+        • Operating conditions are varied through angle of attack from 0 to 4 and Mach number from
+          0.5 to 0.85.
+All simulations are run on the Luminary Cloud platform using a GPU-native finite-volume solver.
+For SHIFT-Wing, turbulence is modeled via steady RANS with the Spalart–Allmaras model [57]. All
+vehicle surfaces are treated as no-slip walls, and angle of attack is imposed through far-field boundary
+conditions. A key distinction from SHIFT-SUV is meshing: SHIFT-Wing employs Luminary
+Mesh Adaptation (LMA), a proprietary solution-adaptive meshing workflow that iteratively refines
+local mesh density and anisotropy to capture sharp features (e.g., transonic shocks) without user
+intervention. This automated sequence of meshes and solutions improves accuracy across diverse
+geometries and flow conditions while eliminating manual meshing effort.
+For training, we use 1698 simulations (1138 at Mach 0.5 and 560 at Mach 0.85) from this dataset split
+randomly into 80/10/10. We match the exact simulations in each split with the AB-UPT benchmarking
+work in Alkin et al. [47].
+
+A.1.4    Crash-dynamics datasets
+As an additional example beyond the aerodynamics datasets, we evaluate GeoTransolver on two
+nonlinear crash-dynamics benchmarks: a bumper-beam impact dataset and a full-vehicle Body-in-
+White (BIW) frontal-impact dataset. These datasets test prediction of transient structural response
+under large deformation, contact, and elastoplastic effects.
+The bumper-beam dataset is generated from a parametric finite-element representation of a front-
+impact bumper-beam scenario. The bumper beam is modeled with shell elements and impacted by a
+cylindrical rigid wall along the longitudinal direction. The design space varies geometric scaling,
+impact velocity, shell thickness, and transverse impactor offset, resulting in 135 simulations. The
+dataset is split into 80% training, 10% validation, and 10% testing.
+The BIW crash dataset is generated from a high-fidelity finite-element model of a vehicle Body-in-
+White undergoing frontal impact against a rigid barrier at 56 km/h. The model contains approximately
+400,000 nodes and 380,000 elements. The design space is constructed by perturbing the thicknesses
+of 33 front-end structural components by ±20% around their nominal values, resulting in 150
+simulations. Each simulation spans 120 ms and contains 25 discrete time steps. The dataset is split
+into 90% training, 5% validation, and 5% testing.
+For the BIW benchmark, we additionally evaluate position, velocity, and acceleration histories at
+driver and passenger toe-pan probe locations, which are sensitive to front-end deformation and are
+relevant to crashworthiness assessment.
+
+A.2     Models
+
+We evaluate GeoTransolver on SHIFT-SUV and SHIFT-Wing alongside strong baselines—Transolver
+and DoMINO—and report AB-UPT results directly from Alkin et al. [47]. To probe architectural
+sensitivity, we also conduct an ablation study on DrivAerML. Transolver uses the implementation
+released in PhysicsNeMo, with full self-attention over concatenated surface and volume tokens (1̃0M
+parameters). DoMINO is run with the default PhysicsNeMo configuration following Ranade et al.
+[8], including multi-scale neighborhoods and auxiliary geometric features (surface normals, areas,
+signed distance), yielding 1̃9.7M parameters. AB-UPT is not re-implemented or re-run; we adopt the
+refined 384-dimensional results from Alkin et al. [47]. GeoTransolver, released in PhysicsNeMo,
+spans 1̃0–25M parameters depending on GALE depth, ball-query radii, and kernel size; Section 5.1
+
+
+                                                  15
+reports accuracy across these architectural choices on DrivAerML. For SHIFT-Wing, GeoTransolver
+conditions each block on global parameters (angle of attack, Mach) via geometry/global context
+projections, in contrast to Transolver’s plain token conditioning. All models are trained for up
+to 500 epochs on a single NVIDIA GB200 node using the Muon optimizer [59], under a shared
+preprocessing and evaluation protocol.
+For the crash-dynamics benchmarks, we compare Transolver, GeoTransolver, and GeoTransolver
+with a FLARE attention backend under matched training protocols. Transolver and GeoTransolver
+use 128 latent tokens for physics attention, while the FLARE-backend variant uses 128 global queries
+for low-rank attention. For the bumper-beam dataset, GeoTransolver uses 6 layers, 8 attention heads,
+256 hidden channels, and multi-scale ball-query radii of [0.05, 0.25] with [8, 32] neighbors. For
+the BIW crash dataset, GeoTransolver uses 5 layers, 8 attention heads, and the same multi-scale
+ball-query configuration. In the FLARE-backend variant, the geometry-aware context pathway is
+kept fixed and only the self-attention/token-mixing backend is replaced.
+
+A.3   Metrics
+
+The prediction accuracy is compared across the metrics mentioned below and averaged over test
+samples. j refer to the index of the test sample and ˜· denotes the model prediction.
+
+       • Mean Absolute Error:
+                                                      N
+                                                   1 X
+                                                         ∥uj − ũj ∥                                   (12)
+                                                   N j=1
+
+       • Relative L1 Norm:                         PN
+                                                     j=1 ∥uj − ũj ∥
+                                                     PN                                                (13)
+                                                       j=1 ∥uj ∥
+
+For surface predictions, we also compare lift and drag forces on the test geometries. These global
+metrics are commonly used during design exploration for industrial engineering applications. The
+total force vector on test geometries is obtained as follows:
+                                         I
+                                   F =         (−(ps − p∞ )n̂ + τw )dS,                                (14)
+                                           S
+
+where, ps denotes the surface pressure, τw is the shear stress, n̂ is the normal vector. For calculating
+the drag force, the normal vector is set in the tangential direction, n = [1, 0, 0], while for lift force it
+is in the direction perpendicular to flow, n = [0, 0, 1]. The lift and drag forces are computed for each
+of the test cases using both predicted and ground truth fields and the R2 value is calculated over the
+entire test set, to determine the predictive accuracy.
+For the best-performing GeoTransolver configuration, we provide qualitative assessments: contour
+plots of key fields (e.g., pressure coefficient, velocity magnitude) and design trends showing predicted
+drag/lift as functions of representative geometry or regime parameters, alongside ground-truth curves
+where available.
+For crash dynamics, we report the relative L2 error over the predicted spatiotemporal structural
+response,                                  P
+                                             j ∥x̃j − xj ∥2
+                                   ϵL 2 =    P              ,                               (15)
+                                                j ∥xj ∥2
+where xj and x̃j denote the ground-truth and predicted structural states for test sample j. For the
+BIW benchmark, we also report mean squared error for position, velocity, and acceleration at driver
+and passenger toe-pan probe locations.
+
+A.4   Computational cost of multi-scale ball queries
+
+Table 5 reports per-step training and inference throughput for each ball-query configuration on
+DrivAerML for both surface and volume tasks (GALE backend, 8×H100, batch size 8, bfloat16,
+torch.compile). Mean ± std are reported across seeds where available; single-seed entries report
+
+
+                                                     16
+mean and std over within-epoch step times. Single-scale ball queries add 1.1–1.2× overhead on
+surface; the 4- and 6-scale multi-radii configurations add approximately 2× but plateau between
+them. The 6-scale entry required reducing query points from 200k to 160k to fit within H100’s 80 GB
+memory.
+
+
+Table 5: Training and inference throughput on DrivAerML (8×H100, batch size 8, bfloat16,
+torch.compile). Mean ± std reported.
+                                                                Surface                                      Volume
+                                                     Train                  Infer                  Train               Infer
+Config                Radii
+                                                    (s/step)               (s/step)               (s/step)            (s/step)
+No local feat.        —                          0.258 ± 0.002         0.120 ± 0.002         0.436 ± 0.007       0.227 ± 0.008
+1 scale (r=0.05)      [16]                       0.299 ± 0.003         0.131 ± 0.004         0.487 ± 0.011       0.252 ± 0.009
+1 scale (r=2.5)       [64]                       0.290 ± 0.001         0.120 ± 0.001         0.611 ± 0.004       0.352 ± 0.011
+4 scales              [16,32,32,64]              0.544 ± 0.014         0.254 ± 0.015         0.858 ± 0.022       0.512 ± 0.009
+6 scales∗             [8,16,32,32,64,128]        0.548 ± 0.010         0.254 ± 0.012         0.794 ± 0.036       0.503 ± 0.010
+∗ 160k query points (other configs use 200k) to fit in GPU memory.
+
+
+
+
+A.5      Query and geometry token ablation
+
+Table 6 reports relative L1 errors on DrivAerML as a function of query and geometry token counts.
+Increasing geometry token density at fixed queries sharply reduces volume errors (e.g., at 20k queries,
+pv drops from 11.1% at 50k geo to 3.09% at 300k), highlighting the need for adequate geometric
+coverage. Scaling query tokens improves surface metrics, with the best overall surface/integral
+performance at 60k/300k. Volume pressure exhibits a sweet spot at 60k/150k, whereas very high
+geometry counts with moderate queries can degrade volume errors, suggesting imbalance.
+
+
+Table 6: Relative L1 errors (%) on DrivAerML test geometries for number of geometry and query
+points.
+                                                         Surface                       Volume
+                           Query/Geo        ps      τw         CD         CL          pv      u
+                           20k/50k         3.08     5.36       0.993      0.989       11.1    9.3
+                           20k/150k        3.02     5.29       0.994      0.989       7.03   6.74
+                           20k/300k        3.04     5.27       0.993      0.987       3.09   4.01
+                           40k/50k         3.03     5.22       0.993      0.985       3.01   3.97
+                           40k/150k        2.96     5.20       0.995      0.988       3.13   3.97
+                           40k/300k        2.98     5.25       0.994      0.987       4.41   4.76
+                           60k/50k         2.97     5.17       0.994      0.987       5.61   5.75
+                           60k/150k        2.99     5.15       0.994      0.987       2.96   4.02
+                           60k/300k        2.86      4.9       0.996      0.991       3.01   4.02
+
+
+
+B     Additional results
+In this section, we provide additional results for the three aerodynamics datasets evaluated in this
+paper, DrivAerML, SHIFT-SUV, and SHIFT-Wing, as well as the two crash-dynamics benchmarks.
+For the aerodynamics datasets, we compare GeoTransolver predictions with simulated ground truth
+to assess its ability to capture design trends and surface and volume contours. For crash dynamics,
+we assess deformation fields and safety-relevant probe responses.
+
+B.1    DrivAerML
+
+Figure 2 shows drag and lift coefficients across the 48 test designs, with designs ordered by ascending
+ground-truth values. The predicted curves closely track the ground-truth trends, preserving the overall
+ordering and capturing large-scale variations. Small oscillations appear between adjacent designs with
+subtle directional changes, indicating minor non-monotonic deviations in tightly clustered regions.
+
+
+                                                           17
+The design points with the highest and lowest drag and lift forces correspond to out-of-distribution
+and are never seen during training. It may be noted that the model captures the aerodynamic forces for
+these designs reasonably accurately and the predictions can be further improved with augmentation
+of the training set.
+
+
+
+
+                       Figure 2: Design trends: drag and lift vs. test designs.
+
+
+B.2   Surface-field SHIFT results
+
+Table 7 reports the surface-field counterpart to the volume table in the main text (Table 3). GeoTran-
+solver leads on most surface metrics with two exceptions: surface pressure at Mach 0.85 (AB-UPT)
+and wall-shear stress at Mach 0.5 (DoMINO, trained per-Mach).
+
+Table 7: Surface-field relative L1 errors (%) across SHIFT-SUV (Estate, Fastback) and SHIFT-Wing
+(Ma=0.5, Ma=0.85). DoMINO is trained per-Mach on SHIFT-Wing; other models share the combined
+dataset.
+                                  Estate        Fastback       Ma=0.5       Ma=0.85
+              Model             ps         τw   ps     τw      ps    τw     ps     τw
+              GeoTransolver   0.0057 3.81 0.0056 3.70 0.021          12.2 0.081 13.01
+              AB-UPT          0.0064 4.95 0.0064 5.03 0.022          12.5 0.079 13.3
+              DoMINO          0.0100 12.24 0.0100 11.74 0.468        10.2 1.88 13.35
+              Transolver      0.0079 4.98 0.0078 4.97 0.094          12.4 0.098 13.2
+
+
+B.3   SHIFT-SUV
+
+Figures 3 and 4 plot drag and lift coefficients across the test design IDs for the Estate and Fastback.
+The predicted trends closely follow ground truth, capturing overall ordering and directional changes.
+Larger oscillations are visible in Estate lift, likely due to sparser coverage in that lift regime.
+Figures 5 and 6 compare surface pressure and wall-shear stress contours between GeoTransolver and
+ground truth. Errors are uniformly distributed and bounded, indicating high accuracy; the largest
+discrepancies occur near wheels and mirrors, where flow is particularly complex.
+Similarly, Figures 7 and 8 show volume comparisons on the xz plane. The highest errors appear near
+separation regions downstream and in the wake where gradients are sharp, but overall predictions
+remain accurate.
+
+B.4   SHIFT-Wing
+
+Figures 9 and 10 plot drag and lift across test design IDs at Mach 0.5 and 0.85. Predicted trends
+closely track ground truth in both regimes, preserving ordering and directional changes.
+Figures 11 and 12 compare surface pressure and wall-shear stress contours between GeoTransolver
+and ground truth. Errors are uniformly distributed and bounded, indicating high accuracy; the largest
+discrepancies appear on the wing, especially at higher Mach where sharper transitions occur.
+
+
+                                                  18
+                  Figure 3: Design trends for Estate: drag and lift vs. test designs.
+
+
+
+
+                Figure 4: Design trends for Fastback: drag and lift vs. test designs.
+
+
+
+
+Figures 13 and 14 show volume comparisons on the xz plane. Errors are most pronounced over
+the wing and fuselage and in the downstream wake where separation and steep gradients occur,
+particularly at Mach 0.85. Overall, predictions remain accurate across both regimes.
+
+
+
+
+B.5   Crash dynamics
+
+
+In this section, we provide additional results for the bumper-beam and BIW crash-dynamics datasets.
+We compare GeoTransolver predictions with finite-element ground truth to assess its ability to capture
+final deformation states, deformation evolution over time, and safety-relevant probe responses.
+
+
+
+
+Table 8: Training speed and number of parameters for the BIW crash-dynamics benchmark using the
+Muon optimizer.
+                Model                         Training speed No. of parameters
+                Transolver                        4.8 s/epoch           3,700,783
+                GeoTransolver                     7.5 s/epoch           5,686,504
+                GeoTransolver with FLARE          7.1 s/epoch           5,150,624
+
+
+                                                  19
+                        Figure 5: Surface contour comparisons for Estate.
+
+
+
+
+                       Figure 6: Surface contour comparisons for Fastback.
+
+
+
+Table 9: Probe-level MSE comparison for BIW crash dynamics using the Muon optimizer. Position,
+velocity, and acceleration are evaluated at driver and passenger toe-pan locations.
+    Probe         Model                              Position         Velocity      Acceleration
+    Driver       Transolver                      2.63 × 10−3     8.41 × 10−1       2.14 × 103
+    Driver       GeoTransolver                   1.84 × 10−3     6.09 × 10−1       1.71 × 103
+    Driver       GeoTransolver with FLARE        7.18 × 10−4     2.71 × 10−1       1.27 × 103
+    Passenger    Transolver                      2.21 × 10−3     7.25 × 10−1       2.24 × 103
+    Passenger    GeoTransolver                   1.72 × 10−3     5.53 × 10−1       1.80 × 103
+    Passenger    GeoTransolver with FLARE        6.52 × 10−4     2.53 × 10−1       1.45 × 103
+
+
+Table 9 shows that GeoTransolver improves the prediction of position, velocity, and acceleration
+at both driver and passenger probe locations, and that replacing the physics-attention backend with
+FLARE further improves these safety-relevant quantities. These probe-level results complement the
+full-field relative L2 errors reported in the main text and indicate that the geometry-aware context
+remains effective when paired with an alternative efficient attention backend.
+
+
+                                                20
+               Figure 7: Volume contour comparisons for Estate on the xz plane.
+
+
+
+
+              Figure 8: Volume contour comparisons for Fastback on the xz plane.
+
+
+Figures 15, 16, and 17 provide qualitative deformation comparisons for GeoTransolver with the
+FLARE attention backend on the crash-dynamics benchmarks. These visual results help localize
+prediction differences during large deformation and contact-dominated response.
+
+
+
+
+                                             21
+ Figure 9: Design trends for Mach 0.5: drag and lift vs. test designs.
+
+
+
+
+Figure 10: Design trends for Mach 0.85: drag and lift vs. test designs.
+
+
+
+
+       Figure 11: Surface contour comparisons for Mach 0.5.
+
+
+
+
+                                  22
+       Figure 12: Surface contour comparisons for Mach 0.85.
+
+
+
+
+Figure 13: Volume contour comparisons on the xz plane for Mach 0.5.
+
+
+
+
+Figure 14: Volume contour comparisons on the xz plane for Mach 0.85.
+
+
+
+
+                                23
+Figure 15: Visual comparison of BIW crash deformation for representative test samples. The top row
+shows finite-element ground truth, and the bottom row shows GeoTransolver predictions using the
+FLARE attention backend.
+
+
+
+
+                                               24
+                 (a) BIW crash deformation evolution for the first held-out test sample.
+
+
+
+
+                (b) BIW crash deformation evolution for the second held-out test sample.
+Figure 16: Temporal evolution of BIW crash deformation for the same held-out test samples shown
+in Fig. 15. Columns show representative time steps through the impact event. For each sample, the
+top row shows finite-element ground truth and the bottom row shows GeoTransolver predictions
+using the FLARE attention backend.
+
+
+
+
+Figure 17: Visual comparison of bumper-beam crash deformation for representative test samples.
+The top row shows finite-element ground truth, and the bottom row shows GeoTransolver predictions
+using the FLARE attention backend.
+
+
+
+
+                                                   25
+

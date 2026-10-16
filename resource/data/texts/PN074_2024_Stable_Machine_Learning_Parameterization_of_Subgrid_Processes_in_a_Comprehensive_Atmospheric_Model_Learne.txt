@@ -1,0 +1,2499 @@
+                                                         manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                                                  Stable Machine-Learning Parameterization of Subgrid
+                                                    Processes in a Comprehensive Atmospheric Model
+                                                     Learned From Embedded Convection-Permitting
+                                                                      Simulations
+
+                                                 Zeyuan Hu1,2∗, Akshay Subramaniam1 , Zhiming Kuang2 , Jerry Lin3 , Sungduk
+                                                   Yu4 , Walter M. Hannah5 , Noah D. Brenowitz1 , Josh Romero1 , Michael S.
+                                                                                 Pritchard1,3
+arXiv:2407.00124v4 [physics.ao-ph] 31 Jan 2025
+
+
+
+
+                                                                                        1 NVIDIA Research
+                                                                                        2 Harvard University
+                                                                                  3 University of California at Irvine
+                                                                  4 Multimodal Cognitive AI, Intel Labs, Santa Clara, CA 95054, USA
+                                                                              5 Lawrence Livermore National Laboratory
+
+
+
+
+                                                         Key Points:
+                                                     • Stable hybrid climate simulations are achieved with a data-driven emulator of sub-
+                                                       grid physics coupled with a comprehensive atmosphere model.
+                                                     • Online performance benefits from a U-Net architecture and microphysical constraints.
+
+                                                     • A realistic cloud climatology with explicit cloud condensate coupling is achieved
+
+                                                       in a hybrid multi-scale modeling framework.
+
+
+
+
+                                                 ∗ Work done during an internship at NVIDIA
+
+
+
+                                                 Corresponding author: Zeyuan Hu, zeyuan hu@fas.harvard.edu
+
+
+                                                                                                –1–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+Abstract
+Modern climate projections often suffer from inadequate spatial and temporal resolu-
+tion due to computational limitations, resulting in inaccurate representations of sub-grid
+processes. A promising technique to address this is the Multiscale Modeling Framework
+(MMF), which embeds a kilometer-resolution cloud-resolving model within each atmo-
+spheric column of a host climate model to replace traditional convection and cloud pa-
+rameterizations. Machine learning (ML) offers a unique opportunity to make MMF more
+accessible by emulating the embedded cloud-resolving model and reducing its substan-
+tial computational cost. Although many studies have demonstrated proof-of-concept suc-
+cess of achieving stable hybrid simulations, it remains a challenge to achieve near operational-
+level success with real geography and comprehensive variable emulation that includes,
+for example, explicit cloud condensate coupling. In this study, we present a stable hy-
+brid model capable of integrating for at least 5 years with near operational-level com-
+plexity, including coarse-grid geography, seasonality, explicit cloud condensate and wind
+predictions, and land coupling. Our model demonstrates skillful online performance, achiev-
+ing a 5-year zonal mean tropospheric temperature bias within 2K, water vapor bias within
+1 g/kg, and a precipitation RMSE of 0.96 mm/day. Key factors contributing to our on-
+line performance include an expressive U-Net architecture and physical thermodynamic
+constraints for microphysics. With microphysical constraints mitigating unrealistic cloud
+formation, our work is the first to demonstrate realistic multi-year cloud condensate cli-
+matology under the MMF framework. Despite these advances, online diagnostics reveal
+persistent biases in certain regions, highlighting the need for innovative strategies to fur-
+ther optimize online performance.
+
+
+Plain Language Summary
+       Traditional climate models often struggle to accurately simulate small-scale pro-
+cesses like thunderstorms due to compute limitations, leading to less reliable climate pre-
+dictions. Machine learning (ML) offers a promising solution by efficiently modeling these
+processes and integrating them into hybrid ML-physics simulations within a host climate
+model. While previous studies have shown success in simplified setups, such as all-ocean
+planets, achieving accurate and stable hybrid simulations in complex, real-world settings
+remains challenging. In this study, we developed a stable hybrid model capable of sim-
+ulating the climate for five years using real geographic features and explicitly predict-
+ing the time evolution of temperature, moisture, cloud, and wind. Our model achieves
+skillful accuracy in long-term mean atmospheric states. This success is due to several
+key improvements: an advanced architecture and the incorporation of cloud physics con-
+straints.
+
+
+1 Introduction
+      Accurately representing cloud and convection has long been a major challenge for
+accurate climate model simulations due to the relatively coarse resolution (>50km) in
+traditional climate models (Eyring et al., 2016). Uncertainty associated with represent-
+ing these subgrid processes remains one of the most significant factors contributing to
+climate feedback uncertainties in future climate change projections (IPCC, 2021; Sher-
+wood et al., 2020). To better represent these processes, the community has developed
+global storm-resolving simulators with <5km resolution. These models are actively be-
+ing tested for their use in long-term climate simulations, but they are still computation-
+ally too demanding (e.g., Taylor et al., 2023; Hohenegger et al., 2023).
+      Another approach, known as the Multiscale Modeling Framework (MMF)—also com-
+monly referred to as super-parameterization—explicitly embeds a small-domain, km-resolution
+cloud-resolving model (CRM) in each atmosphere column of a host climate model to re-
+place the traditional convection and cloud parameterization (Grabowski & Smolarkiewicz,
+
+
+                                            –2–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+1999; Benedict & Randall, 2009; Randall, 2013; Hannah et al., 2020; Norman et al., 2022).
+The embedded cloud-resolving model can directly simulate the atmospheric processes
+at the km-scale with time steps of a few seconds and feedback to the host climate model
+the effect of these small-scale processes on the coarser grids. However, such MMF mod-
+els can still be computationally very demanding, for example, 100-10,000 times more ex-
+pensive than conventional global climate models depending on the dimensionality and
+resolution of the interior resolved scale (e.g., Khairoutdinov & Randall, 2001; Parishani
+et al., 2018; Terai et al., 2020; Hannah et al., 2020; Peng et al., 2024). To enhance com-
+putational efficiency, the embedded cloud-resolving model is often configured with a two-
+dimensional domain.
+       A hybrid approach that combines traditional climate models with machine learn-
+ing is a promising solution for high-fidelity climate simulations without incurring addi-
+tional computational costs. Machine learning models can learn the effects of small-scale
+physical processes directly from high-fidelity simulation data, such as those from MMF
+climate simulations (Gentine et al., 2018; Rasp et al., 2018; Brenowitz et al., 2020; Han
+et al., 2020; Mooers et al., 2021; X. Wang et al., 2022; Bhouri et al., 2023; Lin et al., 2024;
+Iglesias-Suarez et al., 2024; Kühbacher et al., 2024), globally uniform km-resolution sim-
+ulations (Brenowitz & Bretherton, 2018, 2019; Yuval & O’Gorman, 2020; Yuval et al.,
+2021; P. Wang et al., 2022), and reanalysis products (Kochkov et al., 2024). Once trained,
+an ML emulator can be coupled with a host climate model to perform hybrid physics-
+ML simulations, potentially enhancing simulation accuracy for a given computational
+budget when comparing to traditional climate simulations using empirical convection pa-
+rameterizations (Rasp et al., 2018; Yuval & O’Gorman, 2020).
+
+      The hybrid approach of learning a ML paramterization from MMF simulations has
+its own advantages and limitations compared to other hybrid methods. The MMF sim-
+ulations might be considered less physical compared to global storm-resolving simula-
+tions due to certain idealizations, such as the scale separation between host model and
+the embedded CRM, and the 2D representation of clouds and convection in the 2D CRM.
+However, the MMF approach effectively captures the essence of the challenge of learn-
+ing a ML parameterization, e.g, stochasticity, multi-physics, and coarse-graining in time.
+The scale separation also brings the convenience of locality, as CRMs in different columns
+do not directly communicate. Therefore, each CRM can be treated as an independent
+sample, and emulating each CRM would only require the input and output in the same
+column.
+
+      Conversely, using global km-resolution simulation data requires coarse-graining the
+raw data, and the choice of coarse-graining scale can be challenging, potentially lead-
+ing to issues when the ML parameterization learned from the coarse-graining data is cou-
+pled with a host model (e.g, A. Ross et al., 2023). The defined machine learning prob-
+lem of emulating coarse-graining targets may also involve non-locality (P. Wang et al.,
+2022), where the state tendencies of each column can be dependent on the states of ad-
+jacent columns. In addition to learning from simulation data, Kochkov et al. (2024) trains
+their hybrid models, called Neural General Circulation Model (NeuralGCM), directly from
+reanalysis data. They achieved this by building a fully differentiable model, which in-
+cludes a differentiable dynamical core and a neural network-based parameterization for
+physics in each column. The NeuralGCM has the advantage of optimizing climate met-
+rics directly against reanalysis data of historical climate but faces challenges of extrap-
+olating to substantially different future climate. In contrast, the MMF hybrid approach
+has a code base that is fit for climate prediction, with all necessary components and mod-
+ules for simulating future climate beyond the historical record.
+      In addition to advantages and limitations mentioned in the previous paragraph, these
+hybrid physics-ML climate simulations face challenges related to online instability and
+online error. Optimizing a ML model’s offline skill (by optimizing some loss function of
+the ML model’s prediction at one single time step) does not necessarily lead to optimized
+
+
+                                             –3–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+online performance when a ML model is coupled with a dynamical core and integrates
+for years (Ott et al., 2020; X. Wang et al., 2022). Many previous studies have demon-
+strated proof-of-concept success in achieving stable online simulations using idealized se-
+tups such as aquaplanets. A few recent works (X. Wang et al., 2022; Han et al., 2023;
+Sanford et al., 2023; Kochkov et al., 2024; Behrens et al., 2024) have demonstrated the
+promise of stable online simulations incorporating real geographic features. Kochkov et
+al. (2024) achieved mostly stable (though occasional instability was observed) hybrid sim-
+ulations using end-to-end online training, developing a fully differentiable hybrid model
+and directly optimizing multi-step rollout loss. Nevertheless, making existing Fortran-
+based climate models differentiable is challenging.
+       In the context of emulating the CRM in MMF simulations with a ML parameter-
+ization, no previous work has succeeded in completely coupling all input and output vari-
+ables of the CRM (e.g., tendencies of cloud condensates, surface fluxes for atmosphere-
+surface coupling) with real geography via ML. For example, Behrens et al. (2024) had
+to sidestep the condensate coupling to maintain a 5-month online stability by using a
+partial coupling approach, where condensate prediction is provided by a simultaneously
+running CRM. Han et al. (2023) predicted cloud species and achieved stable online sim-
+ulations with real geography, but they did not emulate radiation (and thus the radia-
+tive fluxes required for atmosphere-land coupling) and showed significant online biases
+in high-latitude temperature and humidity. Additionally, Han et al. (2023) predicted cloud
+species in a semi-implicit manner, diagnosing current time step cloud states based on cur-
+rent temperature and moisture states (and many other input features) without interact-
+ing with the dynamical core, as indicated in Table 1 of Han et al. (2020). Conventional
+cloud parameterizations were also retained in Han et al. (2023) to supply inputs required
+by their radiative transfer scheme—such as cloud liquid and ice number concentrations
+and cloud fraction—that were not predicted by their neural network.
+      In the long term, it is crucial for ML parameterizations to explicitly and accurately
+predict cloud condensate tendencies and radiative transfer, which are vital for handling
+aerosol cloud interaction, pollutant transport, and climate change. A recent open-source
+dataset, ClimSim (Yu, Hannah, et al., 2024), provides a valuable opportunity to train
+ML parameterizations with operational-level complexity. This dataset represents the largest-
+ever open-source collection tailored for operation-ready hybrid physics-ML climate sim-
+ulations. It provides a comprehensive set of inputs and outputs for downstream coupling
+and contains an extensive number of samples with high sampling frequency at multiple
+spatial resolutions. It includes a coarse-resolution version (11.5°×11.5°, 384 grid columns,
+< 1 TB), suitable for cost-effective prototyping, and a high-resolution version (1.5°×1.5°,
+21,600 grid columns, 42 TB), which enables evaluation of performance under operational-
+level conditions with more detailed orography and land-sea contrasts.
+      In this work, we used the coarse-resolution version of the ClimSim dataset to train
+ML models capable of predicting a complete set of output variables. Our hybrid physics-
+ML simulations are stable under near-operational-level complexity (with a real but coarse
+geography, seasonality, explicit prediction of cloud condensate and wind tendencies, and
+surface coupling), outperforming previous studies that emulate the CRM in MMF cli-
+mate simulations. Our 5-year stable hybrid simulation demonstrates less than 2K zonal
+mean troposphere temperature bias, less than 1g/kg zonal mean troposphere humidity
+bias, a root mean square error of 0.96 mm/day for mean precipitation, and realistic zonal
+mean cloud distribution. To inform others’ practice, we show how this online performance
+is achieved as the result of several key efforts: employing an expressive U-Net architec-
+ture and incorporating cloud microphysical constraints.
+      The rest of the manuscript is structured as follows: Section 2 documents the meth-
+ods, including details on model architecture, microphysical constraints, data, and train-
+ing. Section 3 presents the offline skill improvement from using the more expressive U-
+Net architecture and expanded input features compared to a baseline multi-layer per-
+
+
+                                            –4–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+         28
+
+
+
+
+                                                                                                3
+  8
+
+
+
+
+                                                                                                x1
+        x1
+ x4
+                                                   Concatenate
+
+
+
+
+                                                                                             64
+       64
+64
+
+
+
+
+               28
+
+
+                     56
+              x1
+
+
+                    x2
+                                                   Concatenate
+
+
+
+
+              32
+
+
+                    32
+
+
+
+
+                            56
+                           x2
+
+
+
+
+                                          6
+                                       25
+                                                   Concatenate
+
+
+
+
+                          16
+
+
+
+
+                                     8x
+                                                   Concatenate
+
+
+
+
+                                       x2                        x3
+                          x2                                                  x3
+               x2                                                                  x3
+                                  Res Blocks           Conv Block
+        x2                        Self attention       Down/up sample block             x3
+
+
+
+
+Figure 1.     The schematic of the U-Net architecture. The U-Net model is composed of multiple
+ResBlocks, with 4 layers in depth and latent dimension sizes of [128, 256, 256, 256]. The model
+requires the input and output of each sample to be prepared as 2D arrays (see Appendix A4)
+with dimensions corresponding to the number of variables times the vertical length. The num-
+bers on top of each tensor indicate the tensor shape for the U-Net model with the microphysical
+constraint. Each tensor in the encoder has a skip connection to a corresponding tensor in the
+decoder, illustrated by the red arrows showing some of these skip connections.
+
+
+
+
+ceptron (MLP) model, a fully connected neural network architecture. Section 4 demon-
+strates the online performance of our hybrid simulations. Finally, Section 5 provides the
+discussion and summary.
+
+
+
+2 Methods
+      2.1 Dataset
+
+      The data we used is the low-resolution real-geography dataset in the ClimSim dataset
+(Yu, Hannah, et al., 2024). This low-resolution real-geography data consists of 10-year
+simulation from the Energy Exascale Earth System Model (E3SM)-multiscale modeling
+framework (MMF) (Hannah et al., 2020), configured with the predefined ”F2010-MMF1”
+compset with “ne4pg2” grid and a model time step of 20 minutes. This low-resolution
+simulation contains 384 columns in the globe using an unstructured cubed-sphere grid,
+with an effective resolution of approximately 11.5°×11.5°. The E3SM-MMF model em-
+ploys 60 levels for global dynamics, extending up to approximately 65 km in altitude.
+The E3SM-MMF simulation uses prescribed sea surface temperature, sea ice coverage,
+and aerosols based on present-day climatology. The prescribed sea surface temperature
+follows a fixed recurring annual cycle. The aerosols are configured to be transparent to
+radiation code. The first seven years are used for the training set without subsampling.
+The eighth year is used for the validation set, while the last two years are used for the
+test set. Both the validation and test sets (not the training set) are subsampled in time
+using a stride of 7 time steps to be consistent with the constructed validation and test
+sets in Yu, Hannah, et al. (2024). Each simulation day has 72 time steps, so the stride
+of 7 adequately samples the full diurnal cycle. This whole low-resolution dataset pro-
+vides around 100 million samples with a total data size of 744GB, of which 521GB is used
+for the training set.
+
+
+                                                       –5–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+     2.2 Architecture
+
+      Two architectures were used and compared in this study: a multi-layer perceptron
+(MLP) model and a U-Net model. The first architecture is the MLP model, which is a
+fully connected neural network with one or more hidden layers. We adopted the hyper-
+parameters recommended by (Yu, Hannah, et al., 2024), which were informed by their
+ambitious hyperparameter search comprising 11,851 trials. MLP models are widely used
+in previous related studies (Gentine et al., 2018; Rasp et al., 2018; Brenowitz & Brether-
+ton, 2019; Ott et al., 2020; Yuval et al., 2021; Beucler et al., 2024; Lin et al., 2024; Iglesias-
+Suarez et al., 2024) and serve well as a baseline for comparison.
+       The second architecture is a U-Net model (Song et al., 2020), suitable for tasks where
+the output targets share the same spatial dimensions as the input features (here, the num-
+ber of vertical levels in each atmospheric column). Other architectures have also been
+used in previous studies, such as Residual Convolutional Neural Networks (ResCu) in
+Han et al. (2020, 2023) and Residual Deep Neural Networks (ResDNNs) in X. Wang et
+al. (2022); Han et al. (2023). Heuer et al. (2023) recommended the U-Net architecture
+after comparing it with MLPs, Convolutional Neural Networks, and Residual Neural Net-
+works, demonstrating that U-Net achieved the highest fitting score. We adapted the 2D
+U-Net model from Song et al. (2020) into a 1D version (Figure 1) by replacing 2D con-
+volution layers with 1D convolution layers. The U-Net model has an encoder-decoder
+structure, where the encoder compresses the input data and the decoder reconstructs it,
+with skip connections that retain important details from the input. This setup enables
+the model to capture both short-range details, such as information from adjacent ver-
+tical levels, and long-range patterns, such as vertical structure of the entire column. Com-
+pared to the MLP model, the U-Net model can better learn the vertical structures through
+its convolutional layers and optional self-attention layers. Full details of the model pa-
+rameters for both the MLP and U-Net models are documented in Appendix A2.
+
+     2.3 CRM Setup in the E3SM-MMF Model
+
+      Here we provide a brief description of the multi-scale modeling framework setup
+in the E3SM-MMF to help clarify the underlying emulation targets for machine learn-
+ing models.
+       The E3SM-MMF climate model embeds a cloud-resolving model (CRM) in each
+atmospheric model column to replace parameterizations of microphysics, convection, ra-
+diation and turbulence. The embedded CRM is the System for Atmosphere Modeling
+model (SAM, Khairoutdinov & Randall, 2003). The CRM model is configured with a
+2D domain of 64 columns and 1km horizontal resolution. While the E3SM has 60 ver-
+tical levels, the CRM only operates on the lowest 50 levels, excluding the uppermost 10
+levels to circumvent issues associated with applying the anelastic approximation in ar-
+eas of extremely low density. Therefore, the CRM output has zero tendencies for water
+species and momentum in the top 10 E3SM levels, but it still has non-zero tendency for
+temperature since the radiation calculation is conducted through the whole 60 levels.
+      The CRM model uses a one-moment microphysics scheme (Khairoutdinov & Ran-
+dall, 2003). The only prognostic water species in this one-moment scheme are the total
+water (vapor plus non-precipitating condensate) and total precipitating water. The one-
+moment scheme uses an instantaneous saturation adjustment to generate and remove
+cloud condensate on the internal CRM grid. Cloud condensate is then partitioned into
+liquid, ice, or mixed phase based on a diagnostic function of temperature as follows. Be-
+tween 273.16K and 253.16K, partitioning of cloud condensate into cloud ice and liquid
+water depends linearly on temperature (at 253.16K, all condensate is ice; at 273.16K,
+all condensate is liquid water). Precipitating water is partitioned into rain, snow, and
+graupel in the same way. It is worth to note that the E3SM grid only tracks water va-
+por, cloud liquid, and cloud ice and does not track precipitating water.
+
+
+                                              –6–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+      The CRM in E3SM-MMF uses the Explicit Scalar Momentum Transport (ESMT)
+method (Tulich, 2015) to represent convective momentum transport (CMT) for large-
+scale winds. ESMT treats the zonal and meridional components of large-scale momen-
+tum as non-conserved scalars, which are advected by resolved fine-scale flows within the
+2D CRM. Since the 2D CRM lacks a third spatial dimension, the ESMT scheme implic-
+itly assumes that the advective flow field has identical spatial structures in the zonal and
+meridional directions. Despite this limitation, Yang et al. (2022) demonstrated that the
+E3SM-MMF with a 2D CRM and ESMT produces a reasonable global distribution of
+CMT, comparable to simulations using a 3D CRM with fully explicit convective momen-
+tum transport. While the qualitative patterns of CMT tendencies are similar between
+the 2D and 3D approaches, the ESMT-derived tendencies are consistently weaker in mag-
+nitude compared to those produced by the 3D CRM.
+
+      In E3SM-MMF, radiation transfer calculations are performed at every GCM timestep
+(20 minutes) after the CRM module, separately on individual sub-columns of the CRM
+state. The calculated radiative heating tendencies are applied as constant forcings to the
+next timestep’s CRM calculation. The radiation scheme from the GCM is used, taking
+the time-averaged state of each CRM column from the previous CRM calculation as in-
+put (Hannah et al., 2020).
+
+      The CRM module replaces several parameterizations in conventional GCMs, in-
+cluding those for convection, cloud fraction, and microphysics. The CRM module also
+calculates the surface precipitation fluxes, which are passed to the land component. Our
+NN emulators aim to replace the entire CRM including its radiation calculation.
+       Exterior to the CRM, on large-scales, the host atmosphere model in the E3SM-MMF
+retains conventional treatments of advection physics within the dynamical core, as well
+as additional physics modules that handle vertical diffusion and gravity wave drag. The
+dynamical core uses a spectral element method on a cubed-sphere geometry (Hannah
+et al., 2020), updating all state variables including temperature, winds, water vapor, cloud
+liquid, and cloud ice.
+
+     2.4 Microphysical Constraints
+     2.4.1 Liquid-ice Cloud Partition
+      It is tempting to think of the emulation problem from the perspective of the host
+model, focusing on what the Global Climate Model (GCM) typically receives from the
+CRM. The ClimSim dataset (Yu, Hannah, et al., 2024) was designed with this view in
+mind, providing the necessary data for seamless integration. However, our work demon-
+strates that it is especially important to consider the CRM and its own fundamental prog-
+nostics. In particular, the one-moment microphysics scheme in the CRM only predicts
+the total cloud (ice plus liquid) mixing ratio and uses temperature to diagnose the mix-
+ing ratios of liquid cloud and ice cloud on each CRM grid. According to the thermody-
+namic principles and CRM model code design, only liquid cloud is allowed to exist when
+the temperature is above 273.16K, and only ice cloud is allowed when the temperature
+is below 253.16K (Figure 2). In between, the fraction of liquid cloud over total cloud mix-
+ing ratio follows a linear function of temperature.
+
+       While this temperature-based partition relationship between liquid and ice clouds
+is strictly enforced in every CRM grid, Figure 2b shows that this relationship also holds
+on the E3SM grids which reflect the horizontally averaged values in the CRM domain.
+The exact fraction of liquid cloud over total cloud condensate on each E3SM grid is well
+predicted by the temperature-based function, as most of the samples fall into either the
+lower left corner (pure ice cloud), the upper right corner (pure liquid cloud), or the di-
+agonal (mixed-phase cloud).
+
+
+
+
+                                            –7–
+                                  manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                           1.2
+                                                   (a)                                                              (b)               108                             1000
+                                                                                                                                                                                          (c)                  106
+
+
+Constrained Liquid Ratio
+                                      Ice     Mixed liquid-ice Liquid
+
+
+
+
+                                                                                                                                             Tropopause Level (hPa)
+                           1.0                                                                                                        107                                                                      105
+
+
+
+
+                                                                             Actual Liquid Ratio
+                                                                                                   0.8                                106                             800
+                           0.8                                                                                                        105                                                                      104
+                                                                                                   0.6                                                                600                                      103
+
+
+
+
+                                                                                                                                         Counts
+
+
+
+
+                                                                                                                                                                                                                  Counts
+                           0.6                                                                                                        104
+                                                                                                   0.4                                103                             400                                      102
+                           0.4
+                                                                                                                                      102
+                                                                                                                                                                                                               101
+                           0.2                                                                     0.2                                101                             200
+                                                                                                                                      100                                                                      100
+                           0.0
+                                                                                                   0.0                                10 1                              0                                      10 1
+                                 30         20      10       0          10                            0.0   0.2   0.4     0.6   0.8                                          0    200   400   600   800 1000
+                                            Temperature (°C)                                             Constrained Liquid Ratio                                                Cloud Top Level (hPa)
+
+  Figure 2.                                      Assessment of the microphysical constraints. (a) The fraction of liquid over total
+  cloud water mixing ratios as a function of temperature. This temperature-based phase partition-
+  ing holds exactly on each grid in the cloud-resolving model. (b) Histogram of the actual liquid
+  cloud fraction in the E3SM grid (y-axis) versus the predicted liquid fraction based on the E3SM-
+  grid temperature (x-axis). (c) Histogram of the tropopause level versus the cloud top level, where
+  levels correspond to the hybrid pressure level used in E3SM. In each column, the tropopause level
+  is identified as the lowest level where the pressure is less than 400 hPa and the vertical gradient
+  of potential temperature exceeds 10 K/km. A cloud top is defined as the highest level with a
+  total cloud water mixing ratio greater than 1 mg/kg.
+
+
+
+
+        To leverage this microphysical constraint, instead of predicting liquid and ice sep-
+  arately, as the host GCM is accustomed to receiving its information from its embedded
+  CRM in an MMF, we can predict only the change of total (i.e., liquid plus ice) cloud con-
+  densate at each step, a more fundamental total water prognostic of the CRM itself. Af-
+  ter the neural network updates the temperature and total cloud mixing ratio in each grid,
+  the updated temperature is then used to decompose the total into the amounts of liq-
+  uid and ice clouds. This separation is necessary because the dynamical core advects liq-
+  uid and ice clouds independently. This approach ensures that the correct cloud phase
+  appears at the appropriate temperature range.
+
+                                 2.4.2 Removing clouds above stable tropopause level
+         In the hybrid online simulations, we implement a constraint of removing all the cloud
+  above the tropopause to improve simulation stability. The tropopause is identified as the
+  lowest level where the pressure is less than 400 hPa and the vertical gradient of poten-
+  tial temperature exceeds 10 K/km. The intuition of this constraint is that the tropopause
+  acts as a stable barrier preventing deep convection from penetrating and forming clouds
+  above it. Any clouds above the tropopause, whether formed by deep penetrating con-
+  vection in previous time steps or advected from lower levels, tend to be removed by sed-
+  imentation processes. The empirically chosen thresholds for identifying the tropopause
+  ensure that the tropopause generally lies above the cloud top in most cases (Figure 2c).
+  The cloud top is defined as the highest level with a total cloud mixing ratio greater than
+  1 mg/kg. Most residual clouds above the defined tropopause after invoking the CRM
+  have mixing ratios on the order of 0.1 mg/kg or smaller, while the zonal mean cloud mix-
+  ing ratio in the upper troposphere is at the order of 10 mg/kg (see Section 4). This con-
+  straint does not alter the model architecture or training process but is implemented dur-
+  ing online inference to enhance stability. Implementing this constraint allowed us to eas-
+  ily test its impact and test different thresholds for the defined tropopause without need-
+  ing to retrain the model. However, it is also possible to incorporate this constraint di-
+  rectly into the ML model itself and both methods are equivalent.
+
+
+                                                                                                                        –8–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+     2.5 Inputs and Outputs
+
+      The input features for the MLP model include GCM-scale state variables (e.g., tem-
+perature, relative humidity, cloud liquid mixing ratio, cloud ice mixing ratio, zonal wind,
+and meridional wind), atmospheric gas components, and boundary conditions (e.g., so-
+lar insolation, surface heat fluxes, surface stress, albedo, and geographic information).
+These GCM state variables are saved immediately prior to a code region containing the
+CRM and radiation physics. The output targets include the CRM’s time tendencies of
+temperature, specific humidity, cloud liquid and ice mixing ratios, zonal and meridional
+winds, as well as radiative fluxes and surface precipitation rates. That is, the ML tar-
+gets encompass all the forcings that the CRM transmits to its host GCM in the MMF
+approach to climate simulation, including challenging condensate tendencies.
+
+     2.5.1 Expanding Inputs to Include Large-scale Forcings and Convection
+           Memory
+      The U-Net model uses expanded input features beyond ClimSim’s standard input
+that also include large-scale forcings (primarily the advective tendencies of temperature,
+total water, and zonal wind from the dynamical core), convection memory (CRM ten-
+dencies from previous steps), and latitudes.
+      Large-scale forcings refer to the tendencies of temperature, total water (water
+vapor plus liquid and ice cloud condensates), and zonal wind outside of the CRM in each
+time step, primarily from the dynamical core. During the CRM calculation, these large-
+scale forcings are applied uniformly in time and at each vertical level in the CRM do-
+mains. Such large-scale forcings can influence convection; for example, a large-scale forc-
+ing that stabilizes the atmosphere could make the convection more difficult to trigger,
+making them causally relevant input features. However, most previous studies of hybrid
+MMF simulations failed to include these features, with only a few exceptions (Han et
+al., 2020; X. Wang et al., 2022; Han et al., 2023).
+
+      Convection memory refers to the internal convection state within the CRM that
+is not adequately represented in the GCM grid state (which is the averaged value of the
+CRM domain). The internal convection state, including aspects such as internal cloud
+structure and convection organization, can be useful predictors for convective tenden-
+cies and precipitation (Shamekh et al., 2023; Kuang, 2024). The CRM tendencies at pre-
+vious time steps have been used in a few studies (Han et al., 2020, 2023; Lin et al., 2024)
+as a proxy to represent aspects of convection memory.
+     Due to the physical relevance, we expect that adding these expanded input features
+can help with both offline and online skill. Both inputs and outputs are normalized to
+be on the order of 1. Detailed descriptions of the full list of input and output features
+and their normalization methods can be found in the Appendix (Sections A1 and A3).
+
+     2.6 Training
+      We used and compared four sets of offline model designs: a baseline MLP archi-
+tecture without expanded input features such as large-scale forcings or convection mem-
+ory, a U-Net architecture without expanded input features (hereafter U-Net-baseline),
+a U-Net architecture with expanded input features (hereafter U-Net-expanded), and a
+U-Net architecture with both expanded input features and the cloud microphysics con-
+straint of the temperature-based liquid-ice partition (hereafter U-Net-expanded-constrained).
+      To account for stochasticity in ML optimization, we used three different checkpoints
+for each model architecture. These checkpoints were obtained using varying loss func-
+tions (either mean-absolute-error loss or Huber loss) and learning rate schedules, creat-
+ing a small ensemble to account for some of the uncertainty in online performance stem-
+
+
+
+                                            –9–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+ming from offline ML optimization variability. All the models were trained in PyTorch
+(Paszke et al., 2019) using the NVIDIA Modulus framework (NVIDIA Modulus Team,
+n.d.). Please see Appendix B for the detailed training hyperparameters for these differ-
+ent checkpoints. In the subsequent sections and plots where only one of the three check-
+points is shown, it is the one that uses the Huber loss and a reduce-on-plateau learning
+rate scheduler. Choosing other checkpoints does not change the following results qual-
+itatively.
+
+     2.7 Coupling E3SM and NN
+      The trained PyTorch neural networks are integrated with the Fortran-based E3SM
+codes using an open-source library called Pytorch-Fortran (Alexeev, 2023). This library
+requires saving the PyTorch model in TorchScript (PyTorch Contributors, 2024) seri-
+alized format, allowing the Fortran-based E3SM to directly read the TorchScript model
+and perform efficient batch inference within the Fortran process using bindings to the
+TorchScript C++ API. This coupling approach is compatible with most machine learn-
+ing models written in PyTorch, allowing for extensive testing of diverse ML models. Fur-
+thermore, this E3SM-NN coupling workflow is integrated into a containerized, end-to-
+end framework called ClimSim-Online (Yu, Hu, et al., 2024) which allows researchers to
+run and test such hybrid E3SM simulations on multiple platforms.
+
+
+3 Offline results
+      Figure 3 shows the comparison of R2 across all target variables for the MLP and
+U-Net models. R2 for each target variable at each vertical level is calculated using data
+across all the columns and time steps in the test set. For the U-Net-expanded-constrained
+model, the R2 values reflect only the constraint involving liquid-ice cloud partitioning,
+as the constraint for removing stratospheric clouds is applied solely in online simulations.
+These R2 results are from one of the checkpoints using the Huber loss function.
+
+      Our baseline MLP model shows similar R2 of temperature and lower tropospheric
+water vapor tendencies compared to the MLP models in Yu, Hannah, et al. (2024). How-
+ever, our MLP model demonstrates significantly better R2 of cloud condensates and wind
+tendencies. Figure 8 in the Supplementary Information in Yu, Hannah, et al. (2024) shows
+non-positive R2 at most levels for winds and cloud ice tendencies, as opposed to our MLP
+results in Figure 3.
+      This improvement in MLP offline skills is likely primarily due to differences in nor-
+malization strategies. We used a per-level standard deviation that varies with altitude
+to make each target variable at each level at the order of 1. The normalization in Yu,
+Hannah, et al. (2024) used a scaling factor that does not vary vertically, which may pre-
+vent effective optimization of targets at all levels. In addition, the choice of the output
+scaling factors in Yu, Hannah, et al. (2024) made the loss from wind and cloud tenden-
+cies too small from the optimizer’s perspective compared to the loss from temperature
+and water vapor tendencies, making their MLP model difficult to learn the wind and cloud
+tendencies. Additionally, many input features, such as cloud water mixing ratios, have
+highly skewed distributions with long tails above 10 standard deviations. To address this,
+we transformed the exponential-like cloud input features into more uniform distributions,
+as documented in Appendix A3. Although we did not conduct ablation tests on differ-
+ent normalization strategies, we believe that properly transforming skewed distributions
+with extreme tails to less skewed distributions (ideally normal distribution) can enhance
+training dynamics and improve model performance.
+
+     Switching from MLP to U-Net-baseline significantly improves the R2 for almost all
+target variables at all levels, suggesting that the U-Net architecture is more expressive
+and better suited to capture the data compared to the baseline MLP model. Expanded
+
+
+                                            –10–
+                               manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+                           0
+                                         (a) R2: dT/dt                0
+                                                                               (b) R2: dQv/dt                 0
+                                                                                                                           (c) R2: dQl/dt
+Hybrid pressure (hPa)
+
+
+
+
+                         200                                        200                                     200
+                         400                                        400                                     400
+                         600                                        600                                     600
+                         800                                        800                                     800
+                        1000                                       1000                                    1000
+                            0.0    0.2  0.4 0.6 0.8            1.0     0.0   0.2      0.4 0.6 0.8      1.0     0.0   0.2      0.4 0.6 0.8         1.0
+
+                           0
+                                     (d) R2: dQi/dt                   0
+                                                                                   (e) R2: dU/dt              0
+                                                                                                                           (f) R2: dV/dt
+Hybrid pressure (hPa)
+
+
+
+
+                         200                                        200                                     200
+                         400                                        400                                     400
+                         600                                        600                                     600
+                         800                                        800                                     800
+                        1000                                       1000                                    1000
+                            0.0    0.2     0.4   0.6     0.8   1.0     0.0   0.2     0.4   0.6   0.8   1.0     0.0   0.2      0.4   0.6     0.8   1.0
+
+                         1.0
+                                                                                    (g) Fluxes
+                         0.8
+                         0.6
+                                         MLP
+       R2
+
+
+
+
+                         0.4             U-Net-baseline
+                         0.2             U-Net-expanded
+                                         U-Net-expanded-constrained
+                         0.0
+                                   NETSW          FLWDS        PRECSC        PRECC          SOLS         SOLL        SOLSD          SOLLD
+
+  Figure 3.                          Offline R2 scores across various variables for MLP (blue), U-Net-baseline (cyan),
+  U-Net-expanded (orange), and U-Net-expanded-constrained (red). Variables are the full target
+  variables listed in Table A2, including temperature tendency ( dT
+                                                                 dt
+                                                                    ), water vapor tendency ( dQ
+                                                                                               dt
+                                                                                                 v
+                                                                                                   ),
+  liquid cloud mixing ratio tendency ( dQ
+                                        dt
+                                           l
+                                             ), ice cloud mixing ratio tendency ( dQ
+                                                                                   dt
+                                                                                      i
+                                                                                        ), zonal wind ten-
+  dency ( dU
+          dt
+             ), meridional wind tendency ( dV
+                                           dt
+                                              ), and eight flux variables.
+
+
+
+
+                                                                                   –11–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+Figure 4.     Zonal mean R2 evaluated on the test set for the U-Net-expanded-constrained
+model. The five panels denote the R2 for the tendencies of temperature (a), water vapor (b),
+total cloud (liquid plus ice) mixing ratio (c), zonal wind (d), and meridional wind (e).
+
+
+
+
+input features further improve the R2 values in the U-Net-expanded model for almost
+all target variables at all levels when compared to the U-Net-baseline model. Although
+we do not present a formal ablation of the individual effects of large-scale forcing and
+convection memory, preliminary tests indicate that both components contribute to im-
+proving the R2 scores.
+       When comparing the U-Net models with and without the microphysical constraint,
+the R2 values are quite similar overall. However, the U-Net model with the liquid-ice par-
+titioning constraint shows a marked improvement in predicting liquid cloud tendencies
+at several levels above about 350 hPa (Figure 3c). At these levels, the constrained U-
+Net shows very high R2 values, while the unconstrained U-Net shows little skill. These
+levels correspond to temperatures too cold for liquid clouds to exist, where the CRM tends
+to remove any liquid clouds that may have been advected there by the dynamical core.
+We also observe a decrease in R2 for water vapor tendencies above the tropopause in the
+U-Net-expanded-constrained model (Figure 3b), though the cause remains unclear. One
+possible explanation is that using only the total cloud mixing ratio as input may omit
+relevant information needed to accurately predict water vapor tendencies at these lev-
+els, although it is impossible to rule out that other factors are at play.
+      Figure 4 shows the zonal mean R2 for different variables for the U-Net-expanded-
+constrained model. Zonal mean R2 is evaluated by first calculating the R2 for each col-
+umn across samples at different times and then averaging the R2 zonally. The negative
+R2 of vapor and cloud at the stratosphere is likely because the vapor and cloud tenden-
+cies at those high levels are too small and noisy to predict. Our U-Net model also poorly
+predicts wind tendencies at the north and south poles. More careful normalization or
+more training data might be required to improve the R2 there.
+
+
+4 Online results
+      4.1 Online Error Development in the Initial First Year
+      While the offline skill is important, the more critical aspect of the hybrid simula-
+tions is the online performance. No previous work under the MMF framework has achieved
+good online error with full condensate coupling. Figure 5 summarizes the online perfor-
+
+
+                                               –12–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+             (a) Online Temperature RMSE (K)             10       (b) Online Moisture RMSE (g/kg)
+        MLP
+        U-Net-baseline                                     5
+100     U-Net-expanded
+ 50     U-Net-expanded-constrained
+        Internal unpredictability                          2
+ 20                                                        1
+ 10
+  5                                                      0.5
+  2
+  1                                                      0.2
+0.5                                                      0.10 1 2 3 4 5 6 7 8 9 10 11 12
+    0 1 2 3 4 5 6 7 8 9 10 11 12
+                      Month                                                     Month
+ 20     (c) Online Zonal Wind RMSE (m/s)                        (d) Online Total Cloud RMSE (mg/kg)
+ 10                                                      500
+  5                                                      200
+                                                         100
+                                                          50
+   2                                                      20
+   1                                                      10
+                                                           5
+ 0.50 1 2 3 4 5 6 7 8 9 10 11 12                           20 1 2 3 4 5 6 7 8 9 10 11 12
+               Month                                                   Month
+
+Figure 5.         Online monthly and globally averaged (both horizontally and vertically and
+weighted by mass in each grid) RMSE of temperature (K), water vapor (g/kg), zonal wind (m/s),
+and total cloud mixing ratio (mg/kg) over a one-year period, comparing baseline MLP (blue),
+U-Net-baseline (cyan), U-Net-expanded (orange), and U-Net-expanded-constrained (red) against
+the reference E3SM-MMF simulation. The dashed black lines represent the uncertainty of the ref-
+erence physical simulation due to internal atmospheric variability. Each architecture was trained
+with three slightly different configurations (e.g., loss functions and learning rate schedules) to
+sample ML uncertainty, represented by different markers but with the same line color.
+
+
+
+
+mance of the baseline MLP models and various U-Net models. All the hybrid simula-
+tions and the reference E3SM-MMF simulations in Section 4 use an identical initial con-
+dition.
+      For each hybrid simulation, we evaluate the monthly evolution of the globally av-
+eraged RMSE of monthly-mean temperature, water vapor, zonal wind, and total cloud
+mixing ratio over the course of one-year hybrid simulations. The RMSE quantifies the
+discrepancy of monthly-mean fields between the hybrid simulations and the reference E3SM-
+MMF simulation. The exact definition of the monthly RMSE is in Appendix C. Here
+we focus on monthly-mean values rather than instantaneous values because the instan-
+taneous weather pattern is chaotic and becomes largely unpredictable beyond the ini-
+tial autocorrelation timescale. In contrast, monthly-mean patterns associated with sea-
+sons and geography remain more predictable.
+      We ran a small ensemble of E3SM-MMF simulations to estimate the internal at-
+mosphere unpredictability (dashed black lines in Figure 5), representing an error floor
+that the hybrid simulations should not be expected to surpass (i.e., the performance of
+a perfect emulator). The E3SM-MMF climate model runs on a hybrid CPU/GPU sys-
+tem and is not bit-for-bit reproducible. Tiny numerical differences due to the non-associativity
+of floating point arithmetic and the use of atomic operations (specific to how the cur-
+rent E3SM-MMF version implements parallel reductions) in the calculations can grow
+over time, leading to small but non-zero uncertainty even in globally averaged metrics
+of monthly atmospheric states in pure physical simulations. Such numerical differences,
+when accumulated over a few steps, naturally act as perturbations to the initial condi-
+tions that generate ensemble simulations. To create the ensemble, we ran the reference
+
+
+                                                  –13–
+                              manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                               (a) Liquid cloud (mg/kg): MMF                (b) Liquid cloud (mg/kg): U-Net-expanded-constrained              (c) Liquid cloud (mg/kg): U-Net-expanded
+                                                                       60                                                          60                                                    60
+                                                                                                                                   50
+
+
+hybrid pressure (hPa)
+                        200                                            50   200                                                         200                                              50
+                                                                       40                                                          40                                                    40
+                        400                                                 400                                                         400
+                                                                       30                                                          30                                                    30
+                        600                                                 600                                                         600
+                                                                       20                                                          20                                                    20
+                        800                                            10   800                                                    10   800                                              10
+                                                                       0                                                           0                                                     0
+                              60S      30S      0     30N        60N                 60S     30S     0     30N     60N                           60S     30S     0     30N     60N
+                                    (d) Ice cloud (mg/kg): MMF               (e) Ice cloud (mg/kg): U-Net-expanded-constrained                 (f) Ice cloud (mg/kg): U-Net-expanded
+                                                                       60                                                          60                                                    60
+                                                                       50                                                          50
+hybrid pressure (hPa)
+
+
+
+
+                        200                                                 200                                                         200                                              50
+                                                                       40                                                          40                                                    40
+                        400                                                 400                                                         400
+                                                                       30                                                          30                                                    30
+                        600                                                 600                                                         600
+                                                                       20                                                          20                                                    20
+                        800                                            10   800                                                    10   800                                              10
+                                                                       0                                                           0                                                     0
+                              60S      30S      0     30N        60N                 60S     30S     0     30N     60N                           60S     30S     0     30N     60N
+
+
+
+
+Figure 6.                                    The zonal mean liquid (upper row) and ice (lower row) cloud mixing ratio at month
+10 in the reference E3SM-MMF simulation (left) and in the hybrid simulations with the U-Net-
+expanded-constrained model (middle) and with the unconstrained U-Net-expanded model (right).
+
+
+
+
+E3SM-MMF climate model three additional times using identical initial conditions and
+compared the resulting differences to the reference simulation.
+       The simulations using MLP models all crashed within the first three months and
+exhibited large RMSE in the first month. In contrast, all the U-Net simulations allowed
+for more stable integrations, with all U-Net simulations completing the full year. For the
+first simulated month, where all hybrid runs finished, the U-Net simulations demonstrated
+significantly lower monthly RMSE of all variables compared to the hybrid simulations
+using the MLP models.
+      However, the U-Net models can still experience large online error growth. For the
+U-Net models without microphysical constraints (U-Net-baseline and U-Net-expanded),
+while their first-month RMSE is reasonably satisfactory, the online error becomes un-
+acceptably large even a few months into the hybrid simulation (orange and cyan lines
+in Figure 5), e.g., with temperature RMSE exceeding 10 K—far surpassing the level of
+internal unpredictability. Such large RMSE suggests a systematic bias in the hybrid sim-
+ulation that is significantly larger than the variability of the monthly climatology. In-
+deed, this trend is reflected in Figure S1 of the Supplementary Information, which shows
+the monthly evolution of global mean near-surface temperature, precipitable water, and
+total cloud path in the hybrid and reference simulations. Both the U-Net-baseline and
+U-Net-expanded simulations significantly diverge from the reference E3SM-MMF sim-
+ulations after the first year, consistent with the observed RMSE growth.
+      We hypothesize that a root cause of the error growth is unrealistic and insufficiently
+constrained cloud formation. The first line of evidence is that the unconstrained U-Net
+models can have greater than 100 mg/kg RMSE of total clouds in some months (Fig-
+ure 5d). Figure 6 compares the zonal mean liquid and ice cloud mixing ratios between
+the reference pure physics simulation and the U-Net-expanded-constrained and U-Net-
+expanded simulations at month 10, i.e. when one of the U-Net-expanded simulations (the
+orange line with the circle markers in Figure 5) begins to show highly unrealistic cloud
+formation and quick growth of the RMSE of temperature and water vapor.
+      The second, most telling, line of evidence is that the unphysical cloud phase is im-
+mediately apparent as a pathology in the hybrid condensate climatology. The unconstrained
+U-Net hybrid run shows an excessive amount of liquid cloud near the tropical tropopause
+(Figure 6c), where the temperature is too cold to allow any liquid water. We also ob-
+serve excessive cloud ice in the stratosphere (Figure 6f). These unrealistic cloud distri-
+butions are clearly out-of-sample conditions that never existed in the training data, and
+the unconstrained U-Net fails to remove them, continuing to make extrapolated predic-
+
+
+                                                                                                    –14–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+tions based on these out-of-sample input features. This out-of-distribution challenge only
+becomes apparent in the online evaluation of the hybrid models and is difficult to reveal
+with just offline evaluation.
+      Conversely, when we directly enforce the microphysical constraints on the liquid-
+ice partition and constrain the existence of deep penetrating overshoots, the zonal mean
+cloud distribution appears more consistent with the pure physics simulation (Figure 6b
+and e vs. a and d). With these constraints, the downstream RMSE stabilized after an
+initial rise within the first two months. The global temperature RMSE remained around
+2K, and the global water vapor RMSE stayed below 1 g/kg (Figure 5a and b). The global
+zonal wind RMSE remains around 5 m/s, and the global total cloud RMSE remains within
+20 mg/kg except for one of the checkpoints showing an RMSE of 50 mg/kg in summer
+months.
+
+      As a substantial advancement, the U-Net-expanded-constrained models begin to
+match the monthly global mean climatology as well as the global variability in the ref-
+erence E3SM-MMF simulations (Figure S1 and S2 of the Supplementary Information).
+Although the online RMSE of the hybrid simulations is generally slightly higher than
+the internal unpredictability (roughly within 1K temperature RMSE and 0.5 g/kg wa-
+ter vapor RMSE), in some months, the RMSE of the hybrid simulations overlaps with
+the internal unpredictability levels (Figure 5), suggesting the systematic bias of the U-
+Net-expanded-constrained simulations becomes comparable to the variability of the monthly
+climatology.
+
+     4.2 Climatology Evaluation of Stable 5-year Hybrid Simulations
+
+      The U-Net-expanded-contrained simulations can be stably integrated for at least
+5 years (Figure 7). Due to the maximum job runtime of 24 hours on the computing clus-
+ter we used, we only ran the hybrid simulations for five years plus one month and eval-
+uated the 5-year mean climatology after dropping the first month for the spin-up period.
+Restart capabilities are not yet engineered and are nontrivial to implement given that
+the ML model collects a non-standard history from multiple previous time steps. How-
+ever, we expect our hybrid simulations can integrate longer when there is no maximum
+job runtime limit.
+      During the 5-year simulations, the global mean near-surface air temperature, pre-
+cipitable water, and total cloud (liquid plus ice) path reasonably reproduce the seasonal
+cycle of the reference E3SM-MMF simulation without any significant drift (Figure 7).
+Two hybrid simulations using different U-Net-expanded-constrained checkpoints are shown
+to distinguish between systematic and checkpoint-dependent errors. The reference physics
+simulation was run twice for five years using identical initial conditions (black solid and
+dashed lines) to sample internal unpredictability and represent what a perfect emula-
+tion can achieve. Figure S2 in the Supplementary Information further demonstrates that
+the U-Net-expanded-constrained simulation generally captures the seasonal variation of
+spatial variability of near-surface air temperature and precipitable water seen in the ref-
+erence E3SM-MMF simulation. However, during the northern hemisphere summer, the
+hybrid simulation exhibits slightly higher variance in precipitable water for the region
+spanning 40°N–50°N compared to the reference E3SM-MMF simulation.
+
+      Systematic biases still remain. The hybrid U-Net-expanded-constrained simulations
+displayed systematic underestimations of precipitable water and total cloud path, pri-
+marily in the tropics (Figure 7). One checkpoint exhibited a substantial overestimation
+of the total cloud path in the northern hemisphere (solid red line), while the other did
+not (dashed red line).
+
+      Figure 8 summarizes the RMSE of the 5-year time-mean climatology for state vari-
+ables across vertical levels, along with the 3D global mean values (noted in the legend).
+
+
+
+                                           –15–
+                                                          manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                                                                Global mean                                   30N-90N mean                               30S-90S mean                              30S-30N mean
+                                                                                                290                                      280.0                                     299.0
+                                        290
+                                                                                                                                         277.5                                     298.5
+
+           T59 (K)
+                                                                                                280                                                                                298.0
+                                        288                                                                                              275.0
+                                                                                                                                         272.5                                     297.5
+                                                                                                270
+                                        286                                                                                                                                        297.0
+                                                      0     1     2           3    4       5          0   1     2           3   4    5           0   1     2           3   4   5           0   1     2           3   4   5
+                    Precipitable water (kg/m2)
+
+
+
+                                                 32                                              30                                        18
+                                                                                                                                                                                     42
+                                                 30                                                                                        16
+                                                                                                 20                                                                                  40
+                                                 28                                                                                        14
+                                                                                                                                           12                                        38
+                                                 26                                              10
+                                                                                                                                           10                                        36
+                                                      0     1     2           3    4       5          0   1     2           3   4    5           0   1     2           3   4   5           0   1     2           3   4   5
+                                                                                                                                          0.20                                      0.14
+Total cloud path (kg/m2)
+
+
+
+
+                           0.200                                                  MMF           0.5
+                                                                                  MMF2
+                                                                                  checkpoint1   0.4                                       0.18                                      0.12
+                           0.175                                                  checkpoint2
+                                                                                                0.3                                       0.16
+                           0.150
+                                                                                                                                          0.14                                      0.10
+                           0.125                                                                0.2
+                           0.100                                                                0.1                                       0.12                                      0.08
+                                                      0     1     2           3    4       5          0   1     2           3   4    5           0   1     2           3   4   5           0   1     2           3   4   5
+                                                                      Years                                         Years                                      Years                                     Years
+
+
+
+Figure 7.                                                             Five-year time series of area-weighted mean values for near-surface temperature (at
+the lowest model level, top row), precipitable water (middle row), and total cloud path (sum of
+liquid and ice, bottom row). The data is shown across four regions: global mean (first column),
+30°N–90°N (second column), 30°S–90°S (third column), and 30°S–30°N (fourth column). The
+solid black line and dashed black line represent two reference 5-year E3SM-MMF simulations
+initialized with the same initial conditions to sample internal variability (similar to the dashed
+lines in Figure 5). The solid and dashed red lines represent hybrid simulations using two U-Net-
+expanded-constrained checkpoints: Huber loss with reduce-on-plateau scheduler (solid red) and
+Huber loss with step scheduler (dashed red) (see Appendix B).
+
+
+
+
+Both U-Net-expanded-constrained checkpoints achieved a time-mean temperature RMSE
+below 2K and water vapor RMSE below 1 g/kg throughout the troposphere. The global
+mean RMSE for temperature and water vapor was 0.99K and 0.33 g/kg for one check-
+point, and 1.21K and 0.25 g/kg for the other. The checkpoint with better cloud conden-
+sate performance (dashed red line) exhibited a peak liquid cloud RMSE of 10 mg/kg near
+800 hPa and an ice cloud RMSE of 4 mg/kg near 200 hPa. RMSE values for the zonal
+and meridional winds remained within 2 m/s and 1 m/s, respectively, across most lev-
+els, with exceptions at the uppermost level.
+      Figure 9 shows the zonal mean bias of the 5-year hybrid simulation climatology,
+with a tropospheric zonal mean temperature bias below 2K and a water vapor bias be-
+low 1 g/kg. Figure S3 in the Supplementary Information shows that the zonal mean rel-
+ative humidity bias is generally within 4% across most of the troposphere, with a peak
+bias of 8% in the tropical regions. However, larger relative humidity biases are observed
+in extremely cold environments, such as near the surface at the South Pole and in the
+stratosphere. Additionally, we control the global zonal mean zonal wind bias within 5
+m/s and maintain a reasonable distribution of liquid and ice clouds. While we have a
+near 40 g/kg cloud water bias near 60N with this model checkpoint, another different
+checkpoint has only within 10 g/kg cloud water bias in most places (Figure E1 in Ap-
+pendix E).
+      Our performance surpasses the online zonal mean temperature and water vapor bi-
+ases reported by Han et al. (2023). Han et al. (2023) showed greater than 10K temper-
+ature bias and near 1.5 g/kg water vapor bias in the polar regions in their hybrid sim-
+ulations (see Figure S9 in their Supplementary Information). Han et al. (2023) did not
+provide the online bias of their wind and cloud climatology so we cannot make a com-
+parison on these variables.
+
+
+                                                                                                                                    –16–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+                                              (a) T (K)                   (b) Q (g/kg)            (c) Liquid cloud (mg/kg)
+                                    0                                               Ref                       Ref
+                                                                                    0.06                      0.80
+         Hybrid pressure (hPa)
+
+
+
+
+                                  200                                               checkpoint1               checkpoint1
+                                                                                    0.33                      13.05
+                                                                                    checkpoint2               checkpoint2
+                                  400                                               0.25                      5.40
+
+                                  600               Ref
+                                                    0.18
+                                                    checkpoint1
+                                  800               0.99
+                                                    checkpoint2
+                                 1000               1.21
+                                        0        2                4 0.0   0.2       0.4     0.6   0     10    20       30
+                                        (d) Ice cloud (mg/kg)             (e) U (m/s)                   (f) V (m/s)
+                                    0
+         Hybrid pressure (hPa)
+
+
+
+
+                                  200
+                                  400
+                                  600               Ref                             Ref                       Ref
+                                                    0.65                            0.44                      0.35
+                                                    checkpoint1                     checkpoint1               checkpoint1
+                                  800               2.10                            1.70                      0.79
+                                                    checkpoint2                     checkpoint2               checkpoint2
+                                 1000               2.29                            1.98                      0.89
+                                        0       2            4       0          5            10   0       2        4
+
+Figure 8.                        Online RMSE of the 5-year time-mean climatology for temperature (a), water va-
+por (b), liquid cloud mixing ratio (c), ice cloud mixing ratio (d), zonal wind (e), and meridional
+wind (f). Profiles represent RMSE values per vertical level, while the global RMSE values (in-
+tegrated across horizontal and vertical space) are noted in the legend. RMSE is defined as in
+Appendix C. The black line shows the RMSE between two reference E3SM-MMF simulations
+with identical initial conditions, serving as a proxy for a perfect emulator (diverging only due to
+non-bit-for-bit numerical differences). The solid and dashed red lines represent the online RMSE
+of hybrid simulations using two U-Net-expanded-constrained checkpoints: Huber loss with a
+reduce-on-plateau scheduler (solid red) and Huber loss with a step scheduler (dashed red) (see
+Appendix B).
+
+
+
+
+                                                                          –17–
+                              manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+                                     (a) T (K): MMF                              (b) T (K): NN                                (c) T (K): NN - MMF
+                                                              300                                        300
+                                                              280                                        280                                                4
+hybrid pressure (hPa)
+
+
+
+
+                        200                                         200                                        200
+                                                              260                                        260                                                2
+                        400                                         400                                        400
+                                                              240                                        240                                                0
+                        600                                         600                                        600
+                                                              220                                        220                                                    2
+                        800                                         800                                        800
+                                                              200                                        200                                                    4
+                              60S   30S    0     30N    60N               60S   30S    0    30N    60N                 60S     30S     0    30N       60N
+                                    (d) Q (g/kg): MMF                           (e) Q (g/kg): NN                             (f) Q (g/kg): NN - MMF
+                                                                                                                                                            1.0
+                                                              15                                         15
+hybrid pressure (hPa)
+
+
+
+
+                        200                                         200                                        200                                          0.5
+                        400                                   10    400                                  10    400
+                                                                                                                                                            0.0
+                        600                                         600                                        600
+                                                              5                                          5                                                      0.5
+                        800                                         800                                        800
+                                                                                                                                                                1.0
+                              60S   30S    0     30N    60N               60S   30S    0    30N    60N                 60S     30S     0    30N       60N
+                                    (g) U (m/s): MMF                            (h) U (m/s): NN                              (i) U (m/s): NN - MMF
+                                                              40                                         40                                                 4
+hybrid pressure (hPa)
+
+
+
+
+                        200                                         200                                        200
+                                                              30                                         30                                                 2
+                        400                                         400                                        400
+                                                              20                                         20                                                 0
+                        600                                         600                                        600
+                                                              10                                         10                                                     2
+                        800                                         800                                        800
+                                                                                                                                                                4
+                              60S   30S    0     30N    60N               60S   30S    0    30N    60N                 60S     30S     0    30N       60N
+                              (j) Liquid cloud (mg/kg): MMF               (k) Liquid cloud (mg/kg): NN               (l) Liquid cloud (mg/kg): NN - MMF
+                                                              80                                         80                                                 40
+hybrid pressure (hPa)
+
+
+
+
+                        200                                   60    200                                  60    200
+                                                                                                                                                            20
+                        400                                         400                                        400
+                                                              40                                         40                                                 0
+                        600                                         600                                        600
+                        800                                   20    800                                  20    800                                              20
+                                                              0                                          0                                                      40
+                              60S   30S    0     30N    60N               60S   30S    0    30N    60N                 60S     30S     0    30N       60N
+                               (m) Ice cloud (mg/kg): MMF                  (n) Ice cloud (mg/kg): NN                  (o) Ice cloud (mg/kg): NN - MMF
+                                                              25                                         25                                                 4
+hybrid pressure (hPa)
+
+
+
+
+                        200                                   20    200                                  20    200
+                                                                                                                                                            2
+                        400                                   15    400                                  15    400
+                                                                                                                                                            0
+                        600                                   10    600                                  10    600
+                                                                                                                                                                2
+                        800                                   5     800                                  5     800                                              4
+                                                              0                                          0
+                              60S   30S    0     30N    60N               60S   30S    0    30N    60N                 60S     30S     0    30N       60N
+
+
+
+Figure 9.                                 Five-year zonal mean atmospheric state in the reference E3SM-MMF simulation
+(left) and in the hybrid simulation with the U-Net-expanded-constrained model (middle). The
+right column shows the zonal mean bias as the mean state from the hybrid simulation minus
+that of the reference simulation. The five rows show temperature, water vapor, zonal wind, liquid
+cloud, and ice cloud. The Black dashed line in panel o indicates the 5-year mean position of the
+tropopause level used in the microphysical constraints.
+
+
+
+
+                                                                                      –18–
+                              manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                                    (a) dT/dt (K/s): MMF    1e 5                                                 (b) dT/dt (K/s): NN     1e 5                                             (c) dT/dt (K/s): NN - MMF      1e 5
+                                                                                                                                                                                                                                1.5
+                                                                   3                                                                            3
+                        200                                        2                                 200                                        2                                 200                                           1.0
+hybrid pressure (hPa)
+
+
+
+
+                                                                             hybrid pressure (hPa)
+
+
+
+
+                                                                                                                                                          hybrid pressure (hPa)
+                                                                   1                                                                            1                                                                               0.5
+                        400                                                                          400                                                                          400
+                                                                   0                                                                            0                                                                               0.0
+                        600                                            1                             600                                            1                             600
+                                                                                                                                                                                                                                    0.5
+                                                                       2                                                                            2
+                        800                                            3                             800                                            3                             800                                               1.0
+                                                                                                                                                                                                                                    1.5
+                              60S     30S    0    30N 60N                                                  60S     30S    0    30N 60N                                                   60S   30S    0    30N 60N
+                               (d) dQ/dt (g/kg/s): MMF      1e 5                                             (e) dQ/dt (g/kg/s): NN      1e 5                                            (f) dQ/dt (g/kg/s): NN - MMF    1e 5
+                                                                   1.5                                                                          1.5                                                                             1.0
+                        200                                        1.0                               200                                        1.0                               200
+                                                                                                                                                                                                                                0.5
+                                                                   0.5                                                                          0.5
+                        400                                                                          400                                                                          400
+                                                                   0.0                                                                          0.0                                                                             0.0
+                        600                                          0.5                             600                                          0.5                             600
+                                                                     1.0                                                                          1.0                                                                               0.5
+                        800                                                                          800                                                                          800
+                                                                     1.5                                                                          1.5
+                                                                                                                                                                                                                                    1.0
+                              60S     30S    0    30N 60N                                                  60S     30S    0    30N 60N                                                   60S   30S    0    30N 60N
+                                (g) dU/dt (m/s²): MMF       1e 6                                                 (h) dU/dt (m/s²): NN    1e 6                                             (i) dU/dt (m/s²): NN - MMF     1e 6
+                                                                   7.5                                                                          7.5                                                                             2
+                        200                                        5.0                               200                                        5.0                               200
+                                                                                                                                                                                                                                1
+                                                                   2.5                                                                          2.5
+                        400                                                                          400                                                                          400
+                                                                   0.0                                                                          0.0                                                                             0
+                        600                                                                          600                                                                          600
+                                                                       2.5                                                                          2.5
+                                                                                                                                                                                                                                    1
+                        800                                            5.0                           800                                            5.0                           800
+                                                                       7.5                                                                          7.5                                                                             2
+                              60S     30S    0    30N 60N                                                  60S     30S    0    30N 60N                                                   60S   30S    0    30N 60N
+                              (j) dQn/dt (mg/kg/s): MMF                                                     (k) dQn/dt (mg/kg/s): NN                                                    (l) dQn/dt (mg/kg/s): NN - MMF
+                                                                   0.0015                                                                       0.0015
+                        200                                                                                                                                                                                                     0.0010
+                                                                   0.0010 200                                                                   0.0010 200
+                                                                   0.0005 400                                                                   0.0005                                                                          0.0005
+                        400                                                                                                                              400
+                                                                   0.0000                                                                       0.0000                                                                          0.0000
+                        600                                          0.0005 600                                                                   0.0005 600
+                                                                                                                                                                                                                                    0.0005
+                                                                     0.0010 800                                                                   0.0010
+                        800                                                                                                                              800                                                                        0.0010
+                                                                     0.0015                                                                       0.0015
+                              60S     30S    0    30N 60N                                                  60S     30S    0    30N 60N                                                   60S   30S    0    30N 60N
+
+
+
+Figure 10.                                   Five-year zonal mean atmospheric tendencies in the reference E3SM-MMF simu-
+lation (left column), in the hybrid online simulation with the U-Net-expanded-constrained model
+(middle column), and the difference (hybrid minus MMF run, right column). The four columns
+correspond to the tendencies of temperature, water vapor, zonal wind, and total cloud (liquid
+plus ice) mixing ratio.
+
+
+
+
+      Figure 10 presents the five-year averaged, zonal mean subgrid tendencies of tem-
+perature, water vapor, zonal wind, and total cloud mixing ratio for both the reference
+E3SM-MMF simulation and the hybrid run with the constrained U-Net model. The hy-
+brid simulation effectively reproduces the patterns of these tendencies. The temperature
+and water vapor tendencies in the reference simulation are well captured by the hybrid
+simulation, showing similar vertical and meridional distributions, such as the two heat-
+ing and drying bands in the tropics corresponding to regions with frequent deep convec-
+tion and precipitation. Additionally, the hybrid simulation successfully replicates the zonal
+wind and total cloud mixing ratio tendencies, demonstrating its ability to correctly cap-
+ture the large-scale dynamics in the E3SM-MMF physical simulation. However, some
+discrepancies exist between the hybrid simulation and the reference E3SM-MMF sim-
+ulation. For instance, the hybrid simulation underestimates the heating and drying ten-
+dency band near 15N, underestimates the moistening tendency in the tropical lower tro-
+posphere, and produces anomalous heating in the polar stratosphere near 200 hPa.
+
+     The online precipitation statistics in the 5-year hybrid simulation reasonably re-
+produced the reference E3SM-MMF simulation (Figure 11). The zonal mean, 5-year av-
+
+
+                                                                                                                          –19–
+        manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+Figure 11.         (a) 5-year zonal mean precipitation in the reference E3SM-MMF simulation (solid
+lines) versus the online hybrid simulation with the U-Net model incorporating microphysical
+constraints (dashed lines). Different colors denote samples taken globally (blue), only over land
+(orange), and only over the ocean (red). (b) Histogram of the hourly instantaneous precipitation.
+
+
+
+                                                                                (c) Precipitation (mm/day): NN - MMF
+     (a) Precipitation (mm/day): MMF           (b) Precipitation (mm/day): NN                  RMSE=0.96
+
+
+
+
+           0            3              6   9            12            15            3.2    1.6   0.0   1.6    3.2
+
+
+
+Figure 12.         Horizontal maps of the five-year mean surface precipitation: (a) reference E3SM-
+MMF simulation, (b) hybrid U-Net-expanded-constrained simulation, and (c) bias (hybrid minus
+reference). Panel c also documents the RMSE of 0.96 mm/day for the five-year mean precipita-
+tion between the hybrid and reference simulations.
+
+
+
+
+erage precipitation distribution in the hybrid simulation matches that of the reference
+E3SM-MMF simulation (Figure 11a). However, the precipitation peak in the northern
+hemisphere is underestimated, primarily over the ocean. Figure 12 presents the horizon-
+tal map of the 5-year mean precipitation pattern. The hybrid simulation captures the
+spatial distribution of global precipitation reasonably well but underestimates the rain
+belt on the northern side of the equator. Quantitatively, the hybrid simulation exhibits
+an RMSE of 0.96 mm/day for the 5-year mean precipitation.
+      The hybrid run also reasonably reproduces the extreme tail of the PDF of the in-
+stantaneous precipitation sampled every hour (Figure 11b). The frequency in the hybrid
+run aligns well with the reference simulation down to a frequency of 10−6 , demonstrat-
+ing similar skills that match previous studies (Rasp et al., 2018; Yuval & O’Gorman, 2020;
+X. Wang et al., 2022). However, beyond the frequency of 10−6 , the hybrid simulations
+failed to reproduce the most extreme and rarest of precipitation events.
+
+
+                                                             –20–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+5 Conclusions
+       The Multi-scale Modeling Framework (MMF) offers a promising solution to bet-
+ter represent subgrid processes that are poorly parameterized in traditional climate mod-
+els. By integrating machine learning (ML) to emulate the embedded cloud-resolving mod-
+els, we can potentially reduce computational costs substantially while maintaining high
+fidelity in the resulting hybrid climate simulations. Compared to other hybrid approaches,
+the MMF framework provides the convenience of locality due to its scale separation and
+retains all necessary components (e.g., ocean and land modules, aerosol module) for fu-
+ture climate change projections.
+      Here, we used the coarse-resolution version (with an effective resolution of 11.5°×11.5°)
+of the ClimSim data (Yu, Hannah, et al., 2024) to train a stable ML parameterization
+that emulates the full physics (convection plus radiation) of the cloud-resolving model
+in the E3SM-MMF climate model. In the hybrid MMF simulation studies, to our knowl-
+edge, this is the first work to achieve a multi-year stable ML parameterization that em-
+ulates the full set of variables required to couple with the dynamical core and surface
+models with geography. Our hybrid simulation achieved state-of-the-art online 5-year
+zonal-mean biases in temperature and water vapor climatology compared to previous hy-
+brid MMF studies with similar complexities (Han et al., 2023; Behrens et al., 2024). Our
+hybrid simulation also achieved realistic multi-year cloud climatology with explicit cloud
+condensate coupling.
+       We utilized an improved U-Net architecture with expanded input features, such as
+large-scale forcings and convective memory, which significantly improved offline fitting
+skills compared to the baseline multi-layer perceptron architecture used in many previ-
+ous studies. While offline skill is not completely representative of online performance,
+we found that incorporating microphysical constraints in the ML prediction significantly
+enhanced the online performance of the hybrid simulations. These constraints were in-
+formed by the initial analysis of hybrid errors in the simulated condensate. We found
+that they help maintain a reasonable liquid and ice cloud distribution in the hybrid sim-
+ulation. They also significantly benefited other state variables such as temperature and
+water vapor bias through associated dynamical couplings. Our microphysics-constrained
+U-Net model also reasonably reproduced the spatial distribution of five-year mean pre-
+cipitation and the frequency of extreme precipitation compared to the reference E3SM-
+MMF simulation, with a root mean square error of 0.96 mm/day for five-year mean pre-
+cipitation.
+
+       Despite these advancements, our multi-year online performance reveals systematic
+biases that remain to be addressed. For example, we observe a persistent low-bias in trop-
+ical lower troposphere water vapor and liquid cloud mixing ratio, as well as a vertical
+dipole pattern in temperature biases within the polar stratosphere. Additionally, the hy-
+brid simulation underestimates precipitation rates over the northern flank of the equa-
+torial rain belt. Addressing these biases presents significant challenges, underscoring the
+need for innovative approaches to optimizing online performance and improving the fi-
+delity of hybrid climate simulations.
+      Our work demonstrates the potential of achieving stable and skillful ML param-
+eterization for operational-level hybrid climate simulations. We illustrate the importance
+and potential ways of incorporating domain knowledge and physical constraints into the
+ML parameterization to improve the online bias and stability of hybrid physics-ML cli-
+mate simulations. We prove that including explicit cloud condensate coupling in our ML
+parameterization is achievable while maintaining satisfactory multi-year climatology, which
+would be crucial to further increase the complexity of the ML parameterization such as
+including pollutant transport and cloud-aerosol interaction.
+
+
+
+
+                                            –21–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+6 Discussion and Limitations
+     6.1 Complexity of the Reference and Hybrid Simulations
+      Our online results establish a robust baseline that approaches operational-level com-
+plexity, demonstrating substantial progress, but also highlighting areas needing further
+development. Looking forward, additional complexity is required in the ML parameter-
+ization and the training data to achieve complete compatibility for the purpose of cli-
+mate projection. For example, our online simulations used prescribed sea surface tem-
+perature and sea ice. To simulate future climate change, it will be necessary to train and
+evaluate the hybrid simulations with a fully coupled ocean module that allows for inter-
+actions between the atmosphere, ocean, and sea ice. Aerosol-cloud interaction is also a
+critical process for climate projection but is not included in the simulations that gen-
+erate the ClimSim data. To develop ML parameterization that includes aerosol-cloud
+interaction, one can create a new training dataset that includes aerosol-related inputs
+and outputs. This can be done using simulations that implement the Explicit-Cloud Parameterized-
+Pollutant (ECPP) scheme (Gustafson et al., 2008).
+      For computational expedience, our ML parameterization is trained on data from
+the coarse-resolution E3SM-MMF simulations in the ClimSim dataset (Yu, Hannah, et
+al., 2024), with an effective resolution of 11.5°×11.5°, and tested in a similarly coarse prog-
+nostic setting. On the one hand, this serves as a simple, cost-efficient starting point to
+rapidly iterate on different ideas to improve offline and online performance. However,
+this resolution poorly simulates tropical precipitation, synoptic scale flows, fronts, and
+large-scale convective systems like Madden-Julian Oscillation (MJO). The coarse reso-
+lution introduces challenges for the parameterization problem, as it requires the param-
+eterization to account for not only unresolved convection and clouds but also a substan-
+tial portion of the large-scale circulation typically resolved in an atmospheric model. How-
+ever, it may also simplify the problem by avoiding the “gray zone” issues encountered
+in models with resolutions of 50–100 km, where some gravity waves, fronts, and large-
+scale convective systems are partially resolved but poorly simulated.
+
+      Future work should thus extend this study to the most operationally relevant, highest-
+resolution data in the ClimSim dataset (effective resolution of 1.5°×1.5°), which better
+resolves synoptic-scale flows and contains more detailed topography. However, higher-
+resolution data may shift input distributions significantly, including changes in mean at-
+mospheric states, large-scale advective forcings, and the emergence of previously unen-
+countered extrema, such as newfound peak topography and new land surface properties.
+These differences will likely require retraining the ML parameterizations to handle the
+altered data characteristics and ensure reliable performance in the high-resolution set-
+ting.
+
+     6.2 Improving the Offline and Online Performance
+
+       Our results are consistent with the view of Lin et al. (2024) that pursuing higher
+offline skills can lead to improved online performance in hybrid simulations, suggesting
+exploring advanced architectures might be beneficial. MLPs with deeper architectures
+(10+ layers) and residual connections (Kochkov et al., 2024; X. Wang et al., 2022) may
+offer greater expressive power compared to the MLP model evaluated in this study and
+may exhibit different online performance. Transformer models or Long Short-Term Mem-
+ory (LSTM) models might effectively learn vertical structure of the input features. A
+Recurrent Neural Network (RNN)-style model in the time dimension, like a state-space
+model or LSTM, could better represent the convection memory.
+      In addition to exploring advanced architectures, more careful normalization in the
+upper troposphere and the stratosphere or location-dependent normalization might fur-
+ther improve offline skills. While these advancements hold promise in general, our cur-
+
+
+
+                                             –22–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+rent U-Net model and normalization strategies continue to face significant challenges in
+specific areas. It struggles to predict stratospheric cloud and water vapor tendencies as
+well as wind tendencies in the polar regions.
+       For further insights into improving offline performance, readers are encouraged to
+review the solutions from a recent Kaggle competition, “LEAP-Atmospheric Physics AI
+(ClimSim)” (https://www.kaggle.com/competitions/leap-atmospheric-physics-ai-climsim).
+The participants worked on the same ClimSim dataset and explored various innovative
+architectures, data preprocessing techniques, and training strategies to optimize the of-
+fline skill of their models. For example, we speculate that the low offline R2 of water va-
+por, ice cloud, and wind tendencies in the tropopause and stratosphere (Figure 3) could
+be improved by better normalization and architectures.
+      It could be viewed as surprising that the expanded input features (large-scale ad-
+vective forcing plus previous steps’ convection memory) did not improve the online per-
+formance (Figure 5) given that some previous studies, such as Lin et al. (2024), have sug-
+gested adding convection memory can improve stability and online performance. A po-
+tential explanation is that a larger sample size of architectures may be necessary to ro-
+bustly assess the impact of these expanded input features. We encourage future stud-
+ies to further test and ablate these features to better understand their effects on model
+performance.
+       Exploring the pathologies of bias and instability in hybrid climate simulations is
+highly beneficial. In our study, the observation of unrealistic cloud formation was cru-
+cial in motivating our implementation of microphysical constraints. These unrealistic clouds
+(clearly out-of-sample simulation states) highlight a broader challenge in hybrid physics-
+ML simulations: ensuring that ML-generated physics do not drive the simulation into
+non-physical states. Addressing this issue is difficult because training data sourced solely
+from physically accurate numerical simulations may not prepare the ML model to cor-
+rect such errors. Our work demonstrates that addressing such out-of-sample issues can
+benefit from in-depth error diagnosis and constraints informed by domain knowledge to
+prevent un-physical situations from happening in the first place.
+      Our hybrid simulations exhibit certain bias patterns, such as the vertical dipole tem-
+perature bias in the polar stratosphere (Figure 9c), a drying water vapor bias, and a liq-
+uid cloud low bias in the tropical lower troposphere (Figure 9f and 9l). These bias pat-
+terns also exist in the hybrid simulations across all the checkpoints (e.g., Figure E1) of
+the U-Net model with microphysical constraints. Appendix F shows that the tropical
+lower troposphere bias patterns of too little water vapor and liquid cloud develop very
+quickly within the first few days and maintain their magnitude for years.
+      Some other bias patterns vary with different checkpoints. The constrained U-Net
+model checkpoint used to create Figure 9 corresponds to the red circle line in Figure 5,
+which exhibits slightly better temperature and water vapor zonal mean biases but worse
+biases for online cloud mixing ratio than other U-Net checkpoints (Figure 5d). The pos-
+itive bias of the lower troposphere liquid cloud (Figure 9l) can be significantly improved
+with other checkpoints (Figure E1). A more extensive hyperparameter search could po-
+tentially further optimize some of the observed online bias.
+      Further optimizing the online bias of our constrained U-Net model can be challeng-
+ing once an optimal architecture is decided upon. Unlike offline errors, online errors are
+non-differentiable and cannot be directly optimized using gradient descent. Once the model
+architecture is fixed, we currently rely on checkpoint searches (e.g., by perturbing train-
+ing hyperparameters) to identify the checkpoint that yields the best online performance.
+      When evaluating online error growth, we used a fixed initial condition for all hy-
+brid and reference simulations. In future work, it would be valuable to better isolate the
+development of online biases from the sensitivity of reference simulations to initial con-
+
+
+                                            –23–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+ditions. For instance, conducting an ensemble of simulations with perturbed initial con-
+ditions could provide a clearer measure of the system’s chaotic behavior. Additionally,
+using different initial conditions across various times of the year could improve the ro-
+bustness of the evaluation. Analyzing the bias development on daily or even shorter timescales
+could also offer insights into the unsteady onset of these biases.
+       It remains an open question how to use gradient-free methods to optimize these
+online errors. Gradient-free methods such as imitation learning and Ensemble Kalman
+Inversion could be promising, as they have shown success in other applications (S. Ross
+et al., 2011; Rasp, 2020; Kelp et al., 2022; Lopez-Gomez et al., 2022; Pahlavan et al., 2024;
+Christopoulos et al., 2024). Another possible yet highly non-trivial approach is to de-
+velop a fully differentiable climate model, as demonstrated for the atmospheric primi-
+tive equation solver subcomponent by (Kochkov et al., 2024), although this is a highly
+nontrivial effort for a fully featured climate model compatible for future climate projec-
+tion. With a model that can be integrated over time in a differentiable way, it would be
+possible to optimize multi-step losses using gradient descent. Some of the online error
+patterns develop very quickly within the first day of the hybrid simulation, and optimiz-
+ing multi-step losses could potentially help address these error patterns.
+
+      There is room for adjustment and improvement in the microphysical constraints
+we used. The temperature-based liquid-ice partition constraint is not directly applica-
+ble to reconfigurations of the CRM that use more advanced microphysics schemes of the
+sort required for fully explicit aerosol-cloud interaction science. However, some soft con-
+straints can still be applied, such as prohibiting liquid clouds below a certain temper-
+ature and similarly prohibiting ice clouds above a warm temperature threshold. The con-
+straint of removing all clouds in the stratosphere eliminates deep penetrating clouds, which
+are infrequent but not entirely absent. A more careful, data-driven approach could be
+used to define the tropopause, requiring fewer approximations and better capturing the
+rare but non-zero deep convective overshoots. Looking ahead, now that this baseline prob-
+lem that intentionally used simplistic microphysics is proving tractable, extensions to more
+modern microphysical representations would be timely.
+
+
+7 Open Research
+      The training data is the ClimSim dataset (Yu, Hannah, et al., 2024). Quickstarts
+of how to use the ClimSim dataset, data downloading from HuggingFace, data prepro-
+cessing, and training codes are available at https://github.com/leap-stc/ClimSim
+(ClimSim Team, n.d.). The numerical atmospheric model that we use to perform pure
+physical simulations and hybrid simulations is the Energy Exascale Earth System Model
+(E3SM)-multiscale modeling framework (MMF) (Hannah et al., 2020). The version of
+E3SM-MMF that supports pytorch-fortran coupling is openly available at https://github
+.com/NVlabs/E3SM (E3SM Project, 2023). We use an open-source library called Pytorch-
+Fortran (Alexeev, 2023) to couple our PyTorch models with the E3SM. The Pytorch-
+Fortran library requires saving the PyTorch model in TorchScript (PyTorch Contribu-
+tors, 2024). We use the PyTorch (Paszke et al., 2019) and open-source NVIDIA Mod-
+ulus library (NVIDIA Modulus Team, n.d.) for training our neural net models. The sim-
+ulation output data, saved models, and visualization notebooks are available at https://
+zenodo.org/records/12797810 (Hu, 2025).
+
+
+Appendix A Neural Network Model Configuration
+     A1 Input and Output Features
+
+    Table A1 and A2 list the complete input and output features for the baseline MLP
+models. In the inputs, we include the current state variables like temperature, relative
+humidity, liquid and ice cloud mixing ratio, zonal and meridional wind. In addition, we
+
+
+                                            –24–
+       manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                  Table A1.     List of input features used in the MLP model.
+
+
+Variable           Units       Description                                Normalization
+T (z)              K           Temperature                                (x-mean)/(max-min)
+RH(z)                          Relative humidity
+ql (z)             kg/kg       Liquid cloud mixing ratio                  1 - exp(-λx)
+qi (z)             kg/kg       Ice cloud mixing ratio                     1 - exp(-λx)
+u(z)               m/s         Zonal wind                                 (x-mean)/(max-min)
+v(z)               m/s         Meridional wind                            (x-mean)/(max-min)
+O3(z)              mol/mol     Ozone volume mixing ratio                  (x-mean)/(max-min)
+CH4(z)             mol/mol     Methane volume mixing ratio                (x-mean)/(max-min)
+N2O(z)             mol/mol     Nitrous volume mixing ratio                (x-mean)/(max-min)
+PS                 Pa          Surface pressure                           (x-mean)/(max-min)
+SOLIN              W/m2        Solar insolation                           x/(max-min)
+LHFLX              W/m2        Surface latent heat flux                   x/(max-min)
+SHFLX              W/m2        Surface sensible heat flux                 x/(max-min)
+TAUX               W/m2        Zonal surface stress                       (x-mean)/(max-min)
+TAUY               W/m2        Meridional surface stress                  (x-mean)/(max-min)
+COSZRS                         Cosine of solar zenith angle               (x-mean)/(max-min)
+ALDIF                          Albedo for diffuse longwave radiation      (x-mean)/(max-min)
+ALDIR                          Albedo for direct longwave radiation       (x-mean)/(max-min)
+ASDIF                          Albedo for diffuse shortwave radiation     (x-mean)/(max-min)
+ASDIR                          Albedo for direct shortwave radiation      (x-mean)/(max-min)
+LWUP               W/m2        Surface upward longwave flux               (x-mean)/(max-min)
+ICEFRAC                        Sea-ice area fraction
+LANDFRAC                       Land area fraction
+OCNFRAC                        Ocean area fraction
+SNOWHLAND          m           Snow depth over land                       (x-mean)/(max-min)
+
+
+
+
+also include in the input features the atmosphere gas components (ozone, N2O, and CH4
+mixing ratios), boundary conditions (surface pressure, solar insolation and cosine zenith
+angle, surface heat flux and surface stress, albedo, snow depth), and geography informa-
+tion (land fraction, sea ice fraction). In the output, we predict the time tendencies of tem-
+perature, specific humidity, liquid and ice cloud mixing ratio, zonal wind and meridional
+wind. In addition to the state tendencies, we also predict radiative fluxes and precipi-
+tation (snow and rain) at the surface which are required to couple a land model.
+      Table A3 lists the additional input features used in the U-Net-expanded and U-Net-
+expanded-constrained models. These additional inputs include large-scale forcing at the
+current and previous time steps, and the convective memory (i.e., the target tendencies)
+at two previous time steps. Large-scale forcing and convective memory are also used in
+(Han et al., 2020; X. Wang et al., 2022; Han et al., 2023). Cosine and sine of latitudes
+are included as well. When microphysical constraints are added, mixing ratios and pre-
+vious steps’ tendencies of liquid cloud and ice cloud inputs are replaced with the corre-
+sponding total cloud condensate inputs (liquid plus ice), along with a diagnosed fraction
+of liquid cloud based on temperature. That is, the last three rows in the Table A3 are
+only used in the U-Net-expanded-constrained model, which also excludes ql (z), qi (z), dql (z, t−1 , t−2 ),
+and dqi (z, t−1 , t−2 ) from the inputs.
+
+
+                                             –25–
+        manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+          Table A2.       List of output features used in the MLP and U-Net-baseline model.
+
+
+Variable        Units         Description                                         Normalization
+dT (z, t0 )     K/s           Temperature tendency                                x/std
+dqv (z, t0 )    kg/kg/s       Water vapor tendency                                x/std
+dql (z, t0 )    kg/kg/s       Liquid cloud tendency                               x/std
+dqi (z, t0 )    kg/kg/s       Ice cloud tendency                                  x/std
+du(z, t0 )      m/s2          Zonal wind tendency                                 x/std
+dv(z, t0 )      m/s2          Meridional wind tendency                            x/std
+NETSW           W/m2          Net shortwave flux at surface                       x/std
+FLWDS           W/m2          Downward longwave flux at surface                   x/std
+PRECSC          m/s           Snow rate (liquid water equivalent)                 x/std
+PRECC           m/s           Rain rate                                           x/std
+SOLS            W/m2          Downward visible direct solar flux to surface       x/std
+SOLL            W/m2          Downward near-IR direct solar flux to surface       x/std
+SOLSD           W/m2          Downward visible diffuse solar flux to surface      x/std
+SOLLD           W/m2          Downward near-IR diffuse solar flux to surface      x/std
+
+
+Table A3.       List of additional input features used in the U-Net-expanded model and the U-
+Net-expanded-constrained model. The last three rows are only used for the U-Net-expanded-
+constrained model. In addition, the U-Net-expanded-constrained model excludes ql (z), qi (z),
+dql (z, t−1 , t−2 ), and dqi (z, t−1 , t−2 ) from the inputs.
+
+
+ Variable                 Units         Description                               Normalization
+ dTadv (z, t0 , t−1 )     K/s           Large-scale forcing of temperature        x/(max-min)
+ dqT,adv (z, t0 , t−1 )   kg/kg/s       Large-scale forcing of total water        x/(max-min)
+ duadv (z, t0 , t−1 )     m/s2          Large-scale forcing of zonal wind         x/(max-min)
+ dT (z, t−1 , t−2 )       K/s           Temperature tendency                      x/std
+ dqv (z, t−1 , t−2 )      kg/kg/s       Water vapor tendency                      x/std
+ dql (z, t−1 , t−2 )      kg/kg/s       Liquid cloud tendency                     x/std
+ dqi (z, t−1 , t−2 )      kg/kg/s       Ice cloud tendency                        x/std
+ du(z, t−1 , t−2 )        m/s2          Zonal wind tendency                       x/std
+ cos(lat)                               Cosine of latitude
+ sin(lat)                               Sine of latitude
+ liq partition(z)                       Fraction of liquid cloud
+ qn (z)                   kg/kg         Total cloud (liquid + ice) mixing ratio   1 - exp(-λx)
+ dqn (z, t−1 , t−2 )      kg/kg/s       Total cloud tendency                      x/std
+
+
+
+
+      A2 NN architecture
+      MLP: For the results presented in the main text, We used the architecture param-
+eters recommended from the hyperparameter search in (Yu, Hannah, et al., 2024) in our
+MLP model. It contains 3 hidden layers with N nodes = [384, 1024, 640] and ReLU ac-
+tivation. Additionally, we explored an alternative MLP model with N nodes = [256, 256,
+256, 256, 256, 256, 256, 256, 256] and ReLU activation, as proposed in (Rasp et al., 2018).
+We observed similar offline and online performance between the two configurations. The
+results from the second configuration are not shown in the manuscript.
+
+      U-Net: We adapted the 2D U-Net model from (Song et al., 2020) into a 1D ver-
+sion for column-to-column prediction. The architecture schematic is shown in Figure 1.
+
+
+                                                       –26–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+Each ResBlock consists of the following operations:
+
+                      y = Conv1D(GM(Conv1D(silu(GM(x))))) + x
+
+This series of operations includes group normalization (GM), sigmoid linear unit (silu)
+activation function, 1D convolution (Conv1D) with a kernel size of 3, and a residual con-
+nection. The U-Net has 4 layers in depth with latent feature dimensions in each layer
+N latent = [128, 256, 256, 256]. The model comprises 13 million parameters.
+      To evaluate the inference speed of these architectures, we configured the reference
+E3SM-MMF simulation and hybrid simulations on the NERSC Perlmutter system https://
+www.nersc.gov/systems/perlmutter. The simulations were run on a single GPU node
+equipped with four A100 GPUs, using 4 MPI tasks and 8 threads per task. The refer-
+ence E3SM-MMF simulation achieves a throughput of 9.9 simulation years per day (SYPD),
+leveraging GPU acceleration for cloud-resolving model calculations. In comparison, the
+hybrid MLP simulation achieves a slightly higher throughput of 10.1 SYPD, while the
+U-Net-baseline simulation achieves 5.2 SYPD. Notably, the neural network computations
+in these hybrid simulations were performed entirely on CPUs due to unresolved engineer-
+ing challenges, and GPU acceleration was not utilized in our hybrid simulations. We an-
+ticipate that enabling NN inference on GPUs could significantly enhance the through-
+put of hybrid simulations, making them more computationally efficient than the refer-
+ence E3SM-MMF simulations. It is important to note that these timing metrics are not
+very meaningful as our work is not concerned with unthrottling the maximum through-
+put of hybrid simulations, but rather proving what it takes to encourage their success
+from a scientific design perspective. It is logical to expect ML model distillation and hard-
+ware acceleration strategies can then recover the high throughput expected of hybridized
+simulations, which is a separate topic.
+
+     A3 Normalization
+
+      The normalization methods for each input and output feature are listed in Table
+A1, A2, and A3. The majority of input features are normalized by subtracting the mean
+and then dividing by the difference of maximum and minimum values. All output vari-
+ables are normalized by the standard deviation. Mean, maximum, minimum, and stan-
+dard deviation values are all evaluated per level. For variables that are already in the
+range of 0 to 1, no normalization is performed. For the large-scale forcings, solar inso-
+lation, and surface latent/sensible heat fluxes, we choose not to subtract the mean to main-
+tain their sign. Convective memory inputs are normalized by the same standard devi-
+ation value used in the corresponding output variable.
+       For input liquid, ice, and total cloud mixing ratio, an exponential transformation
+(x′ = 1 − exp(−λx)) is taken to deal with the long positive tail in the distribution of
+cloud mixing ratio. The rationale is that, if the tail follows an exponential distribution,
+then an exponential transformation is able to convert the exponential distribution into
+a 0-1 uniform distribution. The exponential parameter λ is evaluated by one over the
+conditional mean cloud mixing ratio for grids with mixing ratio greater than 10−7 kg/kg,
+i.e., λ = 1/mean(qn (qn > 10−7 )).
+
+      When calculating the standard deviation for the output tendencies of water vapor,
+total cloud, zonal and meridional winds, an arbitrary lower bound is added and the ac-
+tual normalization factor is min(st.d., threshold). These thresholds are added to penal-
+ize the contribution of stratosphere levels in the total loss function. In the stratosphere,
+the standard deviation of these tendencies dramatically decreases with height. This thresh-
+old is chosen as 3−10 kg/kg for tendencies of water vapor and cloud and as 10−6 m/s for
+zonal and meridional winds. The tendencies at those levels are also likely noisy and less
+physical given they are within the sponge layer of the CRM which damps the perturba-
+tion. This penalizes water vapor above level 22 (200 hPa), clouds above level 17 (70 hPa),
+
+
+                                            –27–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+and winds above level 15 (50h Pa). Correspondingly, we also set the top 15 levels of NN
+output tendencies of water vapor, total cloud, zonal and meridional winds to 0.
+
+     A4 Additional Preprocessing
+      After normalization, we concatenate all the input features and output targets into
+two one-dimensional arrays for each sample and feed them to the MLP model. For the
+U-Net models, we construct the input features for each sample into a two-dimensional
+array with a vertical length of 60 and a channel length equal to the number of features.
+Each profile input feature represents an individual channel, while scalar features such
+as solar insolation or surface heat fluxes are broadcast as channels with constant values.
+To facilitate three downsampling steps in the U-Net model, we concatenate four addi-
+tional layers of zeros at the top of the atmosphere, expanding the vertical column length
+to 64. The direct output of the U-Net model is a sequence of length 64 with 13 chan-
+nels. We then drop the top 4 levels in the output. The first 5 output channels correspond
+to the profile output variables, while the last 8 channels are averaged through the level
+dimension to obtain the 8 scalar output variables.
+
+     A5 Feature Pruning
+      The top levels in the cloud-resolving model are within the sponge layer, where the
+tendencies of water vapor, clouds, and winds can be unphysical and unpredictable. Our
+output normalization approach also tends to penalize the upper-level tendencies in the
+total loss function. We do not expect our neural networks can well predict those levels.
+Therefore, we set the top 15 levels to zero for the predicted tendencies of water vapor,
+liquid and ice clouds, and zonal and meridional winds, excluding them from the loss func-
+tion. Additionally, we manually prune the liquid, ice, or total cloud mixing ratio in the
+top 15 levels (above 50 hPa) from the input by setting them to zero before feeding them
+to the neural network. This pruning decision is somewhat arbitrary, and we did not test
+its necessity. A more careful normalization of the output tendencies in the stratosphere
+could potentially improve their prediction without negatively affecting the fitting skill
+at lower height levels. In such a case, it would be more appropriate to evaluate the ne-
+cessity of this pruning.
+       Previous studies, such as Brenowitz and Bretherton (2018), suggested that exclud-
+ing stratosphere temperature and water vapor (e.g., above around 200 hPa) could be cru-
+cial for achieving stable online simulations. To test this hypothesis, we also experimented
+with a more aggressive pruning strategy, pruning water vapor and clouds above 170 hPa,
+as well as pruning large-scale forcing and convective memories above 50 hPa. However,
+we did not observe significant differences with or without this aggressive pruning strat-
+egy. All the results presented in this manuscript do not employ this aggressive pruning.
+
+
+Appendix B Training
+       Previous studies, such as (Ott et al., 2020; X. Wang et al., 2022), have shown that
+improved offline skill can benefit downstream error, but the downstream error is not fully
+constrained by offline skill. This means different checkpoints with very similar offline skills
+can exhibit varying downstream stability and error. A trial-and-error approach is often
+used to identify the checkpoint with the best downstream performance. For subtle sen-
+sitivities, hundreds of trials can become important to detect online signals of hybrid cli-
+mate error from upstream ML noise (Lin et al., 2024).
+      To account for some of this downstream uncertainty, we trained three MLP mod-
+els with different loss functions and learning rate schedules listed below. We trained these
+MLP models with a batch size of 1024 using the Adam optimizer. The training uses Dis-
+tributed Data Parallel on 4 GPUs.
+
+
+                                             –28–
+         manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+    • The first model used Mean Absolute Error (MAE) loss, with an initial learning
+      rate of 1 × 10−3 , reduced by a factor of 0.3162 every 7 epochs for a total of 28
+      epochs.
+    • The second model used the same learning rate schedule but a standard Huber loss
+
+      with δ = 1.
+    • The third model also used Huber loss but with a different learning rate schedule:
+
+      starting at 1×10−3 , using a ReduceOnPlateau scheduler with a patience of 3 epochs
+      and a reduction factor of 0.3162 for a total of 20 epochs. This was followed by man-
+      ually reducing the learning rate to 1×10−4 for fine-tuning over 12 more epochs
+      with a patience of 0 epochs and a reduction factor of 0.5.
+
+      Similarly, we trained three versions of the U-Net models for each of the three con-
+figurations: without expanded input features (U-Net-baseline), with expanded input fea-
+tures (U-Net-expanded), and with both expanded input features and cloud physics con-
+straints (U-Net-expanded-constrained). We used the same batch size of 1024 and the Adam
+optimizer. The training uses Distributed Data Parallel on 4 GPUs.
+
+    • The first used MAE loss, with an initial learning rate of 1×10−4 , reduced by a
+      factor of 0.5 every 3 epochs for a total of 16 epochs.
+    • The second model used the same learning rate schedule but a standard Huber loss
+
+      with δ = 1.
+    • The third used Huber loss with a different learning rate schedule: starting at 1×
+
+      10−4 with a ReduceOnPlateau scheduler with a patience of 3 epochs and a reduc-
+      tion factor of 0.3162 for a total of 20 epochs. For U-Net-expanded and U-Net-expanded-
+      constrained, the learning rate does not drop within the first 20 epochs. Therefore,
+      for these two configurations, we further manually reduced the learning rate to 5×
+      10−5 for fine-tuning over 8 more epochs with a patience of 0 epochs and a reduc-
+      tion factor of 0.5.
+
+
+Appendix C Online Metric
+        In this section, we document how the two main online metrics below are calculated.
+      Root Mean Square Error: The root mean square error (RMSE) are computed
+separately for each variable in the online simulations. The goal is to measure the error
+in simulated climate by analyzing state variables that are sufficiently averaged in space
+and time. For a given evaluation timescale, RMSE for each variable is calculated as fol-
+lows:
+
+                                       v
+                                       u Sm
+                                       uX
+                                RMSE = t    wi (ŷm − ym )2
+                                             i=1
+
+
+
+        where:
+
+    • Sm is the number of samples. Each grid cell counts as one sample. For a variable
+      evaluated at a specific vertical level, Sm includes all grid cells at that level. For
+      global evaluations, Sm includes all grid cells in the 3D domain (horizontal and ver-
+      tical).
+    • ŷ
+        m represents the fields from the ML-coupled simulation averaged over the given
+      evaluation timescale. In Section 4.1, ŷm represents monthly averaged data. In Sec-
+      tion 4.2, ŷm represents five-year mean data.
+    • y
+        m represents the mean values from the reference simulation averaged over the same
+      timescale as ŷm .
+
+
+                                             –29–
+               manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+1.0
+                (a) Class Distribution        1.00
+                                                          (b) Prediction Accuracy                                   (c) Confusion Matrix           1e7
+                                                                                                                                                         6
+                                                                                                       Class 2   76163       1649973   54715548
+0.8                                           0.98                                                                                                       5
+
+0.6                                           0.96                                                                                                       4
+
+
+
+
+                                                                                          True label
+                                                                                                       Class 1   106342     50371116   1366868
+                                                                                                                                                         3
+0.4                                           0.94
+                                                                                                                                                         2
+                                                          class 0
+0.2                                           0.92        class 1                                      Class 0 64648025       9735         40550         1
+                                                          class 2
+0.0                                           0.90
+          20       30       40      50   60          20         30         40   50   60                          Class 0     Class 1   Class 2
+                        Level                                         Level                                              Predicted label
+
+
+Figure D1.                (a) The distribution of the three classes at each atmospheric level. Only the lev-
+els below level 15 are shown since it is mostly Class 0 above level 15. (b) The prediction accuracy
+of the classifier for each class. Prediction accuracy is defined as the fraction of samples of a given
+class that are correctly identified by the classifier. (c) The confusion matrix of the classifier for all
+grid samples at all levels.
+
+
+
+
+      •    w1 , w2 , . . . , wSm are mass-weights that sum to 1, proportional to the mass in each
+           grid cell.
+
+       Zonal Mean Bias: Additionally, we evaluate the long-term zonal mean bias, which
+measures the average difference between the online simulation and the reference simu-
+lation across various atmospheric variables, such as temperature, water vapor, wind, and
+liquid and ice clouds. The zonal mean bias is derived by comparing variables averaged
+over time and longitudes. The E3SM-MMF climate model uses unstructured grids in-
+stead of regular latitude-longitude grids. To average a variable over all longitudes, we
+first define latitude bins. For the low-resolution version of the ClimSim dataset, we choose
+10-degree intervals from 90°S to 90°N. Within each bin, we count all the grid columns
+that fall into the bin and calculate the horizontal average of those columns weighted by
+their area.
+
+
+Appendix D Microphysics classifier
+      The tendencies of liquid or ice cloud mixing ratios follow a mixture of discrete and
+continuous distributions. Some clear-sky grids may have no clouds and, consequently,
+zero cloud tendencies. However, a naive neural network regression model is likely to pre-
+dict very small but non-zero values on these grids. In our hybrid model, a non-negative
+check sets any negative water vapor or cloud mixing ratios to zero. (Brenowitz et al.,
+2022) suggested that a separate classifier model can help mitigate the online accumu-
+lation of errors in the discrete mode because the non-negative check removes negative
+errors but retains positive errors. Similarly, (Gettelman et al., 2021) used a classifier as
+part of their model to emulate a microphysics scheme. Therefore, we trained a micro-
+physics classifier to test if it could help reduce the online cloud bias.
+
+      Following Brenowitz et al. (2022), we defined three classes for cloud changes in the
+reference E3SM-MMF simulations:
+
+      • Class 0: No cloud change (defined as the tendency of total cloud mixing ratio smaller
+        than 10−13 kg/kg/s).
+      • Class 1: Not Class 0, and all cloud is removed (defined as remaining total cloud
+
+        mixing ratio smaller than 10−10 kg/kg).
+      • Class 2: Not Class 0 or Class 1.
+
+
+
+
+                                                                    –30–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+      Figure D1a shows that a majority of the grids are in either Class 0 or Class 1. Only
+less than 50% of grids above level 40 are within Class 2. We trained a classifier model
+using the same U-Net architecture as before, except with only 1/4 of the latent chan-
+nel number and 1/2 of the number of Resblocks. The classifier takes the same input fea-
+tures but predicts the logits of each class at each level. We trained the classifier to op-
+timize a cross-entropy loss.
+      Our classifier model can accurately predict the defined classes but does not signif-
+icantly change the online error. Figures D1b and D1c show that the classifier is very ac-
+curate, with per-level accuracy exceeding 94% for all classes across all levels. However,
+when we implemented the classifier into the hybrid E3SM model and masked the regres-
+sion model’s cloud prediction for Class 0 and Class 1 (by setting cloud tendencies to 0
+for Class 0 and cloud mixing ratio to 0 for Class 1), we observed little change in the zonal
+mean climatology with or without the microphysics classifier. We believe that while the
+classifier prevents the accumulation of prediction errors in the discrete mode, as suggested
+by Brenowitz et al. (2022), this error is small compared to the prediction error in grids
+of Class 2 in our hybrid simulations. This likely explains why adding the microphysics
+classifier does not significantly improve online performance. All the results presented out-
+side this section do not use a microphysics classifier.
+
+
+Appendix E Online Zonal Mean Climatology Bias with a Different U-
+           Net Checkpoint
+      Figure E1 shows the 5-year zonal-mean climatology using the constrained U-Net
+model, similar to Figure 9, but with a different U-Net checkpoint due to the use of a dif-
+ferent learning rate schedule. This checkpoint exhibits a better extratropical cloud wa-
+ter bias, with only around 10 g/kg cloud water bias compared to the 40 g/kg bias near
+60N shown in Figure 9l. When comparing Figure E1 to Figure 9, many bias patterns re-
+main consistent, such as the vertical dipole temperature bias in the polar stratosphere,
+a drying water vapor bias and a liquid cloud low bias in the tropical lower troposphere.
+
+
+Appendix F Online error growth
+      We evaluate the online error growth of the hybrid simulation with a constrained
+U-Net model in comparison to the reference E3SM-MMF simulation. At each time step,
+a zonal mean bias is calculated and then averaged within 30S-30N. Figure F1 visualizes
+the tropical mean zonal mean bias for the first 5 days using a pressure-versus-time method.
+The tropical lower troposphere drying bias develops within the first day and is compa-
+rable to the 5-year zonal mean bias shown in Figure 9f. The tropical lower troposphere
+bias of reduced liquid cloud develops even faster, within only a few hours, and becomes
+comparable to the 5-year zonal mean bias shown in Figure 9l. This suggests that online
+biases in the first few simulation days can be indicative of yearly mean online biases. Bet-
+ter understanding of these rapidly developing bias patterns could potentially help in op-
+timizing them.
+
+
+Acknowledgments
+We thank the three anonymous reviewers and the associate editor for their helpful and
+constructive comments. We thank Pierre Gentine, Tom Buecler, Gunnar Behrens, Thorsten
+Kurth, Chenggong Wang, Piyush Garg, Laura Zanna, Dale Durran, Yair Cohen, Suman
+Ravuri for helpful discussion and comments. We thank the NVIDIA Modulus team for
+the modulus software support. ZK was supported by NASA Grant 80NSSC22K1837, which
+also supported ZH during the final phase of the project. We thank the computing re-
+sources at the NERSC Perlmutter cluster. JL was supported by the National Science Foun-
+dation (NSF) Science and Technology Center (STC) Learning the Earth with Artificial
+
+
+                                            –31–
+                              manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+
+                                     (a) T (K): MMF                              (b) T (K): NN                                (c) T (K): NN - MMF
+                                                              300                                        300
+                                                              280                                        280                                                4
+hybrid pressure (hPa)
+
+
+
+
+                        200                                         200                                        200
+                                                              260                                        260                                                2
+                        400                                         400                                        400
+                                                              240                                        240                                                0
+                        600                                         600                                        600
+                                                              220                                        220                                                    2
+                        800                                         800                                        800
+                                                              200                                        200                                                    4
+                              60S   30S    0     30N    60N               60S   30S    0    30N    60N                 60S     30S     0    30N       60N
+                                    (d) Q (g/kg): MMF                           (e) Q (g/kg): NN                             (f) Q (g/kg): NN - MMF
+                                                                                                                                                            1.0
+                                                              15                                         15
+hybrid pressure (hPa)
+
+
+
+
+                        200                                         200                                        200                                          0.5
+                        400                                   10    400                                  10    400
+                                                                                                                                                            0.0
+                        600                                         600                                        600
+                                                              5                                          5                                                      0.5
+                        800                                         800                                        800
+                                                                                                                                                                1.0
+                              60S   30S    0     30N    60N               60S   30S    0    30N    60N                 60S     30S     0    30N       60N
+                                    (g) U (m/s): MMF                            (h) U (m/s): NN                              (i) U (m/s): NN - MMF
+                                                                                                                                                            4
+hybrid pressure (hPa)
+
+
+
+
+                        200                                   40    200                                  40    200
+                                                                                                                                                            2
+                        400                                   30    400                                  30    400
+                                                                                                                                                            0
+                        600                                   20    600                                  20    600
+                                                              10                                         10                                                     2
+                        800                                         800                                        800
+                                                                                                                                                                4
+                              60S   30S    0     30N    60N               60S   30S    0    30N    60N                 60S     30S     0    30N       60N
+                              (j) Liquid cloud (mg/kg): MMF               (k) Liquid cloud (mg/kg): NN               (l) Liquid cloud (mg/kg): NN - MMF
+                                                                                                                                                            40
+                                                              50                                         50
+hybrid pressure (hPa)
+
+
+
+
+                        200                                         200                                        200                                          20
+                                                              40                                         40
+                        400                                         400                                        400
+                                                              30                                         30                                                 0
+                        600                                         600                                        600
+                                                              20                                         20
+                        800                                         800                                        800                                              20
+                                                              10                                         10
+                                                              0                                          0                                                      40
+                              60S   30S    0     30N    60N               60S   30S    0    30N    60N                 60S     30S     0    30N       60N
+                               (m) Ice cloud (mg/kg): MMF                  (n) Ice cloud (mg/kg): NN                  (o) Ice cloud (mg/kg): NN - MMF
+                                                              25                                         25
+                                                                                                                                                            4
+hybrid pressure (hPa)
+
+
+
+
+                        200                                   20    200                                  20    200
+                                                                                                                                                            2
+                        400                                   15    400                                  15    400
+                                                                                                                                                            0
+                        600                                   10    600                                  10    600
+                                                                                                                                                                2
+                        800                                   5     800                                  5     800
+                                                                                                                                                                4
+                                                              0                                          0
+                              60S   30S    0     30N    60N               60S   30S    0    30N    60N                 60S     30S     0    30N       60N
+
+
+
+Figure E1.                                 Similar to Figure 9, but using the U-Net-expanded-constrained model with Huber
+loss and a different learning rate schedule, as described in Appendix B.
+
+
+
+
+                                                                                      –32–
+                              manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+                                       (a) Online Bias NN-MMF within 30S-30N: Moisture (g/kg)
+                                                                                                              0.75
+
+Hybrid Pressure (hPa)   200                                                                                   0.50
+                                                                                                              0.25
+                        400
+                                                                                                              0.00
+                        600                                                                                     0.25
+                        800                                                                                     0.50
+                                                                                                                0.75
+                              0             1              2              3             4              5
+                                                               Days
+                                    (b) Online Bias NN-MMF within 30S-30N: Liquid Cloud (mg/kg)
+                                                                                                              20
+Hybrid Pressure (hPa)
+
+
+
+
+                        200
+                                                                                                              10
+                        400
+                                                                                                              0
+                        600
+                                                                                                                  10
+                        800
+                                                                                                                  20
+                              0             1              2              3             4              5
+                                                                Days
+
+  Figure F1.                         Time evolution of the zonal mean bias averaged within 30S-30N for water vapor
+  (a) and liquid cloud mixing ratio (b) over the first 5 days in the hybrid simulation with the U-
+  Net model incorporating the microphysical constraints.
+
+
+
+
+  Intelligence and Physics (LEAP), Award # 2019625-STC. This work was performed un-
+  der the auspices of the U.S. Department of Energy by Lawrence Livermore National Lab-
+  oratory under Contract DE-AC52-07NA27344. WH was supported by the Exascale Com-
+  puting Project (17-SC-20-SC), a collaborative effort of the U.S. Department of Energy
+  Office of Science and the National Nuclear Security Administration and by the Energy
+  Exascale Earth System Model (E3SM) project, funded by the U.S. Department of En-
+  ergy, Office of Science, Office of Biological and Environmental Research.
+
+
+  References
+  Alexeev, D. (2023, April). alexeedm/pytorch-fortran: Version v0.4 [software]. Zen-
+       odo. Retrieved from https://doi.org/10.5281/zenodo.7851167                   doi: 10
+       .5281/zenodo.7851167
+  Behrens, G., Beucler, T., Iglesias-Suarez, F., Yu, S., Gentine, P., Pritchard, M., . . .
+       Eyring, V. (2024). Improving atmospheric processes in earth system models
+       with deep learning ensembles and stochastic parameterizations. arXiv preprint
+       arXiv:2402.03079 .
+  Benedict, J. J., & Randall, D. A. (2009). Structure of the madden–julian oscillation
+       in the superparameterized cam. J. Atmos. Sci., 66 (11), 3277–3296.
+  Beucler, T., Gentine, P., Yuval, J., Gupta, A., Peng, L., Lin, J., . . . others   (2024).
+       Climate-invariant machine learning. Science Advances, 10 (6), eadj7250.
+  Bhouri, M. A., Peng, L., Pritchard, M. S., & Gentine, P.       (2023).      Multi-fidelity
+       climate model parameterization for better generalization and extrapolation.
+       arXiv preprint arXiv:2309.10231 .
+  Brenowitz, N. D., Beucler, T., Pritchard, M., & Bretherton, C. S. (2020). Interpret-
+       ing and stabilizing machine-learning parametrizations of convection. Journal of
+
+
+                                                                   –33–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+     the Atmospheric Sciences, 77 (12), 4357–4375.
+Brenowitz, N. D., & Bretherton, C. S. (2018). Prognostic validation of a neural net-
+     work unified physics parameterization. Geophysical Research Letters, 45 (12),
+     6289–6298.
+Brenowitz, N. D., & Bretherton, C. S. (2019). Spatially extended tests of a neu-
+     ral network parametrization trained by coarse-graining. Journal of Advances in
+     Modeling Earth Systems, 11 (8), 2728–2744.
+Brenowitz, N. D., Perkins, W. A., Nugent, J. M., Watt-Meyer, O., Clark, S. K.,
+     Kwa, A., . . . Bretherton, C. S. (2022). Emulating fast processes in climate
+     models. arXiv preprint arXiv:2211.10774 .
+Christopoulos, C., Lopez-Gomez, I., Beucler, T., Cohen, Y., Kawczynski, C., Dun-
+     bar, O. R., & Schneider, T. (2024). Online learning of entrainment closures in
+     a hybrid machine learning parameterization. Journal of Advances in Modeling
+     Earth Systems, 16 (11), e2024MS004485.
+ClimSim Team. (n.d.). Climsim official repository [software]. doi: https://github
+     .com/leap-stc/ClimSim
+E3SM Project.       (2023, January).    Energy Exascale Earth System Model (E3SM).
+     [Computer Software] https://dx.doi.org/10.11578/E3SM/dc.20230110.5.
+     Retrieved from https://dx.doi.org/10.11578/E3SM/dc.20230110.5                  doi:
+     10.11578/E3SM/dc.20230110.5
+Eyring, V., Bony, S., Meehl, G. A., Senior, C. A., Stevens, B., Stouffer, R. J., &
+     Taylor, K. E. (2016). Overview of the coupled model intercomparison project
+     phase 6 (cmip6) experimental design and organization.          Geoscientific Model
+     Development, 9 (5), 1937–1958.
+Gentine, P., Pritchard, M., Rasp, S., Reinaudi, G., & Yacalis, G.      (2018).    Could
+     machine learning break the convection parameterization deadlock? Geophysical
+     Research Letters, 45 (11), 5742–5751.
+Gettelman, A., Gagne, D. J., Chen, C.-C., Christensen, M., Lebo, Z., Morrison, H.,
+     & Gantos, G. (2021). Machine learning the warm rain process. Journal of
+     Advances in Modeling Earth Systems, 13 (2), e2020MS002268.
+Grabowski, W. W., & Smolarkiewicz, P. K. (1999). Crcp: A cloud resolving convec-
+     tion parameterization for modeling the tropical convecting atmosphere. Phys.
+     D: Nonlinear Phenom., 133 (1-4), 171–178.
+Gustafson, W. I., Berg, L. K., Easter, R. C., & Ghan, S. J. (2008). The explicit-
+     cloud parameterized-pollutant hybrid approach for aerosol–cloud interactions
+     in multiscale modeling framework models: tracer transport results.        Environ-
+     mental Research Letters, 3 (2), 025005.
+Han, Y., Zhang, G. J., Huang, X., & Wang, Y. (2020). A moist physics parame-
+     terization based on deep learning. Journal of Advances in Modeling Earth Sys-
+     tems, 12 (9), e2020MS002076.
+Han, Y., Zhang, G. J., & Wang, Y.       (2023).    An ensemble of neural networks for
+     moist physics processes, its generalizability and stable integration. Journal of
+     Advances in Modeling Earth Systems, 15 (10), e2022MS003508.
+Hannah, W. M., Jones, C. R., Hillman, B. R., Norman, M. R., Bader, D. C., Taylor,
+     M. A., . . . others (2020). Initial results from the super-parameterized e3sm.
+     Journal of Advances in Modeling Earth Systems, 12 (1), e2019MS001863.
+Heuer, H., Schwabe, M., Gentine, P., Giorgetta, M. A., & Eyring, V. (2023). Inter-
+     pretable multiscale machine learning-based parameterizations of convection for
+     icon. arXiv preprint arXiv:2311.03251 .
+Hohenegger, C., Korn, P., Linardakis, L., Redler, R., Schnur, R., Adamidis, P., . . .
+     others      (2023).    Icon-sapphire: simulating the components of the earth sys-
+     tem and their interactions at kilometer and subkilometer scales. Geoscientific
+     Model Development, 16 (2), 779–811.
+Hu, Z.      (2025).      Stable machine-learning parameterization of subgrid processes
+     in a comprehensive atmospheric model learned from embedded convection-
+
+
+                                            –34–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+      permitting simulations: Data and visualization notebooks [software].       Zenodo.
+      doi: 10.5281/zenodo.12797810
+Iglesias-Suarez, F., Gentine, P., Solino-Fernandez, B., Beucler, T., Pritchard, M.,
+      Runge, J., & Eyring, V. (2024). Causally-informed deep learning to improve
+      climate models and projections.          Journal of Geophysical Research: Atmo-
+      spheres, 129 (4), e2023JD039202.
+IPCC.      (2021).     Climate change 2021: The physical science basis. contribution of
+      working group i to the sixth assessment report of the intergovernmental panel
+      on climate change.
+Kelp, M. M., Jacob, D. J., Lin, H., & Sulprizio, M. P. (2022). An online-learned
+      neural network chemical solver for stable long-term global simulations of at-
+      mospheric chemistry. Journal of Advances in Modeling Earth Systems, 14 (6),
+      e2021MS002926.
+Khairoutdinov, M. F., & Randall, D. A. (2001). A cloud resolving model as a cloud
+      parameterization in the ncar community climate system model: Preliminary
+      results. Geophysical Research Letters, 28 (18), 3617–3620.
+Khairoutdinov, M. F., & Randall, D. A. (2003). Cloud resolving modeling of the
+      arm summer 1997 iop: Model formulation, results, uncertainties, and sensitivi-
+      ties. Journal of the Atmospheric Sciences, 60 (4), 607–625.
+Kochkov, D., Yuval, J., Langmore, I., Norgaard, P., Smith, J., Mooers, G., . . . oth-
+      ers (2024). Neural general circulation models for weather and climate. Nature,
+      1–7.
+Kuang, Z. (2024). Linear time-invariant models of a large cumulus ensemble. Jour-
+      nal of the Atmospheric Sciences, 81 (3), 605–627.
+Kühbacher, B., Iglesias-Suarez, F., Kilbertus, N., & Eyring, V.      (2024).    Towards
+      physically consistent deep learning for climate model parameterizations. arXiv
+      preprint arXiv:2406.03920 .
+Lin, J., Yu, S., Peng, L., Beucler, T., Wong-Toi, E., Hu, Z., . . . Pritchard, M.
+      (2024).       Sampling hybrid climate simulation at scale to reliably improve ma-
+      chine learning parameterization. arXiv preprint arXiv:2309.16177v2 .
+Lopez-Gomez, I., Christopoulos, C., Langeland Ervik, H. L., Dunbar, O. R., Cohen,
+      Y., & Schneider, T. (2022). Training physics-based machine-learning parame-
+      terizations with gradient-free ensemble kalman methods. Journal of Advances
+      in Modeling Earth Systems, 14 (8), e2022MS003105.
+Mooers, G., Pritchard, M., Beucler, T., Ott, J., Yacalis, G., Baldi, P., & Gentine,
+      P. (2021). Assessing the potential of deep learning for emulating cloud super-
+      parameterization in climate models with real-geography boundary conditions.
+      Journal of Advances in Modeling Earth Systems, 13 (5), e2020MS002385.
+Norman, M. R., Bader, D. C., Eldred, C., Hannah, W. M., Hillman, B. R., Jones,
+      C. R., . . . others   (2022).    Unprecedented cloud resolution in a gpu-enabled
+      full-physics atmospheric climate simulation on olcf’s summit supercomputer.
+      Int. J. High Perform. Compu. Appl., 36 (1), 93–105.
+NVIDIA Modulus Team. (n.d.). Nvidia modulus [software]. doi: https://github.com/
+      NVIDIA/modulus/tree/main
+Ott, J., Pritchard, M., Best, N., Linstead, E., Curcic, M., & Baldi, P.      (2020).  A
+      fortran-keras deep learning bridge for scientific computing. (arxiv:2004.10652)
+Pahlavan, H. A., Hassanzadeh, P., & Alexander, M. J. (2024). Explainable offline-
+      online training of neural networks for parameterizations: A 1d gravity wave-
+      qbo testbed in the small-data regime.        Geophysical Research Letters, 51 (2),
+      e2023GL106324.
+Parishani, H., Pritchard, M. S., Bretherton, C. S., Terai, C. R., Wyant, M. C.,
+      Khairoutdinov, M., & Singh, B. (2018). Insensitivity of the cloud response to
+      surface warming under radical changes to boundary layer turbulence and cloud
+      microphysics: Results from the ultraparameterized cam. Journal of Advances
+      in Modeling Earth Systems, 10 (12), 3139–3158.
+
+
+                                            –35–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+Paszke, A., Gross, S., Massa, F., Lerer, A., Bradbury, J., Chanan, G., . . . others
+      (2019). Pytorch: An imperative style, high-performance deep learning library.
+      Advances in neural information processing systems, 32 .
+Peng, L., Blossey, P. N., Hannah, W. M., Bretherton, C. S., Terai, C. R., Jenney,
+      A. M., & Pritchard, M.        (2024).    Improving stratocumulus cloud amounts
+      in a 200-m resolution multi-scale modeling framework through tuning of its
+      interior physics.          Journal of Advances in Modeling Earth Systems, 16 (3),
+      e2023MS003632.
+PyTorch Contributors. (2024). Torchscript documentation [software]. Retrieved
+      from https://pytorch.org/docs/stable/jit.html#pytorch-functions
+      -and-modules
+Randall, D. A. (2013). Beyond deadlock. Geophys. Res. Lett., 40 (22), 5970–5976.
+Rasp, S. (2020). Coupled online learning as a way to tackle instabilities and biases
+      in neural network parameterizations: General algorithms and lorenz 96 case
+      study (v1. 0). Geoscientific Model Development, 13 (5), 2185–2196.
+Rasp, S., Pritchard, M. S., & Gentine, P. (2018). Deep learning to represent subgrid
+      processes in climate models. Proceedings of the National Academy of Sciences,
+      115 (39), 9684–9689.
+Ross, A., Li, Z., Perezhogin, P., Fernandez-Granda, C., & Zanna, L. (2023). Bench-
+      marking of machine learning ocean subgrid parameterizations in an idealized
+      model. Journal of Advances in Modeling Earth Systems, 15 (1).
+Ross, S., Gordon, G., & Bagnell, D. (2011). A reduction of imitation learning and
+      structured prediction to no-regret online learning. In Proceedings of the four-
+      teenth international conference on artificial intelligence and statistics (pp.
+      627–635).
+Sanford, C., Kwa, A., Watt-Meyer, O., Clark, S. K., Brenowitz, N., McGibbon, J., &
+      Bretherton, C. (2023). Improving the reliability of ml-corrected climate mod-
+      els with novelty detection.      Journal of Advances in Modeling Earth Systems,
+      15 (11), e2023MS003809.
+Shamekh, S., Lamb, K. D., Huang, Y., & Gentine, P. (2023). Implicit learning of
+      convective organization explains precipitation stochasticity. Proceedings of the
+      National Academy of Sciences, 120 (20), e2216158120.
+Sherwood, S., Webb, M. J., Annan, J. D., Armour, K. C., Forster, P. M., Harg-
+      reaves, J. C., . . . others (2020). An assessment of earth’s climate sensitivity
+      using multiple lines of evidence. Rev. Geophys., 58 (4), e2019RG000678.
+Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., & Poole, B.
+      (2020). Score-based generative modeling through stochastic differential equa-
+      tions. arXiv preprint arXiv:2011.13456 .
+Taylor, M., Caldwell, P. M., Bertagna, L., Clevenger, C., Donahue, A., Foucar, J.,
+      . . . others (2023). The simple cloud-resolving e3sm atmosphere model running
+      on the frontier exascale system. In Proceedings of the international conference
+      for high performance computing, networking, storage and analysis (pp. 1–11).
+Terai, C., Pritchard, M., Blossey, P., & Bretherton, C. (2020). The impact of re-
+      solving subkilometer processes on aerosol-cloud interactions of low-level clouds
+      in global model simulations. Journal of Advances in Modeling Earth Systems,
+      12 (11), e2020MS002274.
+Tulich, S. (2015). A strategy for representing the effects of convective momentum
+      transport in multiscale models: Evaluation using a new superparameterized
+      version of the weather research and forecast model (sp-wrf).        Journal of Ad-
+      vances in Modeling Earth Systems, 7 (2), 938–962.
+Wang, P., Yuval, J., & O’Gorman, P. A.         (2022).     Non-local parameterization of
+      atmospheric subgrid processes with neural networks.        Journal of Advances in
+      Modeling Earth Systems, 14 (10), e2022MS002984.
+Wang, X., Han, Y., Xue, W., Yang, G., & Zhang, G. J.           (2022).     Stable climate
+      simulations using a realistic general circulation model with neural network
+
+
+                                             –36–
+      manuscript submitted to Journal of Advances in Modeling Earth Systems (JAMES)
+
+
+
+     parameterizations for atmospheric moist physics and radiation processes. Geo-
+     scientific Model Development, 15 (9), 3923–3940.
+Yang, Q., Hannah, W. M., & Leung, L. R. (2022). Convective momentum trans-
+     port and its impact on the madden-julian oscillation in e3sm-mmf. Journal of
+     Advances in Modeling Earth Systems, 14 (11), e2022MS003206.
+Yu, S., Hannah, W., Peng, L., Lin, J., Bhouri, M. A., Gupta, R., . . . others (2024).
+     Climsim: A large multi-scale dataset for hybrid physics-ml climate emulation.
+     Advances in Neural Information Processing Systems, 36 .
+Yu, S., Hu, Z., Subramaniam, A., Hannah, W., Peng, L., Lin, J., . . . Pritchard, M.
+     (2024).       Climsim-online: A large multi-scale dataset and framework for hy-
+     brid ml-physics climate emulation. Retrieved from https://arxiv.org/abs/
+     2306.08754
+Yuval, J., O’Gorman, P. A., & Hill, C. N. (2021). Use of neural networks for stable,
+     accurate and physically consistent parameterization of subgrid atmospheric
+     processes with good performance at reduced precision.      Geophysical Research
+     Letters, 48 (6), e2020GL091363.
+Yuval, J., & O’Gorman, P. A. (2020). Stable machine-learning parameterization of
+     subgrid processes for climate modeling at a range of resolutions. Nature com-
+     munications, 11 (1), 3295.
+
+
+
+
+                                           –37–
+

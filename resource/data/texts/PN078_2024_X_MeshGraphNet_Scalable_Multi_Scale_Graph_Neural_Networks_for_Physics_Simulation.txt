@@ -1,0 +1,617 @@
+                                                X-MeshGraphNet: Scalable Multi-Scale Graph
+                                                  Neural Networks for Physics Simulation
+                                               1st Mohammad Amin Nabian                   2nd Chang Liu           3rd Rishikesh Ranade             4th Sanjay Choudhry
+                                                          NVIDIA                             NVIDIA                       NVIDIA                          NVIDIA
+                                                      Santa Clara, US                    Santa Clara, US              Santa Clara, US                 Santa Clara, US
+                                                     mnabian@nvidia.com                  liuc@nvidia.com            rranade@nvidia.com             schoudhry@nvidia.com
+
+
+
+                                             Abstract—Graph Neural Networks (GNNs) have gained sig-
+arXiv:2411.17164v2 [cs.LG] 20 Dec 2024
+
+
+
+
+                                         nificant traction for simulating complex physical systems, with
+                                         models like MeshGraphNet demonstrating strong performance
+                                         on unstructured simulation meshes. However, these models face
+                                         several limitations, including scalability issues, requirement for
+                                         meshing at inference, and challenges in handling long-range
+                                         interactions. In this work, we introduce X-MeshGraphNet, a
+                                         scalable, multi-scale extension of MeshGraphNet designed to
+                                         address these challenges.
+                                             X-MeshGraphNet overcomes the scalability bottleneck by par-
+                                         titioning large graphs and incorporating halo regions that enable
+                                         seamless message passing across partitions. This, combined with
+                                         gradient aggregation, ensures that training across partitions is
+                                         equivalent to processing the entire graph at once. To remove the
+                                         dependency on simulation meshes, X-MeshGraphNet constructs                          (a) Original tessellated representation.
+                                         custom graphs directly from tessellated geometry files (e.g., STLs)
+                                         by generating point clouds on the surface or volume of the object
+                                         and connecting k-nearest neighbors. Additionally, our model
+                                         builds multi-scale graphs by iteratively combining coarse and
+                                         fine-resolution point clouds, where each level refines the previous,
+                                         allowing for efficient long-range interactions.
+                                             Our experiments demonstrate that X-MeshGraphNet main-
+                                         tains the predictive accuracy of full-graph GNNs while sig-
+                                         nificantly improving scalability and flexibility. This approach
+                                         eliminates the need for time-consuming mesh generation at
+                                         inference, offering a practical solution for real-time simulation
+                                         across a wide range of applications. The code for reproducing
+                                         the results presented in this paper is available through NVIDIA
+                                         Modulus.
+                                             Index Terms—GNN, simulation, scalability, multi-scale, Mesh-              (b) Partitioned tessellated representation with Halo.
+                                         GraphNet
+                                                                                                                Fig. 1: Illustration of the partitioning scheme with Halo on
+                                                                I. I NTRODUCTION                                tesselated representation of a Koenigsegg car.
+                                            Numerical methods, such as finite element analysis (FEA)
+                                         and computational fluid dynamics (CFD), offer high-fidelity
+                                         simulations but come at a significant computational cost.              These models aim to approximate the behavior of complex
+                                         With the growing demand for faster and more efficient sim-             systems more efficiently than traditional numerical solvers,
+                                         ulations—particularly for real-time applications and design            offering faster inference times while maintaining reasonable
+                                         optimization—machine learning-based surrogate models have              accuracy. Early works in this field, such as GraphNet [1]
+                                         emerged as a promising alternative. Among these, GNNs                  and Gated Graph Neural Networks (GGNNs) [2], have been
+                                         have garnered attention due to their natural ability to model          applied to a wide range of tasks, including fluid dynamics and
+                                         interactions between components of structured data, such as            structural mechanics, where they model physical interactions
+                                         the meshes commonly used in physical simulations.                      through message passing between nodes representing simula-
+                                                                                                                tion elements. More recent models, such as MeshGraphNet
+                                         A. GNNs for simulation                                                 [3] and DeepMind’s Learning to Simulate framework [4],
+                                            In recent years, several GNN models have been proposed              leverage mesh-based GNNs to represent structured data, where
+                                         as surrogate models for engineering simulations, particularly          vertices represent simulation nodes and edges represent phys-
+                                         for systems governed by partial differential equations (PDEs).         ical relationships. These models have demonstrated success
+in tasks such as weather forecasting [5] and patient-specific       hierarchical approach allows the model to capture interactions
+cardiovascular simulation [6].                                      efficiently at various scales.
+   While these GNN-based models show significant promise
+as surrogates for complex simulations, they still face chal-        C. Application to Automotive Aerodynamics
+lenges related to scalability, dependence on simulation meshes,        To demonstrate the effectiveness of X-MeshGraphNet in
+and handling long-range interactions that our proposed X-           modeling large-scale simulations, we apply it to an automotive
+MeshGraphNet directly addresses.                                    aerodynamics use case. Accurate and efficient prediction of
+   Scalability: GNN models, including MeshGraphNet, strug-          external aerodynamic properties, such as pressure, wall shear
+gle with large-scale simulations due to the high memory             stresses, and flow fields, is crucial for vehicle design and
+overhead associated with processing dense meshes or graphs.         optimization. Traditional CFD methods provide high-fidelity
+As the size of the mesh increases, assuming a fixed number          results but are computationally expensive, making them im-
+of processing layers, both memory and compute scale linearly.       practical for real-time applications and large-scale simulations.
+If we assume a dynamic number of processing layers (such            Recent advances in deep learning have enabled significant
+that the number of layers linearly increases with mesh size,        progress in the field of CFD. Several studies have explored
+such that the same fraction of the domain is traversed by the       the application of deep learning to predict the aerodynamic
+GNN kernel), then this scaling is quadratic in both compute         properties of vehicles. For example, [8] proposes a deep
+and memory. This limits the applicability of GNN models to          learning model based on a modified UNet architecture [9]
+high-resolution domains.                                            to predict the drag coefficient and velocity field for arbitrary
+   Dependence on Simulation Meshes: The reliance on                 vehicle shapes, using signed distance fields (SDF) as input.
+pre-generated simulation meshes during inference presents           This approach offers a significant advantage over traditional
+a significant bottleneck. Generating high-quality meshes for        methods like Kriging and reduced-order models (ROMs), as
+complex geometries is time-consuming and computationally            it does not require explicit parameterization of the geometry.
+expensive, which undermines the speed advantage of surrogate        [10] proposes another 3D UNet model with a style extractor
+models.                                                             to obtain deep features of vehicle shapes, with adaptive
+   Multi-Scale Simulations: In multi-scale simulations, dif-        instance normalization to enhance estimation performance.
+ferent levels of fidelity are required to capture both global and   In addition, a slice-weighted loss function is introduced to
+local dynamics. While multi-scale versions of MeshGraphNet          improve prediction accuracy, especially in wake regions and
+have been proposed [7], they often require handling multiple        near the vehicle surface. This method enables more efficient
+meshes at various resolutions, which introduces additional          vehicle shape design by reducing the need for time-intensive
+complexity and limits usability. Moreover, downsampling and         CFD simulations. [11] proposed the RegDGCNN model,
+upsampling layers introduce additional memory overhead.             which Leverages the spatial encoding capabilities of PointNet
+                                                                    [12] and the relational inferences provided by graph CNNs.
+B. Introducing X-MeshGraphNet                                       RegDGCNN provides high-precision drag estimates directly
+   To address these limitations, we propose X-MeshGraphNet,         from 3D meshes, bypassing traditional limitations such as the
+a scalable, multi-scale extension of MeshGraphNet that over-        need for 2D image rendering or SDF.
+comes the dependency on simulation meshes and improves                 In the realm of generative modeling, [13] integrates physics-
+scalability for large-scale simulations. Our model is based on      based guidance into diffusion models to generate vehicle
+three key innovations:                                              images with desired aerodynamic properties. By incorporating
+   Graph Partitioning with Gradient Aggregation: To han-            a surrogate model to estimate drag coefficients, this method
+dle large-scale simulations, X-MeshGraphNet partitions the          allows for the creation of vehicles that are both aesthetically
+graph into smaller subgraphs, with halo regions allowing mes-       pleasing and aerodynamically efficient. [14] introduces a 3D
+sage passing between partitions. Gradients from each partition      super-resolution model to enhance the resolution of flow field
+are aggregated before model updates, ensuring that training         predictions, providing more detailed insight into the aerody-
+remains equivalent to processing the entire graph at once,          namic behavior of vehicles.
+while maintaining computational efficiency.                            These advances demonstrate the potential of machine learn-
+   Custom Graph Construction: Instead of relying on pre-            ing to overcome the limitations of traditional CFD, offering
+existing simulation meshes, X-MeshGraphNet generates cus-           rapid predictions. However, challenges remain, including the
+tom graphs directly from CAD (i.e., STL triangulation) files.       ability to generalize across diverse geometries, handle large-
+This is done by creating a uniform point cloud on the surface       scale simulations, and predict both surface and volumetric
+or volume of the object and connecting the k-nearest neighbor       aerodynamic quantities.
+points, eliminating the need for costly meshing processes              In this paper, we leverage X-MeshGraphNet for accurate
+during inference.                                                   aerodynamic predictions in passenger car designs. We demon-
+   Multi-Scale Graph Generation: X-MeshGraphNet intro-              strate how X-MeshGraphNet scales to large meshes while
+duces a multi-scale graph generation process where coarse           providing accurate predictions of surface pressure and wall
+point clouds are refined iteratively to create finer-scale point    shear stresses for various car designs, effectively addressing
+clouds, with each level being a superset of the previous. This      key limitations of traditional GNN-based methods, including
+scalability and dependence on preprocessed meshes. Addi-              1) Step 1: Message Computation: For each edge (i, j), the
+tionally, we extend X-MeshGraphNet’s underlying halo-based          model computes a message mij from node j to node i. This
+partitioning with gradient aggregation scheme to other neural       message is a function of the node features hi and hj , as well
+architectures, including UNets, to highlight the versatility of     as the edge features eij . The general form of the message
+the proposed approach. To this end, we train a scalable 3D          function is:
+UNet model for volumetric predictions such as pressure and
+velocity within a bounding box around the car body.                                           mij = ϕm (hi , hj , eij ),                        (1)
+   Through experiments conducted on the DrivAerML dataset
+[15], these models demonstrate high predictive accuracy and         where ϕm is a learnable neural network that takes the node
+scalability while significantly reducing computational costs        and edge features as input and outputs a message mij ∈ Rd .
+compared to standard CFD simulations. The results highlight            2) Step 2: Message Aggregation: After computing the mes-
+the potential of X-MeshGraphNet and its extensions as practi-       sages from all neighboring nodes j to node i, these messages
+cal and efficient surrogate models for aerodynamic evaluation,      are aggregated to update the information at node i. The
+supporting real-time applications in automotive design and          aggregation function can vary, but a common choice is to sum
+optimization.                                                       the incoming messages:
+
+D. Structure of the paper
+                                                                                                           X
+                                                                                                mi =                mij ,                       (2)
+   In the following sections, we provide an overview of                                                   j∈N (i)
+MeshGraphNet and discuss its enhancements through X-
+                                                                    where N (i) denotes the set of neighbors of node i. The aggre-
+MeshGraphNet, focusing on its application to large-scale
+                                                                    gated message mi contains information from all neighboring
+automotive aerodynamic simulations. We then compare the
+                                                                    nodes.
+performance and usability of X-MeshGraphNet with Dis-
+                                                                       3) Step 3: Node Update: Once the messages have been
+tributed MeshGraphNet, highlighting key differences in scal-
+                                                                    aggregated, the node’s features are updated based on the
+ability, implementation, and practical deployment. Next, we
+                                                                    aggregated message mi . The node update function typically
+demonstrate how X-MeshGraphNet’s halo partitioning with
+                                                                    involves a neural network ϕu that takes the current node
+gradient aggregation scheme can be extended to other network
+                                                                    features hi and the aggregated message mi as input and
+architectures by training a scalable UNet model with attention
+                                                                    outputs the updated node features:
+gates for volume predictions in automotive aerodynamics.
+       II. T ECHNICAL OVERVIEW: M ESH G RAPH N ET                                                h′i = ϕu (hi , mi ),                           (3)
+   MeshGraphNet is a graph-based neural network model de-
+                                                                    where h′i is the updated feature vector for node i. This
+signed to simulate physical systems by representing the mesh
+                                                                    update allows each node to incorporate information from its
+structure as a graph. The key idea is to use message passing
+                                                                    neighbors, enabling the model to capture local interactions.
+between nodes in a graph to propagate information about
+physical states, such as velocity, pressure, or temperature, over   C. Multiple Message-Passing Layers
+time. The message-passing paradigm enables MeshGraphNet
+                                                                       The message-passing process described above is repeated
+to capture both local and global interactions in a system
+                                                                    over several layers of the graph neural network with distinct
+governed by PDEs.
+                                                                    network parameters. With each successive layer, information
+A. Graph Representation of a Mesh                                   is propagated across progressively larger regions of the graph.
+   In MeshGraphNet, a mesh is treated as a graph G = (V, E),        After L layers of message passing, each node i aggregates
+where:                                                              information from nodes up to L-hops away in the graph.
+   • V is the set of nodes, corresponding to the mesh vertices,
+                                                                    This allows MeshGraphNet to capture both local and global
+   • E is the set of edges, corresponding to the connections
+                                                                    interactions.
+                                                                             (l)
+      between adjacent vertices.                                       Let hi denote the node features at layer l. The update rule
+                                                                    for node i at layer l is:
+   Each node i ∈ V has a feature vector hi ∈ Rd , which
+stores relevant physical quantities (e.g., velocity, pressure).                                                                            
+Each edge (i, j) ∈ E has a feature vector eij ∈ Rk , which                                                                             
+                                                                           (l+1)                  (l)                       (l)   (l)
+                                                                                                         X
+encodes information about the relationship between nodes i               hi         = ϕ(l)
+                                                                                       u
+                                                                                           hi ,                  ϕ(l)
+                                                                                                                   m hi , hj , eij
+                                                                                                                                   ,           (4)
+and j, such as distance or relative positions.                                                          j∈N (i)
+
+B. Message Passing Mechanism                                                  (l)       (l)
+                                                                    where ϕm and ϕu are learnable functions (neural networks)
+                                                                                      (l+1)
+   The central concept of MeshGraphNet is message passing,          for layer l, and hi     is the updated node feature vector for
+which allows the model to iteratively propagate information         node i at layer l+1. After L-layer message passing, the compu-
+between neighboring nodes. The message-passing process              tational graph for each node’s update is self-contained—both
+involves three main steps: message computation, message             forward and backward computations depend solely on its local
+aggregation, and node update.                                       L-hop neighborhood and associated input features.
+D. Application to Physical Simulations                                Gradient Aggregation: To ensure that partitioning does
+                                                                    not affect the overall training process, we implement a gra-
+   In physical simulations, the node features hi typically
+                                                                    dient aggregation mechanism. After each training iteration,
+contain physcial quantities such as velocity vi ∈ R3 , pressure
+                                                                    the gradients from all partitions are aggregated, and the
+pi ∈ R, or other relevant physical quantities (e.g., temperature,
+                                                                    model parameters are updated as if the entire graph had
+stress, boundary conditions). The edge features eij often
+                                                                    been processed. This technique makes the training process
+represent spatial relationships between nodes, such as the
+                                                                    on partitioned graphs equivalent to training on the full graph,
+relative position vector xj − xi or the distance ∥xj − xi ∥.
+                                                                    while reducing memory overhead.
+   The model is typically trained by minimizing the difference
+between the predicted physical quantities and the ground            B. Custom Graph Construction
+truth values obtained from high-fidelity simulations. The loss
+                                                                       To address the dependency on simulation meshes, X-
+function typically takes the form of a mean squared error
+                                                                    MeshGraphNet generates a custom graph directly from the
+(MSE) between the predicted and true values for quantities
+                                                                    CAD file of the object being simulated. This is achieved by
+like velocity, pressure, or displacement.
+                                                                    creating a uniform point cloud on either the surface or volume
+                                                                    of the object, based on the simulation requirements. The steps
+                     III. M ETHODOLOGY                              are as follows:
+  In this section, we present the methodology underlying X-            Point Cloud Generation: For each sample, we generate a
+MeshGraphNet, our scalable multi-scale extension of Mesh-           point cloud by sampling points either on the surface or within
+GraphNet:                                                           the volume. The number of points can be adjusted based on
+                                                                    the desired resolution and the complexity of the geometry.
+A. Graph Partitioning and Gradient Aggregation                      Uniform distributions or geometry-aware distributions, such
+                                                                    as those based on curvature, can be used for point sampling.
+   X-MeshGraphNet addresses the scalability challenge of               K-Nearest Neighbor Connectivity: Once the point cloud
+GNN-based simulations by partitioning large graphs into             is created, we construct a graph by connecting each point to
+smaller, manageable subgraphs while including sufficient halo       its k-nearest neighbors. The value of k is chosen to ensure
+region for each partition. This can decouple subgraphs during       sufficient connectivity for message passing.
+training, making each subgraph (with additional computations           This custom graph construction eliminates the need for gen-
+on the halo region) entirely independent. As a result, subgraphs    erating a simulation mesh during inference, which significantly
+can be treated as separate batches, similar to a Distributed        reduces computational overhead and simplifies the pipeline for
+Data Parallel (DDP) setup, which enables the model to handle        real-time simulations.
+large-scale simulations that would otherwise be infeasible due
+to memory constraints.                                              C. Multi-Scale Graph Generation
+   Graph Partitioning: The input graph, generated from the             To capture dynamics across different radii of influence, X-
+point cloud, is partitioned into smaller subgraphs. To preserve     MeshGraphNet utilizes a multi-scale graph generation process.
+the information flow between these subgraphs, we introduce          This involves the creation of point clouds at multiple resolu-
+a halo region around each partition. The size of the halo           tions, where finer point clouds are iteratively built on top of
+region is set to be equal to the number of message passing          coarser ones.
+layers, ensuring that information from neighboring partitions          Point Cloud Generation: The process begins by generating
+is properly incorporated during training or inference. For          a point cloud from the CAD file. This representation captures
+efficient graph partitioning, we utilize METIS [16], a well-        the overall structure of the object, and the graph connectivity
+known graph partitioning tool. As an example, Figure 1 shows        is established using k-nearest neighbors, as described earlier.
+the original and partitioned mesh graph representation with            Refining the Point Cloud: A finer point cloud is generated
+Halo for a Koenigsegg car STL. By making the number of              by increasing the number of sample points. The points from
+nodes and edges in each partition similar, we can achieve better    the initial point cloud serve as a subset of the finer point cloud.
+load balancing across multiple GPUs, ensuring that each GPU         New connections are then established.
+has an equal computational workload, which in turn maximizes           Multi-Scale Hierarchical Graphs: This process is repeated
+resource utilization and improves overall training efficiency.      iteratively to produce multiple levels of resolution. At each
+   Message Passing Across Partitions: Each partition per-           level, the point cloud from the previous scale is a subset of
+forms message passing among its nodes, incorporating input          the point cloud at the next finer scale. Edge connectivity is
+from the halo region to ensure that each node’s computational       determined at each scale, ensuring that both local interactions
+graph matches that of the full graph, thereby guaranteeing          and long-range dependencies are captured across different
+mathematical equivalence during forward and backward com-           levels.
+putations. It is important to note that for this equivalence
+to hold, computations must remain local. Consequently, op-          D. Model Architecture, Training, and Inference
+erations that rely on global batch statistics, such as batch          X-MeshGraphNet builds upon the architecture of the orig-
+normalization, are not supported within this framework.             inal MeshGraphNet, using message-passing GNN layers to
+propagate information across the graph. Standard losses like        tructures, making it more practical and accessible in diverse
+mean squared error (MSE) are used, but task-specific modifi-        environments. Moreover, resource availability limits the scale
+cations can be introduced as well, such as physics-informed         of the model in distributed setups, while partitioning with halo
+losses which represent the residual of a specific partial differ-   regions imposes no strict requirements. This approach can even
+ential equation (PDE). Halo nodes are filtered out before the       enable training on a single GPU, albeit with longer training
+loss computation. During inference, X-MeshGraphNet follows          times due to reduced parallelism.
+a similar process to training, except that no ground truth data        Optimizing Communication and Scalability: Distributed
+is provided. The model takes the CAD file of the object,            message passing often requires intensive optimization to min-
+generates the custom graph and the partitions, and predicts         imize communication overhead, particularly as the number of
+the physical quantities of interest. The number of partitions       GPUs increases. Ensuring strong and weak scalability under
+required for inference can be significantly smaller than those      varying network conditions is challenging. In contrast, X-
+used during training, as inference has a much lower memory          MeshGraphNet’s halo regions maintain efficient communica-
+overhead compared to training. Inference is performed inde-         tion between neighboring partitions and GPUs, simplifying
+pendently on each partition. Predictions on halo nodes are          the optimization process. This ensures robust scalability across
+discarded, and the remaining predictions are aggregated on          different network topologies and interconnect infrastructures,
+the master rank to reconstruct the full-domain output.              without the need for complex communication strategies.
+                                                                       Efficient Multi-GPU Utilization: The halo region method
+ IV. D ISCUSSION ON S CALABILITY: X-M ESH G RAPH N ET               allows X-MeshGraphNet to fully utilize multiple GPUs with-
+           VS . D ISTRIBUTED M ESH G RAPH N ET
+                                                                    out introducing the overhead of complex communication
+   Distributed MeshGraphNet, an established approach for            protocols. Each GPU processes its local partition, and the
+scaling the MeshGraphNet model to large graphs, uses a              halo regions ensure sufficient overlap between partitions for
+distributed message-passing paradigm with all-to-all commu-         message passing. This strategy leads to better GPU utilization,
+nication to exchange information among partitions for each          optimizing both memory usage and computation time without
+message-passing layer [17]. While this is often considered a        the need for intricate device management.
+default solution for large-scale simulations, X-MeshGraphNet           In summary, while distributed message passing can offer
+adopts a more flexible approach by introducing halo regions         scalability, X-MeshGraphNet’s use of halo regions provides
+to handle scalability. This design allows X-MeshGraphNet to         a more streamlined and efficient approach, converting the
+distribute computations across multiple GPUs in a simpler and       problem into a form of distributed data parallelism. This makes
+more efficient way, using Distributed Data Parallelism (DDP).       the approach easier to implement, more robust, and adaptable
+Here, we discuss why this approach can be preferable over           to a broader range of hardware setups. The simplicity and ef-
+traditional distributed training strategies.                        fectiveness of the halo region method make X-MeshGraphNet
+   Usability and Simplicity: In contrast to distributed message     a practical approach for scaling up MeshGraphNet. In the
+passing, which requires intricate setups for device synchro-        next section, we include a quantitative analysis comparing
+nization and communication optimization, X-MeshGraphNet             the scalability of X-MeshGraphNet with that of Distributed
+simplifies multi-GPU training by partitioning the graph and         MeshGraphNet.
+using halo regions. This converts the training to a straightfor-
+ward DDP setup, where each GPU processes its own partition            V. C ASE S TUDY: P REDICTING A ERODYNAMICS ON THE
+and halo regions ensure sufficient communication between                  S URFACE OF C ARS USING X-M ESH G RAPH N ET
+neighboring partitions. The complexity of managing inter-              In this section, we demonstrate the application of X-
+GPU communication and synchronization is greatly reduced            MeshGraphNet to predict key aerodynamic quantities, specif-
+compared to other distributed training approaches for GNNs.         ically pressure and wall shear stress, on the surface of cars.
+Furthermore, distributed training frameworks are prone to           The proposed models in the literature often face limitations
+implementation challenges such as synchronization issues,           in terms of scalability and depend on significant mesh down-
+load balancing, and implementation errors that are difficult        sampling, which can negatively affect prediction accuracy. X-
+to debug. With halo regions, X-MeshGraphNet minimizes               MeshGraphNet provides a promising scalable alternative, ca-
+these concerns. The use of DDP with halo regions provides           pable of handling large-scale aerodynamic simulations without
+a more reliable and easier-to-implement solution, simplifying       sacrificing accuracy.
+the overall development and debugging process.
+   Resource Availability and Flexibility: One of the significant    A. Problem Setup
+advantages of X-MeshGraphNet’s approach is its adaptability            The goal of this case study is to predict surface pressure and
+to a wide range of hardware setups. Distributed message             wall shear stress over the body of a car under steady airflow
+passing often requires high-performance interconnects like          conditions. The car geometry is represented in form of STL
+NVLink or InfiniBand to optimize communication between              triangulation, from which a uniform point cloud is generated
+GPUs. X-MeshGraphNet’s DDP setup, augmented with halo               on the surface. X-MeshGraphNet constructs a graph from this
+regions, reduces the need for such specialized hardware, al-        point cloud, where each point represents a surface element, and
+lowing for efficient training across various interconnect infras-   the edges are formed by connecting the k-nearest neighbors.
+  The input features to the model include the 3D positions         clipping with a threshold of 32 is used. Training is performed
+of surface points, surface normals, and Fourier features [18],     in bfloat-16 precision format using Automatic Mixed Precision
+which are computed as the sine and cosine of the position          (AMP). The loss function is defined as the mean squared error
+coordinates with different frequency coefficients. The target      between the predicted and ground truth values of pressure
+quantities for prediction are pressure and wall shear stresses.    and wall shear stress. The model is trained with gradient
+One can choose to exclude the 3D positions from the input          aggregation applied across graph partitions to ensure consistent
+data, and that will likely promote of the model.                   model updates, as described in the methodology. Activation
+                                                                   checkpointing is also used to reduce the memory overhead.
+B. Dataset                                                         15 message passing layers are used with a hidden dimension
+   For this study, we use the DrivAerML dataset [15], a pub-       of 512 and SiLU activations.
+licly available, high-fidelity dataset comprising aerodynamic
+                                                                   E. Results
+data for 500 parametrically morphed variants of the DrivAer
+notchback vehicle. Figure 2 shows the geometry variations in          Once trained, X-MeshGraphNet is used to predict the
+three samples. The dataset was generated using hybrid RANS-        aerodynamic quantities of interest on unseen car geometries.
+LES (HRLES), a scale-resolving CFD method, which provides          Results for the Sample 320 are shown in Figures 3, 4. The
+time-averaged quantities for each variant. The available data      results show that the model is able to capture both the overall
+includes surface pressure, wall shear stress, and flow-field       aerodynamic profile and localized flow features, such as high-
+quantities, provided in formats compatible with mesh-based         pressure regions at the front of the car and low-pressure
+analysis (.vtp for surface data and .vtu for flow-field data).     areas around the rear. The wall shear stress predictions are
+We reserve 10% of the samples as the test set, with 20% of         also highly correlated with the ground truth CFD simulations,
+the test set consisting of out-of-distribution samples based on    indicating that X-MeshGraphNet can accurately model the
+drag coefficients. These samples represent extreme cases with      tangential forces acting on the car’s surface. Moreover, Figure
+the lowest and highest drag coefficients in the entire dataset,    5 presents a comparison of predicted versus true aerodynamic
+which remain unseen by the model during training.                  forces for different simulation runs in the test set. The dashed
+                                                                   blue line represents the ideal case where predictions match
+                                                                   the true values perfectly. The coefficient of determination R2
+                                                                   is 0.942. Table I includes the average relative error for the
+                                                                   denormalized predicted quantities.
+                                                                     TABLE I: Average relative errors for predicted quantities
+                                                                       Quantity              Relative L2 Error   Relative L1 Error
+                                                                       Pressure                    0.1297              0.1034
+                                                                       X-Wall Shear Stress         0.1678              0.1588
+                                                                       Y-Wall Shear Stress         0.2199              0.2570
+                                                                       Z-Wall Shear Stress         0.2774              0.2785
+Fig. 2: An illustration of the geometry variation in samples
+100, 300, and 500.
+                                                                   F. Performance Analysis
+                                                                      Memory overhead, particularly activation memory, is a well-
+C. Data Preprocessing                                              known bottleneck in full-graph GNN training methods such
+   For each car geometry, the .stl files are used to generate a    as MeshGraphNet, limiting their scalability to larger graphs.
+uniform point cloud on the vehicle’s surface. A 3-level graph is   X-MeshGraphNet addresses this challenge with a scalable
+constructed with 500k, 1M, and 2M points in the first, second,     approach that can reduce memory footprint, akin to the well-
+and third levels, respectively. The corresponding .vtp files are   established data parallelism in distributed training. To evaluate
+used to read and interpolate pressure and wall shear stress        its performance, we used the dataset and model configuration
+values onto the point cloud using 5-nearest neighbor inverse       described earlier, testing both single- and multi-GPU setups.
+distance weighted interpolation. Each node is connected to its     In addition to graph partitioning, activation checkpointing
+6 nearest neighbors. Input and target quantities are normalized    with optional CPU-offloading was employed to optimize GPU
+using z-score normalization with per-variable global mean and      memory usage, minimizing activation caching by storing
+standard deviation. The resulting graphs are divided into 21       checkpoints in host memory.
+partitions with a halo size of 15.                                    1) Activation Checkpointing with Offloading: First, we
+                                                                   evaluated the trade-offs between activation checkpointing only
+D. Model Training                                                  and activation checkpointing with offloading, on a single GPU
+   The X-MeshGraphNet model is trained using the 24 input          with two partitions. As shown in Figure 6, offloading activation
+features, including Fourier features with 3 different frequen-     checkpoints to the CPU reduced memory usage by 1.8×, at
+cies (i.e., 2π, 4π, 8π). The Adam optimizer is used with a         the cost of a 1.54× increase in training time on a DGX-H100
+cosine annealing learning rate schedule ranging from 1×10−3        machine, and a 1.08× on NVIDIA’s GH200 Grace Hopper
+to 1 × 10−6 . The model is trained for 2000 epochs. Gradient       Superchip.
+                Fig. 3: Comparison between the predictions and the ground truth for pressure for Sample 320.
+
+
+
+
+           Fig. 4: Comparison between the predictions and the ground truth for wall shear stress for Sample 320.
+
+
+   2) Memory Scaling: To assess memory scaling, we in-             While halo regions introduce some memory and computation
+creased the number of partitions (including halo regions) to       overhead, they eliminate inter-partition dependencies in full-
+examine whether peak memory usage could be sustainably             graph message passing, enabling large graph training on
+dropped on a single GPU. Figure 7 presents the results using       limited GPU resources through smaller partitions.
+activation checkpointing with offloading [17], which enabled
+                                                                     3) Strong Scaling: We further performed a strong scaling
+full-graph training (1 partition) to fit within the 80 GB memory
+                                                                   analysis to compare the performance of X-MeshGraphNet
+limit of a single H100 GPU. As shown in Figure 7, increasing
+                                                                   with the distributed message-passing approach (also referred
+the number of partitions reduced peak device memory usage
+                                                                   to as distributed MeshGraphNet) from [17]. The distributed
+almost proportionally for both 1-level and 3-level graphs. For
+                                                                   message-passing approach in [17] requires all-to-all commu-
+example, GPU memory usage dropped from 50.4 GB with
+                                                                   nication among all GPUs for each message-passing layer
+1 partition to 3 GB with 32 partitions on a 1-level graph.
+                                                                   across the entire graph, leading to substantial communication
+                                                                 overhead at larger scales. The experiments were conducted
+                                                                 on an NVIDIA DGX cluster with compute nodes equipped
+                                                                 with 8 H100 GPUs (80 GB HBM each) interconnected via
+                                                                 NVIDIA Quantum-2 InfiniBand with 400 GB/s bandwidth. A
+                                                                 3-level mesh graph was used with activation checkpointing
+                                                                 enabled. For fairness, the number of partitions matched the
+                                                                 number of ranks (one GPU per rank), and both methods
+                                                                 used the same graph partitioning strategy (METIS). Figure
+                                                                 8 shows that X-MeshGraphNet scales significantly better,
+                                                                 consistently reducing runtime as GPU counts scaled up to 512.
+                                                                 In contrast, the distributed message-passing approach suffers
+                                                                 from increasing communication overhead as the number of
+                                                                 GPUs grows, despite efficient graph partitioning to minimize
+Fig. 5: Comparison between the predicted and ground truth        its communication volume.
+force in the flow direction. R2 is 0.942.
+
+
+
+
+Fig. 6: Memory and performance trade-offs between activation
+checkpointing and activation checkpointing with offloading
+for a single-GPU run with 2 partitions: (a) GPU memory           Fig. 8: Strong scaling study of X-MeshGraphNet vs. dis-
+consumption, and (b) training time (per sample) on DGX-          tributed MeshGraphNet [17] on the DrivAerML dataset with
+H100 and GH200 systems.                                          a 3-level graph of 700,000 nodes. The average training time
+                                                                 per sample is measured as the number of ranks (GPUs) scales
+                                                                 from 8 to 512.
+
+                                                                    These findings highlight X-MeshGraphNet’s superior scala-
+                                                                 bility and flexibility, making it well-suited for very large-scale
+                                                                 full-graph training on modern GPU clusters.
+
+                                                                 G. Ablation Study
+                                                                    A limited set of ablation studies was conducted to evaluate
+                                                                 the sensitivity of the validation loss to various input variables.
+                                                                 These studies included comparisons between a single-level
+                                                                 graph and a 3-level graph, hidden sizes of 256 and 512, node
+                                                                 degrees of 6 and 12, and training with or without input Fourier
+                                                                 features. The results, shown in Figure 9 , indicate that both
+                                                                 multi-level training and the inclusion of Fourier frequencies
+                                                                 lead to a significant reduction in validation error.
+
+                                                                 VI. A PPLICABILITY OF THE HALO PARTITIONING SCHEME
+                                                                                  TO OTHER ARCHITECTURES
+
+                                                                   The halo partitioning with gradient aggregation scheme
+Fig. 7: Memory scaling of X-MeshGraphNet on a single-            extends beyond MeshGraphNet and can be effectively applied
+GPU with increasing number of partitions (blue: 1-level graph,   to other GNNs and also other neural architectures, such
+green: 3-level graph).                                           as CNNs and UNet-like [9] models. In these architectures,
+                                                                 spatial dependencies between neighboring regions can be
+      (a) 1 vs. 3* levels         (b) Hidden size of 256 vs. 512*    (c) Node degree of 6* vs. 12     (d) W/* and w/o Fourier features
+Fig. 9: Validation loss for different configurations considered in the limited ablation study. Configurations resulting in lower
+validation error are marked with an asterisk (*).
+
+
+captured by treating overlapping regions between partitions         for aerodynamic analysis. The bounding box is discretized into
+as halo regions. This allows seamless information exchange          a uniform voxel grid with a spacing of 1.5cm, where each
+across partitions during both forward and backward passes,          voxel represents a discrete volume element used for predicting
+ensuring mathematical equivalence to full-domain training.          aerodynamic properties.
+By incorporating halo regions with gradient agregation, large-         Each voxel’s input features include the voxel center coordi-
+scale models can be partitioned into smaller, memory-efficient      nates, Fourier features of voxel coordinates (with frequencies
+subdomains, enabling scalable training on multi-GPU systems         of π, 2π, 4π), and the SDF along with its spatial derivatives.
+while reducing inter-device communication overhead.                 The model predicts both the velocity and pressure fields. We
+   As an example of applying the halo partitioning scheme to        use Automatic Mixed Precision (AMP) with bfloat16 and
+architectures beyond GNNs, we introduce a scalable 3D UNet-         apply activation checkpointing to reduce memory overhead.
+based model with attention gates, referred to as X-UNet3D           The computational domain is divided into 10 partitions with
+in this paper. The model processes volumetric data by lever-        a halo size of 40. The GeLU activation function is employed
+aging the halo-based partitioning mechanism, enabling large-        throughout the network. The hidden dimension is set to 64 in
+scale training on multi-GPU systems. X-UNet3D’s architecture        the first UNet level and is doubled at each subsequent level.
+features a hierarchical encoder-decoder structure with skip         The UNet has a depth of 3, with 2 convolutional blocks per
+connections and attention gates, allowing it to capture both        level. Each convolutional block uses a kernel size of 3 and a
+global context and localized features effectively.                  stride of 1, with a pooling size of 2. Attention gates are applied
+                                                                    to skip connections. The Adam optimizer is used with a cosine
+   To ensure correct information flow across partitions in
+                                                                    annealing learning rate schedule ranging from 1.5 × 10−4 to
+X-UNet3D, the halo region size must match the network’s
+                                                                    5 × 10−7 . The model is trained for 2000 epochs. In addition
+receptive field size, which defines the spatial extent over which
+                                                                    to the MSE loss, we also impose a continuity constraint. The
+a voxel’s output depends on its neighbors. Measuring the
+                                                                    required spatial derivatives are computed numerically using
+receptive field size can be architecture-dependent, and can
+                                                                    the first-order central difference method.
+be done by carefully tracking the data flow during feature
+                                                                       Figures 10 and 11 show a comparison between the predicted
+propagation through convolutional layers, normalizations, and
+                                                                    and ground truth for the pressure and velocity magnitude,
+downsampling or sampling layers. Alternatively, a straightfor-
+                                                                    respectively. The final MSE loss on the test set is 0.00125.The
+ward empirical approach is to run the network on a full domain
+                                                                    model effectively captures wake structures, flow separations,
+and compare its output with that from a partitioned domain
+                                                                    and pressure distributions, providing valuable aerodynamic
+using varying halo sizes. The smallest halo size for which the
+                                                                    insights into vehicle performance and stability.
+two outputs match indicates the minimum required receptive
+field size.                                                                               VII. C ONCLUSION
+   Here we use the X-UNet3D model to train a model on                   In this paper, we introduced X-MeshGraphNet, a scalable
+the same DrivAerML dataset to predict pressure and velocity         multi-scale extension of the MeshGraphNet model, designed
+in the three-dimensional flow field surrounding the vehicle.        to address key challenges in GNN-based physical simulations.
+Built on a 3-level UNet architecture, our model extends             Our model overcomes the limitations of traditional GNNs
+the scalability and efficiency features of the surface model        in three critical areas: scalability, dependence on simulation
+to the volumetric domain, making it a powerful tool for             meshes, and handling of long-range interactions.
+understanding wake dynamics and flow interactions. Unlike               First, X-MeshGraphNet scales to large simulations by par-
+the surface model, our volume model operates on a voxelized         titioning the graph into smaller subgraphs, with halo regions
+representation of the volumetric region around the vehicle.         facilitating seamless message passing across partitions. The
+A bounding box [(−3.5, 8.5), (−2.25, 2.25), (−0.32, 3.04)] is       use of gradient aggregation ensures that the partitioning does
+defined around the vehicle, encompassing the region of interest     not compromise the accuracy or effectiveness of the training
+                    Fig. 10: Comparison between the predicted and ground truth pressure for Sample 200.
+
+
+
+
+              Fig. 11: Comparison between the predicted and ground truth velocity magnitude for Sample 200.
+
+
+process, making it equivalent to training on the full graph         dynamics to structural mechanics.
+while significantly reducing memory and computational over-            In future work, we aim to explore further optimizations
+head.                                                               in graph partitioning and edge connectivity strategies, as
+   Second, to eliminate the time-consuming reliance on pre-         well as extend X-MeshGraphNet to handle a broader range
+generated simulation meshes, X-MeshGraphNet constructs              of physical simulations, including those involving dynamic
+custom graphs directly from CAD files. By generating uniform        or deformable geometries. Additionally, integrating advanced
+point clouds and connecting k-nearest neighbors, the model          physical constraints into the learning process may further
+avoids the need for meshing, allowing for more efficient and        improve the model’s accuracy and applicability to real-world
+flexible inference.                                                 systems.
+   Third, the model introduces a multi-scale graph generation          Future work will also focus on exploring several extensions
+approach that captures both global and local dynamics by iter-      to further enhance the model’s flexibility and performance.
+atively combining point clouds at different levels of resolution.   One area of investigation will be comparing the effects of
+This hierarchical representation ensures that X-MeshGraphNet        constructing graphs using the K-NN approach versus connect-
+can handle the complexities of multi-scale phenomena while          ing points within a specified radius. Additionally, we plan
+remaining computationally efficient.                                to experiment with graph augmentation techniques, such as
+   Our experiments demonstrate that X-MeshGraphNet can              dynamically sampling point clouds and constructing the graph
+maintain the predictive accuracy of traditional GNN models          on the fly per epoch. This approach could help mitigate
+while significantly improving scalability and flexibility. The      topological biases that arise from fixed graph structures.
+model’s ability to handle large, complex simulations without           Moreover, we intend to explore generating the point cloud
+requiring meshes at inference makes it particularly well-suited     non-uniformly, taking into account the curvature information
+for real-time applications across various domains, from fluid       of the geometry. By increasing point density in regions of high
+curvature, we expect to capture finer details more effectively,                   [15] N. Ashton, C. Mockett, M. Fuchs, L. Fliessbach, H. Hetmann,
+potentially improving the accuracy of the model in regions                             T. Knacke, N. Schonwald, V. Skaperdas, G. Fotiadis, A. Walle, et al.,
+                                                                                       “Drivaerml: High-fidelity computational fluid dynamics dataset for road-
+with complex phenomena.                                                                car external aerodynamics,” arXiv preprint arXiv:2408.11969, 2024.
+   Lastly, we plan to push the limits of scalability by training                  [16] G. Karypis and V. Kumar, “A fast and high quality multilevel scheme
+models with increasing numbers of graph nodes and edges.                               for partitioning irregular graphs,” SIAM Journal on scientific Computing,
+                                                                                       vol. 20, no. 1, pp. 359–392, 1998.
+This will help us understand how far the scalability of X-                        [17] Modulus Contributors, “NVIDIA Modulus: An open-source framework
+MeshGraphNet can be practically extended in terms of han-                              for physics-based deep learning in science and engineering,” 2023.
+dling larger graphs.                                                                   [Online]. Available: https://github.com/NVIDIA/modulus.
+                                                                                  [18] M. Tancik, P. Srinivasan, B. Mildenhall, S. Fridovich-Keil, N. Raghavan,
+                                                                                       U. Singhal, R. Ramamoorthi, J. Barron, and R. Ng, “Fourier features let
+                         ACKNOWLEDGMENT                                                networks learn high frequency functions in low dimensional domains,”
+                                                                                       Advances in neural information processing systems, vol. 33, pp. 7537–
+   The authors would like to thank Peter Sharpe for his                                7547, 2020.
+valuable comments on this work, and Kaustubh Tangsali for
+his assistance with the analysis of results for the automotive
+aerodynamic models.
+
+                              R EFERENCES
+ [1] P. W. Battaglia, J. B. Hamrick, V. Bapst, A. Sanchez-Gonzalez, V. Zam-
+     baldi, M. Malinowski, A. Tacchetti, D. Raposo, A. Santoro, R. Faulkner,
+     et al., “Relational inductive biases, deep learning, and graph networks,”
+     arXiv preprint arXiv:1806.01261, 2018.
+ [2] Y. Li, D. Tarlow, M. Brockschmidt, and R. Zemel, “Gated graph
+     sequence neural networks,” arXiv preprint arXiv:1511.05493, 2015.
+ [3] T. Pfaff, M. Fortunato, A. Sanchez-Gonzalez, and P. W. Battaglia,
+     “Learning mesh-based simulation with graph networks,” arXiv preprint
+     arXiv:2010.03409, 2020.
+ [4] A. Sanchez-Gonzalez, J. Godwin, T. Pfaff, R. Ying, J. Leskovec,
+     and P. Battaglia, “Learning to simulate complex physics with graph
+     networks,” in International conference on machine learning, pp. 8459–
+     8468, PMLR, 2020.
+ [5] R. Lam, A. Sanchez-Gonzalez, M. Willson, P. Wirnsberger, M. For-
+     tunato, F. Alet, S. Ravuri, T. Ewalds, Z. Eaton-Rosen, W. Hu, et al.,
+     “Graphcast: Learning skillful medium-range global weather forecasting,”
+     arXiv preprint arXiv:2212.12794, 2022.
+ [6] L. Pegolotti, M. R. Pfaller, N. L. Rubio, K. Ding, R. B. Brufau, E. Darve,
+     and A. L. Marsden, “Learning reduced-order models for cardiovascular
+     simulations with graph neural networks,” Computers in Biology and
+     Medicine, vol. 168, p. 107676, 2024.
+ [7] M. Fortunato, T. Pfaff, P. Wirnsberger, A. Pritzel, and P. Battaglia,
+     “Multiscale meshgraphnets,” arXiv preprint arXiv:2210.00612, 2022.
+ [8] S. J. Jacob, M. Mrosek, C. Othmer, and H. Köstler, “Deep learning for
+     real-time aerodynamic evaluations of arbitrary vehicle shapes,” arXiv
+     preprint arXiv:2108.05798, 2021.
+ [9] O. Ronneberger, P. Fischer, and T. Brox, “U-net: Convolutional networks
+     for biomedical image segmentation,” in Medical image computing and
+     computer-assisted intervention–MICCAI 2015: 18th international con-
+     ference, Munich, Germany, October 5-9, 2015, proceedings, part III 18,
+     pp. 234–241, Springer, 2015.
+[10] F. Chen and K. Akasaka, “3d flow field estimation around a vehicle
+     using convolutional neural networks.,” in BMVC, p. 396, 2021.
+[11] M. Elrefaie, F. Ahmed, and A. Dai, “Drivaernet: A parametric car
+     dataset for data-driven aerodynamic design and graph-based drag pre-
+     diction,” in International Design Engineering Technical Conferences
+     and Computers and Information in Engineering Conference, vol. 88360,
+     p. V03AT03A019, American Society of Mechanical Engineers, 2024.
+[12] C. R. Qi, H. Su, K. Mo, and L. J. Guibas, “Pointnet: Deep learning on
+     point sets for 3d classification and segmentation,” in Proceedings of the
+     IEEE conference on computer vision and pattern recognition, pp. 652–
+     660, 2017.
+[13] B. Song, C. Yuan, F. Permenter, N. Arechiga, and F. Ahmed, “Sur-
+     rogate modeling of car drag coefficient with depth and normal ren-
+     derings,” in International Design Engineering Technical Conferences
+     and Computers and Information in Engineering Conference, vol. 87301,
+     p. V03AT03A029, American Society of Mechanical Engineers, 2023.
+[14] T. L. Trinh, F. Chen, T. Nanri, and K. Akasaka, “3d super-resolution
+     model for vehicle flow field enrichment,” in Proceedings of the
+     IEEE/CVF Winter Conference on Applications of Computer Vision,
+     pp. 5826–5835, 2024.
+

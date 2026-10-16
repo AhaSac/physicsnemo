@@ -1,0 +1,1277 @@
+                                                  IMC-PINN-FE: A Physics-Informed Neural Network for
+                                                  Patient-Specific Left Ventricular Finite Element Modeling with
+                                                  Image Motion Consistency and Biomechanical Parameter
+                                                  Estimation
+                                                  Siyu Mua , Wei Xuan Chana and Choon Hwai Yapa
+arXiv:2506.20696v1 [physics.med-ph] 25 Jun 2025
+
+
+
+
+                                                  a Department of Bioengineering, Imperial College London, London, UK
+
+
+
+                                                  ARTICLE INFO                                   ABSTRACT
+                                                  Keywords:                                      Elucidating the biomechanical behavior of the myocardium is important for understanding of
+                                                  Physics-Informed Neural Network                cardiac physiology, but this cannot be directly inferred from clinical imaging and requires
+                                                  Finite Element Modeling                        finite element (FE) simulations. However, conventional FE simulations are computationally
+                                                  Cardiac Biomechanics                           expensive and often do not accurately reproduce clinically observed cardiac motions. To address
+                                                  Image Motion Tracking                          these limitations, we propose the IMC-PINN-FE, a physics-informed neural network (PINN)
+                                                  Left Ventricular Simulation                    framework that integrates imaged motion consistency (IMC) with FE modeling for patient-
+                                                                                                 specific simulations of left ventricular (LV) biomechanics. Cardiac motion is first estimated
+                                                                                                 from 4D MRI or echocardiography using either a pre-trained attention-based network or an
+                                                                                                 unsupervised cyclic-regularized network, followed by extraction of motion modes. IMC-PINN-
+                                                                                                 FE then rapidly estimates myocardial stiffness and active tension by fitting end-diastolic (ED)
+                                                                                                 and peak-systolic (PS) clinical measurements. As an unsupervised PINN-based estimator, IMC-
+                                                                                                 PINN-FE significantly accelerates biomechanical parameters estimation, reducing computation
+                                                                                                 times from several hours to mere seconds compared to conventional inverse FE methods. Finally,
+                                                                                                 based on these computed parameters, IMC-PINN-FE performs FE modeling throughout the
+                                                                                                 cardiac cycle, enabling computational speeds 75 times faster than traditional FE simulations.
+                                                                                                 Through motion constraints, its output of cardiac displacements across the cardiac cycle matches
+                                                                                                 imaged motions much more accurately, achieving an average Dice coefficient of 0.927, which
+                                                                                                 is markedly higher than 0.849 for conventional FE methods. At the same time, it preserves
+                                                                                                 a realistic pressure–volume relationship that remains very similar to that of conventional FE.
+                                                                                                 Unlike existing PINN models, IMC-PINN-FE introduces explicit motion fidelity constraints and
+                                                                                                 enables back-computation of myocardial properties. Our strategy of using cardiac motions of
+                                                                                                 a single individual to reconstruct shape mode avoids the need for a large dataset, and enables
+                                                                                                 better patient-specificity. IMC-PINN-FE thus presents a robust approach for efficient, patient-
+                                                                                                 specific, and image-consistent cardiac biomechanical modeling. Code is available at https:
+                                                                                                 //github.com/SiyuMU/IMC_PINN_FE and https://github.com/SiyuMU/EFDL.
+
+
+
+
+                                                  1. Introduction
+                                                       Computation of the biomechanical behavior of the heart is useful for evaluating cardiovascular diseases and can
+                                                  facilitate the development of cardiac digital twins for optimized and personalized medicine. Cardiac biomechanics
+                                                  is traditionally computed through image-based finite element (FE) simulations. This has previously been performed
+                                                  for both healthy and pathological cardiac conditions [46, 19], providing details of myocardial deformation, stress
+                                                  distribution, and contractile function [24], which offered physiology insights into diseases and intervention scenarios
+                                                  [17].
+
+                                                     However, current FE-based approaches face significant challenges in clinical applications. Traditional cardiac
+                                                  FE methods rely on time-consuming simulations, making real-time, patient-specific modeling impractical [51].
+                                                  Additionally, most FE models assume population-averaged myocardial properties, such as stiffness and active tension,
+                                                  and are thus not fully patient-specific [44]. Moreover, existing FE methods often struggle to faithfully replicate the
+                                                  complex, time-dependent myocardial deformations observed in MRI and ultrasound data [43]. While iterative tuning of
+                                                      ∗ Corresponding author:
+
+                                                          siyu.mu21@imperial.ac.uk (S. Mu); c.yap@imperial.ac.uk (C.H. Yap)
+                                                       ORCID (s): 0000-0003-2918-3077 (C.H. Yap)
+
+
+
+                                                  S.Mu et al.: Preprint submitted to Elsevier                                                                                    Page 1 of 20
+                                                      IMC-PINN-FE
+
+the FE model to back-compute myocardial properties and to better match clinically measured motion is possible [15], it
+is both time- and resource-intensive. Therefore, FE models have not yet been widely adopted in clinical practice. This
+highlights the need for an efficient, patient-specific, and physiologically consistent alternative, one that is fast enough
+to be clinically adoptable, and that integrates image-based motion tracking with physics-informed biomechanical
+constraints.
+
+    Recent advances in physics-informed neural networks (PINNs) offer a promising approach to achieve this,
+combining deep learning (DL) with physical constraints to bypass the need for explicit iterative solvers [41]. Several
+PINN-FE approaches have recently been proposed for modeling left ventricular (LV) biomechanics. Motiwale et al.
+developed a PINN-FE framework that predicts the nodal displacements of an idealized 3D LV mesh from pressure
+and active tension inputs, guided by the governing equations in their weak form [35]. Buoso et al., in contrast,
+incorporated a pre-computed statistical shape model to encode cardiac geometry and motion, enabling a similar
+input–output mapping across a variety of realistic cardiac anatomies [7]. Their use of shape encoding significantly
+reduced computational costs. However, these methods do not enforce an adherence to imaged myocardial motion,
+which limits their adaptability to patient-specific variations. Moreover, they lack a mechanism for inverse estimation
+of myocardial stiffness and active contractile tension.
+
+    To address these challenges, we propose Image Motion Consistent PINN-FE (IMC-PINN-FE), a novel framework
+that integrates patient-specific motion tracking into a reduced-order PINN-FE model. IMC-PINN-FE encodes cardiac
+motion using modes extracted from cine-imaging data of an individual subject rather than from a large dataset of
+diverse individuals. This helps to retain the computational efficiency of reduced-order modeling while eliminating
+the requirement for an extensive dataset, and enhances the patient-specificity of modeled motions. Furthermore, the
+framework is constrained to match observed LV volumes from clinical images, and it incorporates inverse estimation
+of myocardial stiffness and peak active tension prior to performing detailed biomechanical simulations.
+
+    The framework assumes the availability of accurate 3D reconstructions of the LV geometry as input. In practice,
+several fast and reliable tools can reconstruct 3D geometries directly from clinical images, including 3D segmentation
+algorithms [50, 25] and 3D mesh reconstruction methods [45, 29]. Next, the framework requires accurate cardiac
+motion tracking from the images. For this, we propose two options: a novel unsupervised network that enforces cyclic
+consistency in pairwise image registration, and a previously reported cross-attention-based deep learning model [1].
+These tools provide the necessary anatomical and motion inputs to support personalized modeling in IMC-PINN-FE.
+
+    The key contributions of this work are as follows:
+   1. Motion-Consistent PINN-FE: We propose the IMC-PINN-FE, a framework for rapid tissue biomechanics
+      modeling of the cardiac ventricle that enforces consistency with both physics-based governing equations and 4D
+      image-derived cardiac motion, thereby improving the physiological accuracy of biomechanical assessments. This
+      represents a departure from prior approaches that primarily focused on enforcing physics constraints. Motion
+      consistency is achieved through the use of patient-specific cardiac motion modes and constraints based on imaged
+      ventricular volumes.
+   2. High Computational Efficiency: IMC-PINN-FE leverages image-derived motion modes for reduced-order
+      modeling, enabling a reduction in computational time by approximately 75× compared to traditional FE methods,
+      while maintaining fidelity to patient-specific motion. This efficiency makes the approach feasible for real-time
+      or near real-time clinical applications. Further, our use of cine-images of a single patient rather than a large
+      multi-individual dataset for statistical shape modelling [7] is less cumbersome and more subject-specific.
+   3. Efficient Physics-Informed Parameter Estimation: IMC-PINN-FE performs fast, unsupervised estimation of
+      myocardial stiffness and peak active tension, enhancing personalization and supporting accurate patient-specific
+      biomechanical modeling.
+
+
+2. Methods
+   The framework of IMC-PINN-FE, as illustrated in Fig. 1, follows a three-step pipeline that integrates deep learning
+and physics-informed principles:
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                   Page 2 of 20
+                                                    IMC-PINN-FE
+
+
+  IMC-PINN-FE                   3D LV mesh of t0      Pressure of ED and PS
+
+
+
+                                   Deep Learning          Stiffness &          PINN - "#!
+                                  Motion Tracking       Tmax Estimator
+
+
+
+
+                                                                                              Pressure (mmHg)
+                                                               Myocardial
+                                                                 stiffness
+                                                             & active tension
+                                                                                                                Volume (mL)
+                                &"
+                              $%
+
+
+
+
+                                               →'
+                           "#
+
+
+
+
+           →'                                                     OUTPUT: Personalized P-V loop,
+                        →
+
+
+
+
+  INPUT:4D images                    3D+t surface mesh            displacement distributions
+
+Figure 1: The overall framework of IMC-PINN-FE: inputs to the framework include 4D (3D+time) imaging data (e.g.,
+echocardiography or MRI) combined with LV reconstruction obtained via deep learning (DL) and physiological inputs,
+including peak systolic (PS) and end-diastolic (ED) LV pressures. Outputs include estimates of patient-specific LV
+myocardial stiffness and maximum active tension, and LV finite element (FE) simulation results across the cardiac cycle.
+
+
+
+   1. Deep Learning (DL) Cardiac Motion Tracking: A DL image registration (DLIR) network is employed to
+      extract smooth and cyclic cardiac motion from 4D medical images. Two approach options are proposed: (a)
+      a novel network that ingests rapidly computed pairwise 3D registrations and outputs a 4D cyclic motion field
+      parameterized by temporal Fourier series and spatial B-splines; and (b) a previously reported deep learning
+      cross-attention network [1]. Approach (a) does not require pre-training over a large dataset, but takes more time
+      than approach (b).
+   2. Back-Computing Myocardial Stiffness and Active Tension: Using the estimated motion and inputted LV
+      pressure information, a PINN network predicts myocardial stiffness and maximum active tension, based on FE
+      governing equations.
+   3. PINN-FE solver: This final step uses the same solver as in (2) to perform FE modeling for the whole
+      cardiac cycle, where shape mode coefficients describing displacements are obtained under the constraints of
+      the governing equations and imaged LV volumes guidance.
+
+2.1. Deep learning Motion Tracking
+    Mainstream 4D (3D+t) image registration techniques can be broadly categorized into two types: classical non-DL
+methods, such as B-spline [22, 10] and optical flow [23] registration, and DL methods, including co-attention spatial
+transformer networks (STN) [1] and feedback attention DLIR [21].
+
+    While non-DL methods do not require large datasets for training, they are often computationally intensive and time-
+consuming, particularly for 4D image registration tasks. In contrast, DL approaches offer significantly faster inference
+but depend heavily on large training datasets, posing challenges due to the labor-intensive process of manually labeling
+segmentation ground truth in 4D and the substantial memory demands associated with 4D networks. These difficulties
+become even more pronounced given that DL models frequently require retraining when adapted to a different imaging
+modality or imaging condition (e.g., transitioning from fetal to adult echocardiography, or from echocardiography to
+MRI).
+
+
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                             Page 3 of 20
+                                                                   IMC-PINN-FE
+
+    Given this trade-off, we systematically compared several representative methods to identify the most suitable
+candidate for integration to IMC-PINN-FE. We also introduce a novel unsupervised DL cardiac motion estimation
+algorithm, termed Elastix Fourier Deep Learning (EFDL). EFDL performs a spatial B-spline of temporal fourier
+cyclic regularization on computationally efficient pairwise registration via a network. This hybrid approach combines
+the strengths of both traditional and learning-based methods: it eliminates the need for large-scale pretraining datasets,
+while achieving faster computation compared to its non-DL counterpart, the B-spline Fourier method [10, 49].
+
+
+2.1.1. Elastix Fourier Deep Learning (EFDL)
+    The EFDL framework (detailed schematic in supplementary S1) consists of a rapid pairwise registration followed
+by Fourier regularization.
+
+Bspline Pairwise Registration: During the rapid registration stage, any pairwise registration algorithm may be
+employed. In this study, we adopt the cubic B-spline free-form deformation algorithm implemented in SimpleElastix
+[32, 27], owing to its broad applicability and high accuracy in both MRI and echocardiographic images. It utilizes the
+Mean Square Error (MSE) as the similarity metric, and transform bending energy as the smoothness regularization.
+
+   Given 4D images 𝐼 ∈ ℝ𝑋𝑖 ×𝑌𝑖 ×𝑍𝑖 ×𝑇 , where 𝑋𝑖 , 𝑌𝑖 , 𝑍𝑖 denote the spatial dimensions (64 × 64 × 𝑍slice in our cases),
+and 𝑇 denotes the number of time points per cardiac cycle (ranging from 20 to 40 in our dataset), the resulting B-spline
+coefficient tensor is denoted by:
+
+      𝐶 coef ∈ ℝ𝑇 ×(𝑋𝑐 ×𝑌𝑐 ×𝑍𝑐 )×dim .
+
+where 𝑋𝑐 , 𝑌𝑐 , 𝑍𝑐 denote the number of control points along each spatial dimension, and 𝑑𝑖𝑚 indicates the spatial
+dimensionality of the domain (3 for 3D in this case). The B-spline control points are arranged in a grid of size
+11 × 11 × 11, consistent with previous empirical findings [49]. Registration is conducted between consecutive frames
+throughout the entire cardiac cycle.
+
+                                               ⃖⃖⃗𝑡→𝑡+𝛿𝑡 can be calculated by,
+    The displacements at the next time point 𝑑 𝑋
+
+
+                          ∑
+                          3 ∑
+                            3 ∑
+                              3
+       ⃖⃖⃗𝑡→𝑡+𝛿𝑡 =
+      𝑑𝑋                                                  ⃖⃖⃗coef
+                                        𝐵𝑙 (𝑜)𝐵𝑚 (𝑝)𝐵𝑛 (𝑞)𝐶                                                            (1)
+                                                             𝑖+𝑙,𝑗+𝑚,𝑘+𝑛
+                          𝑙=0 𝑚=0 𝑛=0
+
+where 𝐵𝑛 denotes the 3D B-spline basis functions [28], and 𝑜, 𝑝, and 𝑞 represent the local coordinates of the B-spline
+control point grid.
+
+Fourier Regularization: Next, EDFL uses a fully connected neural network (FCNN) for temporal smoothness and
+cyclic regularization of the pairwise registration. The network takes in image coordinate (𝑃 , 3) (𝑃 ∈ ℝ64×64×𝑍slice ) and
+B-spline coefficients 𝐶 coef , outputs Fourier coefficients 𝐹     ⃖⃖⃗𝑓 ∈ ℝ3 , with 𝑓 specifying the current frequency mode)
+                                                            ⃖⃖⃗𝑓 (𝐹
+at each coordinate, expressed as:
+
+                      (                (           )                      (           ))
+               ∑
+               𝑁
+                                           2𝜋𝑓 𝑡                              2𝜋𝑓 𝑡
+      ⃖⃖⃗𝑡 =
+      𝑋  𝑓
+                          ⃖⃖⃗𝑓 × cos
+                          𝐹                             ⃖⃖⃗𝑓 +𝑁+1 × sin
+                                                       +𝐹                                                              (2)
+               𝑓 =0
+                                            𝑇                                  𝑇
+
+      ⃖⃖⃗𝑡 is the displacements over time, 𝑁 is the number of Fourier terms representing different Fourier frequency
+where 𝑋  𝑓
+((𝑁 = 4 here, in accordance to previous optimization [49]).
+
+    The loss function is the accumulative difference between Fourier-dictated deformation and Elastix deformation at
+different time points across time and space,
+
+                 1 ∑ ∑ ‖ ⃖⃖⃗𝑡+𝛿𝑡 ⃖⃖⃗𝑡 ⃖⃖⃗𝑡→𝑡+𝛿𝑡 ‖
+                                                 2
+      𝐿𝑜𝑠𝑠 =           ‖𝑋 𝑓 − 𝑋 𝑓 − 𝑑 𝑋         ‖                                                                      (3)
+                 𝑃 𝑃 𝑀 ‖                 𝑒      ‖2
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                   Page 4 of 20
+                                                      IMC-PINN-FE
+
+where 𝑃 is the number of coordinates, 𝑀 represents the number of pairwise groups, 𝑋         ⃖⃖⃗𝑡+𝛿𝑡 and 𝑋
+                                                                                               𝑓
+                                                                                                        ⃖⃖⃗𝑡 are the Fourier
+                                                                                                           𝑓
+displacements at two distinct time points. The term 𝑑 𝑋  ⃖⃖⃗𝑡→𝑡+𝛿𝑡 denotes the pairwise Elastix registration displacements
+                                                            𝑒
+from time point 𝑡 to 𝑡 + 𝛿𝑡, calculated by inserting 𝑋
+                                                     ⃖⃖⃗𝑡 into Eqn.1.
+                                                       𝑓
+
+2.1.2. Datasets and Evaluation
+    To evaluate the performance of the proposed EFDL registration framework, we conduct experiments on two
+datasets: 50 3D+t adult cardiac MRI cases from the ACDC public dataset [6], and 10 3D+t fetal echocardiography
+cases from a previously published private dataset [49, 10]. No image pre-processing was applied to either dataset. Each
+case consists of 20 to 40 temporal frames over the cardiac cycle.
+
+    We compared EFDL with the following registration methods: (1) Elastix, a classical traditional registration
+approach; (2) Bspline Fourier, an extension of SimpleElastix with temporal Fourier-based regularization for cyclic
+motion [10, 49]; (3) Voxelmorph, a widely adopted DLIR method for pairwise registration; and (4) Co-attention STN
+[1], a state-of-the-art (SOTA) DL 4D image registration approach.
+
+    Here, B-spline Fourier, Co-attention STN, and the proposed EFDL incorporate temporal constraints and are
+specifically designed for groupwise registration across the cardiac cycle. In contrast, Elastix and VoxelMorph are
+pairwise registration algorithms that do not enforce temporal consistency across time frames. Additionally, Elastix,
+B-spline Fourier, and EFDL are not pre-trained, and thus require patient-specific training for each new inference. As a
+result, they exhibit substantially longer inference times compared to pre-trained DLIR methods such as VoxelMorph
+and Co-attention STN. However, these approaches do not rely on large-scale datasets of specific image modalities for
+training, which can be advantageous in data-limited scenarios.
+
+    During VoxelMorph training, for optimal effects, all possible frame-pair combinations within the cardiac cycle
+are used (i.e., all-to-all pairs). In contrast, Co-attention STN employs a more selective strategy based on anatomical
+variability: only frame pairs with a Dice overlap below 0.7 are included in the training (following the approach in [1]),
+to ensure sufficient motion diversity during training. The ED frame serves as the reference to which all other time
+points are registered. The ratio of training to testing cases is maintained at 4:1 for both adult and fetal datasets.
+
+    Performance evaluation is carried out by comparing the registered cardiac shape images to ground truth segmen-
+tations. For adult datasets, the ACDC myocardium masks are used as ground truths, while for fetal datasets, manual
+segmentations, performed using LazySnap [50], are used. The quality of alignment is evaluated by Dice Similarity
+Coefficient (DSC) and Hausdorff Distance (HD) [4], as defined in supplementary text.
+
+2.2. Myocardial Stiffness and Maximal Tension Estimator
+    The myocardial stiffness and maximum tension estimator are implemented using PINN, which first estimates the
+coefficients of the stiffness model, followed by the maximum contractile tension. The overall procedure is illustrated
+in Fig. 3 II and consists of the following steps.
+   1. 3D Cardiac Mesh Reconstruction The 3D surface mesh of the LV myocardium is first reconstructed through
+      manual segmentation of a single reference frame using LazySnap [50] for coarse delineation, followed by surface
+      refinement in Geomagic https://oqton.com/geomagic-designx. However, this can similarly be achieved
+      with deep learning segmentation and reconstruction algorithms [25, 29, 45].The resulting surface mesh is then
+      converted into a tetrahedral FE mesh using Gmsh [16]. This reference FE mesh is subsequently propagated to
+      all other time points using motion fields estimated by the EFDL framework. In addition, at each time point,
+      the cavity volume is computed by sealing the endocardial surface and performing volumetric integration on the
+      surface mesh. The resulting volume serves as a reference for the next step in performing the volume constraint
+      in the PINN-FE solver.
+   2. Load-Free State Definition: The reference zero-pressure unloaded geometry is assumed to correspond to the
+      cardiac state at 1/3 into the diastolic duration, as this phase typically exhibits the lowest blood cavity pressure.
+      This assumption is imperfect, but consistent with prior studies [48, 13, 11], and we believe that future work
+      to develop a deep learning tool to predict the true load-free state is possible. At this reference time point, the
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                   Page 5 of 20
+                                                        IMC-PINN-FE
+
+      myocardial helix angle is assumed to vary linearly from the epicardium to the endocardium (values given in
+      supplementary text section S2). The following parameters are precomputed at the load-free state:
+         • Fiber (𝑓𝑢𝑛𝑙𝑜𝑎𝑑𝑒𝑑 ), sheet (𝑠𝑢𝑛𝑙𝑜𝑎𝑑𝑒𝑑 ), and sheet-normal (𝑛𝑢𝑛𝑙𝑜𝑎𝑑𝑒𝑑 ) orientations. (methods given in supple-
+           mentary text section S2)
+         • Nodal endocardial area (𝐴unloaded ) and myocardial volume (𝑉unloaded ) are computed by distributing the area
+           of each triangular surface element and the volume of each tetrahedral element to their associated nodes via
+           weighted summation [7].
+         • Mesh labels (𝐿𝑎𝑏𝑒𝑙𝑢𝑛𝑙𝑜𝑎𝑑𝑒𝑑 ) [interior: 0, endocardium: 1, epicardium: 2, base: 3] are assigned to each node.
+         • The spatial derivative operator at each node (∇𝑢) is calculated, as explained in Section 2.2.1.
+   3. Motion Analysis via POD: A previous PINN FE model [7] encoded cardiac motion using shape modes derived
+      from Proper Orthogonal Decomposition (POD) applied to cardiac geometries reconstructed from multiple
+      subjects at a fixed phase of the cardiac cycle. However, this approach captures inter-subject anatomical variability
+      rather than intra-subject dynamic deformations. Here, we apply POD to the series of cardiac shapes across the
+      cardia cycle from a single subject. This enables the extraction of subject-specific dominant motion modes, which
+      are then used for compact and physiologically meaningful motion encoding. The resulting motion modes are
+      used as a reduced-order representation of displacement fields in the PINN-FE solver, which improves numerical
+      stability and accelerates convergence.
+
+   4. Stiffness and Maximal Tension Estimation: Two similar neural networks are trained to estimate myocardial
+      stiffness (𝐶stiffness ) and maximum active tension (𝑇max ), using motion mode amplitudes at ED and PS as inputs.
+      The physical constraints incorporated into the loss functions are presented in Section 2.2.3, and the two networks
+      are described in detail in Section 2.2.4.
+
+2.2.1. The Spatial Derivative Operator ∇𝑢
+    The spatial derivative operator ∇𝑢 acts as a fundamental differential operator that maps the network-predicted
+displacement field to deformation gradients, and is employed in the calculation of physics constraints.
+
+    This operator is computed at each node based on the method described by Mancinella et al. [30], which estimates
+the gradient of a scalar function 𝑓 (𝑥) defined over tetrahedral meshes, representing
+                                                                                  (        displacement field vector)    in our
+case. For each element, the gradient is first evaluated at its centroid ∇𝑓 (𝐱𝑐 ) = ∇𝑓 (𝐱𝑐 )𝑥 , ∇𝑓 (𝐱𝑐 )𝑦 , ∇𝑓 (𝐱𝑐 )𝑧 by solving
+a local linear system constructed from the coordinates and function values of the element’s four vertices 𝑣𝑗 , 𝑣𝑖 , 𝑣𝑘 , 𝑣𝑙
+as,
+
+      ⎡ 𝑣𝑗 − 𝑣𝑖 ⎤ ⎡∇𝑓 (𝐱𝑐 )𝑥 ⎤ ⎡ 𝑓 (𝑥𝑗 ) − 𝑓 (𝑥𝑖 ) ⎤
+      ⎢𝑣 − 𝑣 ⎥ ⎢∇𝑓 (𝐱𝑐 )𝑦 ⎥ = ⎢𝑓 (𝑥 ) − 𝑓 (𝑥 )⎥ ,                                                                          (4)
+      ⎢ 𝑘     𝑖
+                ⎥⎢           ⎥ ⎢     𝑘         𝑖
+                                                   ⎥
+      ⎣ 𝑣𝑙 − 𝑣𝑖 ⎦ ⎣∇𝑓 (𝐱𝑐 )𝑧 ⎦ ⎣ 𝑓 (𝑥𝑙 ) − 𝑓 (𝑥𝑖 ) ⎦
+
+    The nodal gradient ∇𝑢 is then obtained as the volume-weighted average of the gradients from all neighboring
+tetrahedral elements that share the node. These local derivative matrices can be precomputed and assembled into
+a global matrix operator outside the network, allowing efficient evaluation of nodal gradients via matrix–vector
+multiplication when using the network. To avoid numerical instability, elements involving apex nodes are excluded
+from the assembly due to their small size and disproportionate influence [7].
+
+2.2.2. Proper Orthogonal Decomposition (POD)
+    The use of POD shape modes in IMC-PINN-FE is inspired by previous work [8, 31, 39, 42]. Before applying POD,
+all meshes undergo spatial alignment for consistency.Specifically, each mesh is translated such that the center of the
+basal plane aligns with the origin of the Cartesian coordinate system. The mesh is then rotated to orient the basal plane
+to be normal to the positive 𝑧-axis.
+
+     The mesh size for an individual’s LV is selected to contain between 2,000 and 3,000 nodes, balancing computational
+efficiency with low discretization error. A total of 20 to 40 temporal frames (depending on data acquisition protocols)
+across the cardiac cycle are included in the POD computation. Displacement is defined as the deviation of each node
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                      Page 6 of 20
+                                                                IMC-PINN-FE
+
+from its position in the identified load-free state. These displacement fields are concatenated across time into a high-
+dimensional data matrix, and POD is applied via singular value decomposition (SVD) to extract a set of orthonormal
+spatial basis functions [8, 7]. The resulting basis functions are ranked in descending order of their contribution to the
+total variance, and the first 10 dominant modes are retained to represent the subject-specific deformation subspace.
+The displacement at any time point, denoted as 𝐮, is approximated as a linear combination of these basis functions:
+
+           ⃖⃖⃗𝑛,𝑡
+      𝑢 = Ψ𝐴                                                                                                         (5)
+
+where Ψ = [Ψ1 , … , Ψ𝑛 ] represents the set of POD basis functions (in this project, we use the first 20 bases), and the
+     ⃖⃖⃗𝑛,𝑡 represents the amplitudes corresponding to each basis function.
+term 𝐴
+
+
+2.2.3. Physical Constraints in LV Loss Function
+    The physics loss (governing equation) is derived from the potential energy function that describes mechanical
+behavior across the cardiac cycle, as proposed by [44]:
+
+      𝑙𝑜𝑠𝑠𝑒𝑛𝑒𝑟𝑔𝑦 =               𝑊 𝑑𝑉 −              𝑃 ⋅ 𝑢 𝑑𝐴                                                        (6)
+                         ∫Ωmyo              ∫Ωendo
+
+The first term represents the overall strain energy of the myocardium, where 𝑉 is the myocardial volume. The second
+term represents the work done by the endocardium on blood via pressure, 𝑃 is the pressure in the LV cavity, and 𝑢 is
+the endocardial displacement relative to the unloaded (reference) state, while 𝐴 is the endocardial surface area.
+
+    𝑊 is the strain energy density, calculated by:
+
+      𝑊 = 𝑊𝑝𝑎𝑠𝑠𝑖𝑣𝑒 + 𝑊𝑎𝑐𝑡𝑖𝑣𝑒                                                                                         (7)
+
+where 𝑊𝑝𝑎𝑠𝑠𝑖𝑣𝑒 and 𝑊𝑎𝑐𝑡𝑖𝑣𝑒 refer to passive and active components, respectively. 𝑊𝑝𝑎𝑠𝑠𝑖𝑣𝑒 is calculated using a strain
+energy function for a Fung-type transversely-isotropic hyperelastic material [20]:
+
+                     1           (       )
+      𝑊𝑝𝑎𝑠𝑠𝑖𝑣𝑒 =       𝐶stiffness 𝑒𝑄 − 1                                                                             (8)
+                     2
+where,
+                        ( 2                      )
+      𝑄 = 𝑏𝑓 𝐸𝑓2 𝑓 + 𝑏𝑥𝑥 𝐸𝑠𝑠    2
+                             + 𝐸𝑛𝑛      2
+                                    + 𝐸𝑠𝑛     2
+                                           + 𝐸𝑛𝑠
+                  (                        )
+                          2
+          + 𝑏𝑓 𝑥 𝐸𝑓2 𝑛 + 𝐸𝑛𝑓             2
+                             + 𝐸𝑓2 𝑠 + 𝐸𝑠𝑓                                                                           (9)
+
+where 𝐸𝑖𝑗 (𝐸 = 21 (𝐹 𝑇 𝐹 − 𝐼)) represents the Green-Lagrange strain tensor, with subscripts 𝑓 , 𝑠, and 𝑛 indicating
+the myocardial fiber, sheet, and sheet-normal directions, respectively. 𝑏𝑖𝑗 are the stiffness parameters. 𝐶stiffness is
+the myocardial stiffness, as estimated by the stiffness estimator. 𝐹 is the deformation gradient tensor, defined as
+     𝜕𝑥
+𝐹 = 𝜕𝑋   = 𝐼 + ∇𝑢 ⋅ 𝑢, where 𝑥 represents the deformed coordinates, and 𝑋 corresponds to the unloaded (reference)
+coordinates.
+
+    According to [34], the active energy density 𝑊𝑎𝑐𝑡𝑖𝑣𝑒 can be expressed as:
+                         𝐸
+      𝑊active =              𝜎active ∶ 𝑑𝐸                                                                           (10)
+                    ∫0
+
+where 𝜎active is the Cauchy stress tensor, which is determined using a previously established calcium activation model
+[20], characterizing the sigmoidal relationship between chemical activation and cardiac muscle tension:
+
+                                 𝐶𝑎20
+      𝜎active = 𝑇max                        𝐶𝑡                                                                      (11)
+                          𝐶𝑎20 + 𝐸𝐶𝑎250
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                 Page 7 of 20
+                                                         IMC-PINN-FE
+
+where 𝑇max represents the maximum active tension, as estimated by the maximal tension estimator. The terms 𝐶𝑎0 ,
+𝐸𝐶𝑎50 , and 𝐶𝑡 characterize the calcium activation dynamics, with 𝐶𝑎0 denoting the peak calcium concentration,
+𝐸𝐶𝑎50 indicating the sarcomere length-dependent calcium sensitivity, and 𝐶𝑡 capturing temporal variations:
+
+               (𝐶𝑎0 )max                      1
+      𝐸𝐶𝑎50 = √              ,       𝐶𝑡 =       (1 − cos 𝜔)                                                         (12)
+               𝑒𝐵(𝑙−𝑙0 ) − 1                  2
+
+where 𝐵 is a constant, (𝐶𝑎0 )max is the maximum peak intracellular calcium concentration, and 𝑙0 is the sarcomere
+length at which no active tension develops. 𝜔 depends on the cycle time and varies as follows:
+
+
+          ⎧𝜋 𝑡           when 0 ≤ 𝑡 < 𝑡0 ,
+          ⎪ 𝑡𝑡−𝑡
+              0
+                  +𝑡
+      𝜔 = ⎨𝜋 0 𝑟         when 𝑡0 ≤ 𝑡 < 𝑡0 + 𝑡𝑟 ,                                                                    (13)
+                𝑡𝑟
+          ⎪
+          ⎩0             when 𝑡0 + 𝑡𝑟 ≤ 𝑡.
+
+where 𝑡0 represents the time to peak tension, indicating the duration required for myofiber contraction, while 𝑡𝑟 denotes
+the relaxation time [20], defined as:
+
+      𝑡𝑟 = 𝑚𝑙 + 𝑏                                                                                                   (14)
+
+where 𝑚 represents the slope of the linear relaxation duration-sarcomere length relation, 𝑏 is the time-intercept of this
+relation, and 𝑙 is the sarcomere length, which varies with myofiber stretch 𝜆.
+            √
+       𝜆 = 𝑒𝑓 0 ⋅ 𝐶𝑒𝑓 0 , 𝑙 = 𝜆𝑙𝑟                                                                                   (15)
+
+where 𝑙𝑟 is the relaxed sarcomere length, 𝑒𝑓 0 defines the fiber direction in the reference configuration.
+
+    The overall Cauchy stress [3] can be calculated by:
+
+            2    𝜕𝑊
+      𝜎=      𝐹 (   )𝐹𝑇                                                                                             (16)
+            𝐽 𝜕 𝐹𝑇𝐹
+
+where 𝐽 = det(𝐹 ) is the determinant of the deformation gradient 𝐹 .
+
+    All predefined parameters in these equations, based on the literature, are shown in supplementary S2.
+
+
+2.2.4. Estimation Framework of 𝐶stiffness and 𝑇max
+Stiffness Estimation: The stiffness estimator network takes as input the amplitudes of the POD modes extracted
+from the ED frame, and outputs the myocardial stiffness coefficient 𝐶stiffness , while the POD motion bases and the
+LV cavity pressure at ED are treated as predefined parameters. The stiffness coefficient represents the global stiffness
+scaling factor, and the optimization is conceptually akin to inferring this factor by simulating the diastolic pressure
+loading process that deforms the ventricle from the load-free state to the ED configuration. For this estimation task,
+only the passive component of the strain energy is considered (𝑊 = 𝑊passive ), active contraction is assumed to be
+absent.
+
+    Clinically, direct measurement of LV ED pressure (LVEDP 𝑃𝐸𝐷 ) is challenging, as it typically requires invasive
+catheter-based procedures. However, empirical equations derived from prior clinical studies enable estimation of 𝑃𝐸𝐷
+using non-invasive imaging data. For cardiac MRI, we apply empirical formulations provided by Burkhoff et al.[9]:
+                     (                )
+      𝑃𝐸𝐷 = 0.015 𝑒0.06(𝑉𝐸𝐷 −𝑉0 ) − 1
+
+where 𝑉ED is the ED volume obtained from MRI, and 𝑉0 is the theoretical unloaded volume of the LV at zero pressure.
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                  Page 8 of 20
+                                                     IMC-PINN-FE
+
+   For echocardiography, 𝑃ED is estimated based on the ratio between mitral inflow Doppler velocity (𝐸) and mitral
+annular early diastolic Doppler velocity (𝐸 ′ ), as proposed by [52]:
+
+                       𝐸′
+      𝑃𝐸𝐷 = 0.85 ×        + 4.4                                                                                     (17)
+                       𝐸
+    The computed stiffness coefficient is used for maximum tension estimation in the next network.
+
+Maximal Tension Estimation: The maximal tension estimator takes inputs of the amplitudes of the POD modes
+extracted from the PS frame and outputs the maximal active tension 𝑇𝑚𝑎𝑥 , while the POD motion basis, stiffness
+coefficient, and LV cavity pressure at PS are treated as predefined parameters. Here, we assume that the timing of the
+PS frame is known, practically, it can be obtained from tonometry or photoplethysmography combined with ECG.
+At this stage, both active and passive components of the strain energy are considered, and the total strain energy is
+computed according to Eq. 7. Practically, the LV pressure at PS can non-invasively measured from the upper arm via
+a standard pressure cuff.
+
+
+2.2.5. Datasets and Evaluation
+    To evaluate the accuracy of the back-computed parameters (𝐶stiffness and 𝑇max ), we performed FE simulations using
+predefined values of 𝐶stiffness and 𝑇max , which served as ground truths. From these simulations, a limited number of
+time frames are extracted and used as cardiac motion estimation inputs in the estimators (as illustrated in Fig. 2). The
+estimated 𝐶stiffness and 𝑇max values were then compared against the ground truth to assess the accuracy of the estimator.
+
+
+                     VALIDATION CASE
+
+
+
+
+Figure 2: Schematic of validation case generation: A limited number of states (blue points) are selected from the FE
+simulation, which is performed using a given unloaded surface mesh (red points), to serve as tracking results.
+
+
+    In total, 8 LV FE simulations were performed. 2 were based on healthy adult human image data from the Cardiac
+Atlas Project https://www.cardiacatlas.org/, 2 were based on healthy fetal echocardiography images from our
+private dataset [49, 10], and 4 were based on porcine echocardiography images from a previous study [52], including
+two healthy pig hearts and two with LV hypertrophy induced by surgical aortic constriction. These simulations therefore
+span a range of LV sizes and include both healthy and pathological conditions.
+
+    In addition to the FE-based validation, we further tested our estimator on 2 cases of real clinical images, using
+EFDL for motion tracking: 1 adult case MRI from the Cardiac Atlas Project and 1 fetal case from our private dataset
+[49]. Since the ground truth myocardial stiffness and active tension are not known, we adopted values from literature
+[2, 44, 18] as ground truths. These are not ideal ground truths, but applying the framework to these real cases serves
+to demonstrate its practical feasibility.
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                 Page 9 of 20
+                                                            IMC-PINN-FE
+
+2.3. Volume-Constrained PINN-FE Solver
+     The personalized PINN-FE solver is employed to model LV biomechanics over the entire cardiac cycle (Fig 3
+III), utilizing the encoded motion modes and the personalized stiffness and active tension parameters estimated in the
+previous step. The solver incorporates a FCNN to predict the LV pressure 𝑃𝑡 and mesh displacements 𝑢𝑡 at each time
+point 𝑡 within the cardiac cycle, using the elapsed time since ED (𝑡) and the corresponding LV cavity volume 𝑉𝑡 as
+inputs. Both 𝑡 and 𝑉𝑡 are uniformly sampled across the cardiac duration, based on coarse frames derived from the
+tracking results in Section 2.1. In our implementation, the cardiac duration is assumed to be 800 ms for adults [44]
+and 400 ms for fetuses [18]. These durations can be adapted in future applications to accommodate patient-specific
+timing. The node displacement outputs are in the form of amplitudes of the motion basis 𝐴𝑛,𝑡 , and can be decoded as
+per Eq. 5. Subsequently, stress can also be computed via Eq. 16. IMC-PINN-FE is volume-constrained in the sense that
+it directly adopts the LV volume over time obtained from the images, and only computes the corresponding pressure.
+It does not interface with a lumped parameter model to determine the LV volume. However, such a model can easily
+be incorporated in future.
+
+2.3.1. Loss function for PINN-FE solver
+    The loss function of this network consists of six components:
+   1. The physics-governing equation, Eq. 18.
+   2. The volume control equation, which ensures that LV volume is consistent with images, Eq. 19.
+   3. The ED pressure control equation, which enforces the ED pressure at the ED frame, Eq. 20.
+   4. The PS pressure control equation, which enforces the PS pressure at the PS frame, Eq. 20.
+   5. The diastolic phase slope constraint, which ensures a continuous increase in the P-V loop slope during diastole
+      to aid convergence, Eq. 21.
+   6. The systolic phase slope constraint, which ensures a continuous increase in the P-V loop slope to aid convergence,
+      Eq. 21.
+
+
+                          1∑
+      𝑙𝑜𝑠𝑠𝑒𝑛𝑒𝑟𝑔𝑦 𝑇 =          (     𝑊 𝑑𝑉 −        𝑃 ⋅ 𝑢 𝑑𝐴)2                                                       (18)
+                          𝑇 𝑇 ∫Ωmyo        ∫Ωendo
+
+                      1∑
+      𝑙𝑜𝑠𝑠𝑣𝑜𝑙𝑢𝑚𝑒 =        (𝑉𝑝𝑟𝑒𝑑𝑖𝑐𝑡 − 𝑉𝑡𝑎𝑟𝑔𝑒𝑡 )2                                                                   (19)
+                      𝑇 𝑡
+
+      𝑙𝑜𝑠𝑠𝐸𝐷∕𝑃 𝑆 = (𝑃𝐸𝐷∕𝑃 𝑆,𝑝𝑟𝑒𝑑𝑖𝑐𝑡 − 𝑃𝐸𝐷∕𝑃 𝑆,𝑡𝑎𝑟𝑔𝑒𝑡 )2                                                            (20)
+
+                                           ( Δ𝑃             Δ𝑃𝑡𝑑𝑖𝑎∕𝑠𝑦𝑠 +1 )
+                              ∑                  𝑡𝑑𝑖𝑎∕𝑠𝑦𝑠
+      𝑙𝑜𝑠𝑠𝑑𝑖𝑎∕𝑠𝑦𝑠 𝑡𝑟𝑒𝑛𝑑 =               max 0,            −                                                        (21)
+                             𝑇𝑑𝑖𝑎∕𝑠𝑦𝑠
+                                               Δ𝑉𝑡𝑑𝑖𝑎∕𝑠𝑦𝑠 Δ𝑉𝑡𝑑𝑖𝑎∕𝑠𝑦𝑠 +1
+
+where 𝑇 represents the total number of time points, 𝑉𝑝𝑟𝑒𝑑𝑖𝑐𝑡 and 𝑉𝑡𝑎𝑟𝑔𝑒𝑡 denote the predicted and target myocardial
+volumes, respectively, 𝑃𝐸𝐷∕𝑃 𝑆,𝑝𝑟𝑒𝑑𝑖𝑐𝑡 and 𝑃𝐸𝐷∕𝑃 𝑆,𝑡𝑎𝑟𝑔𝑒𝑡 represent the predicted and target LV pressures at the ED/PS
+            Δ𝑃𝑡
+frame, and Δ𝑉 𝑑𝑖𝑎∕𝑠𝑦𝑠 denotes the slope of P-V loop in the diastolic or systolic phase.
+               𝑡𝑑𝑖𝑎∕𝑠𝑦𝑠
+
+    Hence, the overall loss function is:
+      𝑙𝑜𝑠𝑠 = 𝑤1 𝑙𝑜𝑠𝑠𝑒𝑛𝑒𝑟𝑔𝑦 𝑇 + 𝑤2 𝑙𝑜𝑠𝑠𝑣𝑜𝑙𝑢𝑚𝑒 +
+              𝑤3 𝑙𝑜𝑠𝑠𝐸𝐷 + 𝑤4 𝑙𝑜𝑠𝑠𝑃 𝑆 +
+              𝑤5 𝑙𝑜𝑠𝑠𝑑𝑖𝑎 𝑡𝑟𝑒𝑛𝑑 + 𝑤6 𝑙𝑜𝑠𝑠𝑠𝑦𝑠 𝑡𝑟𝑒𝑛𝑑                                                                  (22)
+where 𝑤𝑖 represents the weight of each component, as defined in supplementary S3.
+
+   The comparison group is the set of volume-constrained LV FE simulations, generated based on our previous
+work using the same equations as in Section 2.2.3. This traditional FE source is available at https://github.com/
+WeiXuanChan/heartFEM.
+
+S.Mu et al.: Preprint submitted to Elsevier                                                               Page 10 of 20
+                                                               IMC-PINN-FE
+
+
+   I. DEEP LEARNING MOTION TRACKING
+
+
+
+
+                                                    𝒔
+                                                  𝒄𝒆
+                                                                                                               Full-cycle
+
+
+
+
+                                             … 𝒔𝒍𝒊
+                                                                 DL Motion Tracking
+
+
+
+
+                                              →
+                                                               (EFDL/Co-attentionSTN)                                Reg
+
+
+
+
+                                                                                                                                                    … 𝒕
+                                                                                                                                                     →
+                                                  →𝒕
+                                                  …
+    INPUT: 3D+t full-cycle medical images                                                               OUTPUT: 3D+t myocardium surface mesh
+    [Ultrasound/MRI]                                                                                     (EFDL: 1-2 hours/ Co-attentionSTN~1min)
+
+
+
+   II. STIFFNESS & TMAX ESTIMATOR
+                            2)          𝑓<=>?@A
+                                                      𝑉<=>?@A                                                                   𝑨𝒏,𝑷𝑺 (Peak-Systole)
+                                        𝑠<=>?@A                                                  𝑨𝒏,𝑬𝑫 (End-Diastole)
+                                                     𝐿𝑎𝑏𝑒𝑙<=>?@A
+                                        𝑛<=>?@A
+                                                        𝛻B
+                                        𝐴<=>?@A
+                                                                                                4)
+                 … 𝒕
+                  →
+
+
+
+
+                                     Parameters of load-free mesh
+     3D+t surface mesh                                                                                   Stiffness                Maximal Tension
+                                                                                                        𝑬𝒔𝒕𝒊𝒎𝒂𝒕𝒐𝒓                   𝑬𝒔𝒕𝒊𝒎𝒂𝒕𝒐𝒓
+               1)
+                                                                                                         𝒍𝒐𝒔𝒔𝒆𝒏𝒆𝒓𝒈𝒚 = %      𝑾𝒅𝑽 − %          𝑷 · 𝒖𝒅𝑨
+                            3)                                                                                        𝜴myo         𝜴
+                                                                                                                                       endo
+
+
+
+                                                                                                       𝑺𝒕𝒊𝒇𝒇𝒏𝒆𝒔𝒔                  𝑴𝒂𝒙𝒊𝒎𝒂𝒍 𝑻𝒆𝒏𝒔𝒊𝒐𝒏
+                    … 𝒕
+
+
+
+
+                                                                                                                                      (𝑻𝒎𝒂𝒙 )
+                     →
+
+
+
+
+                                                                                                        (𝑪𝒔𝒕𝒓𝒂𝒊𝒏 )
+                                                                       …
+    3D+t tetrahedral mesh        POD motion basis (𝚿𝒏 ) & amplitude (𝑨𝒏,𝒕 )
+    INPUT: 3D+t myocardium surface mesh                                               OUTPUT: Stiffness (𝑪𝒔𝒕𝒓𝒂𝒊𝒏 ) and Maximal Tension (𝑻𝒎𝒂𝒙 )
+                                                                                                                                   (1-2 minutes)
+
+
+   III. PINN-FE SOLVER                                                                                                       𝑓<=>?@A
+                                                                                                                                      𝑉<=>?@A
+                                                                    Pressure (mmHg)
+
+
+
+
+                                                                                                                             𝑠<=>?@A
+                                                                                                                             𝑛<=>?@A 𝐿𝑎𝑏𝑒𝑙<=>?@A
+                                                                                                                                        𝛻B
+                                                        𝑷𝒕                                                                   𝐴<=>?@A
+                                                                                                                                       𝑻𝒎𝒂𝒙
+        𝑽𝒕                                                                                                                   𝑪𝒔𝒕𝒓𝒂𝒊𝒏
+                     …
+
+                             …
+
+                                          …
+
+
+
+
+                                                                                         Volume (mL)
+
+                                                        𝑨𝟏,𝒕   𝚿𝟏
+                                                                                                                     𝒍𝒐𝒔𝒔
+                                                         …
+
+
+
+
+                                                                                                 𝒖𝒕                  = 𝒘𝟏𝒍𝒐𝒔𝒔𝒆𝒏𝒆𝒓𝒈𝒚 𝑻 + 𝒘𝟐𝒍𝒐𝒔𝒔𝒗𝒐𝒍𝒖𝒎𝒆
+                     …
+
+                                 …
+
+                                           …
+
+
+
+
+         𝒕                                                                                                           + 𝒘𝟑𝒍𝒐𝒔𝒔𝑬𝑫 + 𝒘𝟒𝒍𝒐𝒔𝒔𝑷𝑺
+                                                        𝑨𝒏,𝒕       𝚿𝒏                                                + 𝒘𝟓𝒍𝒐𝒔𝒔𝒅𝒊𝒂 𝒕𝒓𝒆𝒏𝒅 + 𝒘𝟔𝒍𝒐𝒔𝒔𝒔𝒚𝒔 𝒕𝒓𝒆𝒏𝒅
+
+
+                                                                                                                      OUTPUT: Personalized P-V loop,
+   INPUT: Full cycle volumes (from tracking)                                                                          displacement distributions ...
+   and their corresponding time point                                                                                                                   (2-10 minutes)
+
+Figure 3: Workflow of the IMC-PINN-FE framework. I. Deep Learning Motion Tracking: 4D full-cycle cardiac images
+(Echo/MRI) are used to generate myocardial motion meshes via either EFDL (our proposed method, no pre-training
+required) or Co-attention STN (previous SOTA method, pre-training required). II. Myocardial Stiffness and Maximal
+Tension Estimator: Starting from the 3D+t surface mesh, the pipeline includes: (1) tetrahedral meshing via Gmsh; (2)
+preprocessing to define helix angles and the load-free reference state; (3) POD to extract motion bases and amplitudes
+across frames; and (4) personalized estimation of myocardial stiffness (𝐶stiffness ) and maximal active tension (𝑇max ) using
+ED and PS amplitudes. III. Volume-Constrained PINN-FE Solver: Inputs include myocardial volumes and their time points
+(from Section 2.1), sampled uniformly from the cardiac cycle starting at ED. A PINN with MLP architecture predicts LV
+pressure 𝑃𝑡 and motion amplitudes 𝐴𝑛,𝑡 , from which displacement fields 𝑢𝑡 are reconstructed via Eq. 5, enabling personalized
+P–V loop and biomechanical analysis.
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                                                                  Page 11 of 20
+                                                     IMC-PINN-FE
+
+2.3.2. Datasets and Evaluation
+    To evaluate the performance of volume-constrained PINN-FE solver, we conducted the complete procedure of
+IMC-PINN-FE in Fig. 3 to model cardiac biomechanics across the entire cardiac cycle. We compared IMC-PINN-FE
+with the traditional FE simulation and the previously proposed PINN-FE method by Buoso et al. [7]. We assess if the
+simulations can maintain a closeness to the imaged motions, and if they can produce realistic pressure-volume (P-V)
+loops.
+
+    This evaluation was conducted on 6 human cases introduced in Section 3.2, comprising 3 adult cardiac MRI
+cases and 3 fetal echocardiography cases. The ground truth for imaged cardiac motion was defined as 4D LV mesh
+reconstructions propagated across the cardiac cycle using EDFL due to its highest accuracy (see Table 1) without
+requiring a large training dataset.
+
+2.4. Neural Network Architecture
+    For section 2.1, all EFDL experiments were conducted using the NVIDIA Modulus framework [37] (PyTorch
+v1.4.0). The model was trained using a multilayer perceptron (MLP) architecture consisting of 4 layers, each containing
+1024 neurons. All EFDL models were optimized using the Adam optimizer with a learning rate of 0.001 and a decay
+rate of 0.95.
+
+    For section 2.2, both estimators employ a MLP with 3 hidden layers, each containing 32 neurons, and are trained
+to converge by minimizing Eq. 6 to zero. Both estimators were optimized using the AdamW optimizer with a learning
+rate of 0.001.
+
+     For section 2.3, the PINN-FE neural network is configured with 4 hidden layers, each containing 128 neurons, and
+is trained to converge by minimizing Eq. 22. The framework is optimized using the AdamW optimizer with a learning
+rate of 0.0001 and a decay rate of 0.8.
+
+    All models were executed on NVIDIA GeForce RTX 3090 Ti PCIe 3.0 GPUs with 24GB GDDR6X memory.
+
+
+3. Results
+3.1. Performance of EFDL
+    Table 1 presents the quantitative results of different registration methods on the Adult MRI and Fetal Echo datasets.
+The evaluation metrics, DSC and HD, are first averaged over the entire cardiac cycle for each case, and then reported
+as the mean and standard deviation across all cases.
+
+    For the Adult MRI dataset, our EFDL achieves the highest DSC (0.829 ± 0.026) and the lowest HD (4.71 ± 0.17),
+demonstrating superior registration accuracy. Co-attention STN and B-spline Fourier yield comparable performance
+(with DSC differences within 0.014 and HD within 0.19). However, B-spline Fourier requires at least 2.4 times longer
+training time. As for Co-attention STN, although it can be used for inference within a very short time after training,
+it must be retrained when applied to different image type or modality. Such training is time-consuming (Table 1), and
+requires a large dataset with ground truths, which can be cumbersome to prepare. Further, image down-sampling is
+required due to GPU memory constraints, which in turn limits the achievable registration accuracy. On the other hand,
+EFDL does not require lengthy dataset preparation and pre-training, but it requires training for every new subject,
+which is typically within 1.6 hours per case.
+
+   For the Fetal Echo dataset, Co-attention STN achieves the highest DSC and lowest HD. EFDL demonstrates the
+next best performance, with comparable results, achieving a DSC of 0.802 ± 0.030 and an HD of 4.99 ± 0.45.
+
+    Overall, both Co-attention STN and EDFL demonstrate strong performance, each suited to different application
+needs. Co-attention STN, which benefits from extensive pretraining and is tailored for large-scale, single-modality
+images, is a suitable choice when sufficient training data and computational resources are available, as it can give
+real-time results. However, in scenarios of limited data availability, EDFL offers a more practical solution. It has a
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                Page 12 of 20
+                                                                           IMC-PINN-FE
+
+Table 1
+Quantitative comparisons of various 3D cardiac motion estimation techniques on the AdultMRI and FetalEcho datasets.
+Methods marked with * incorporate temporal consistency constraints, while methods marked with † do not need pre-training
+with a large dataset. t denotes the average inference time. The best results are highlighted in red.
+                                          Method                    Dataset            DSC ↑        HD(mm) ↓         t(h) ↓
+                                          No registration            MRI            0.681±0.109     6.61±1.12           -
+                                                                     Echo           0.623±0.120     6.83±1.61           -
+                                          †Elastix                   MRI            0.736±0.112     5.97±1.33          0.4
+                                          [32]                       Echo           0.729±0.108     6.01±1.05          0.4
+                                          †*Bspline Fourier          MRI            0.815±0.030     4.86±0.34          3.9
+                                          [10, 49]                   Echo           0.803±0.008     4.94±0.26          4.0
+                                          VoxelMorph                 MRI            0.766±0.067     5.85±1.10          8.1
+                                          [5]                        Echo           0.703±0.051     6.11±0.96          8.3
+                                          *Co-attentionSTN           MRI            0.817±0.031     4.90±0.22          7.4
+                                          [1]                        Echo           0.804±0.012     4.92±0.19          7.2
+                                          †*EFDL                     MRI            0.829±0.026     4.71±0.17          1.6
+                                                                     Echo           0.802±0.030     4.99±0.45          1.7
+
+
+Table 2
+Testing results of the 𝐶stiffness and 𝑇max estimators across 2 applications on real clinical images and 8 applications
+on FE-simulated validation cases. EDV and ESV are derived from 3D reconstructions from images. For validation
+cases, EDP, PSP, reference 𝐶, and reference 𝑇max are reasonable values assumed in the FE simulations, based on the
+literature [38, 47, 36, 14, 44, 40]. For image tracking cases, they are based on literature values [18, 40, 47, 36, 44, 52]. RE
+denotes the relative error between the predicted values (PINN) and the reference values (literature range or FE settings).
+The prediction time of the network is 63 ± 22 seconds per case.
+                                  EDV      ESV         EDP             PSP          C (kPa)     C (kPa)              Tmax (kPa)         Tmax (kPa)
+    Source           Case                                                                                  RE (%)↓                                            RE (%)↓
+                                  (mL)     (mL)      (mmHg)          (mmHg)         (PINN)    (LITER/FE)              (PINN)           (LITER/FE)
+ Image tracking     Adult-1      120.88    71.31   11.0 [12, 33]   120.0 [12, 33]    0.095      0.1 [44]     5.0       124.8      95-200.7 [47, 36, 14, 44]   within
+     (Real)          Fetal-1       0.41     0.22      5.0 [26]       27.0 [26]       0.094      0.1 [38]     6.0        36.9           23.9-59.2 [40]         within
+                    Adult-2      121.12    60.01        11.0           120.0         0.098        0.1        2.0       103.0               100.3               2.73
+                    Adult-3      135.36    54.23        11.0           120.0         0.095        0.1        5.0       100.3               100.3               0.05
+                     Fetal-2       0.39     0.20         2.0            21.8         0.098        0.1        2.0        28.8                30.0               4.11
+  FE tracking        Fetal-3       0.63     0.28         2.0            32.3         0.101        0.1        1.0        38.8                40.0               3.02
+  (Validation)    PIG-healthy1   30.56     15.18        12.6           85.2          0.089        0.09       1.1        42.7                40.5               5.41
+                  PIG-healthy2   34.42     15.29        10.6           86.2          0.093        0.09       3.3        38.6                40.5               4.62
+                   PIG-LVH1      40.01     26.51        14.3           165.2         0.377         0.4       5.8        60.2                60.0               0.40
+                   PIG-LVH2       55.23    35.34        13.9           178.2         0.409        0.4        2.3        58.6                60.0               2.26
+
+
+
+
+good balance of accuracy and computational efficiency, and can be a good choice in such scenarios. All subsequent
+experiments in this paper are conducted using EDFL as the registration method.
+
+3.2. Performance of 𝐶stiffness and 𝑇max Estimator
+     Table 2 presents the performance of the 𝐶stiffness and 𝑇max estimators on 2 image tracking cases and 8 FE
+simulation tracking cases. For the FE cases, the ground truth reference values for 𝐶stiffness and 𝑇max are those used
+in the FE simulation settings, which are based on [18, 40, 47, 36, 44, 52]. For the image tracking cases, no
+ground truth is available, but the reference values are taken from the values or ranges of values reported in the
+literature [38, 47, 36, 14, 44, 40]. For 𝐶stiffness , we used values from previous FE simulations that successfully replicated
+in vivo cardiac function and that used the same stiffness model as us. For adult 𝑇max , a range of literature is used,
+including those performing inference from medical images and simulations that successfully replicated the cardiac
+function. For fetal 𝑇max , literature on experimental measurements is used.
+
+     For the image tracking cases, the estimated 𝐶stiffness and 𝑇max demonstrate reasonable agreement with these
+literature values, or falls within the literature range. For the FE tracking cases, the estimated 𝐶stiffness and 𝑇max show
+strong agreement with the reference values, exhibiting relatively low relative error (RE) across different subject groups.
+The RE for both 𝐶stiffness and 𝑇max remains below 6.0% in all adult, fetal, and pig FE cases, indicating reasonable
+predictive performance across a range of physiological conditions.
+
+    Compared to the traditional approach of performing iterative FE simulations to back-compute 𝐶stiffness and 𝑇max ,
+our PINN estimators achieve a tremendous reduction in computational time. A typical iterative FE simulation requires
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                                                        Page 13 of 20
+                                                      IMC-PINN-FE
+
+several hours for a single iteration (and one case usually requires multiple iterations for converging), whereas our
+network completes the estimation in 63 ± 22 seconds per case.
+
+   Overall, the results demonstrate the reasonable accuracy of our 𝐶stiffness and 𝑇max estimators, along with a significant
+reduction in computational cost compared to the traditional iterative FE approach, highlighting the potential of IMC-
+PINN-FE as a real-time and clinically adoptable solution for biomechanical parameter estimation.
+
+3.3. Performance of PINN-FE solver
+3.3.1. Results of P-V loop
+    In this section, we compare the P–V loops obtained from whole cardiac cycle simulations, using the PINN-FE
+solver (III of IMC-PINN-FE), the traditional volume-constrained FE model, a state-of-the-art past LV PINN-FE
+implementation by Buoso et. al. [7], and a fixed image tracking approach. Two representative image cases are used for
+this (Adult-2 and Fetal-2).
+
+    IMC-PINN-FE and volume-constrained FE simulations are conducted as described in the methods section. The
+fixed image tracking method is essentially IMC-PINN-FE but where input displacement fields are fixed as obtained
+from the images, and are not subject to optimization. A neural network is trained solely to fit pressure values at each
+time point, using the fixed displacements (represented by motion mode amplitudes) as input. The loss function follows
+the same formulation as IMC-PINN-FE (Eq. 22), except that the volume constraint term (lossvolume ) is excluded, since
+volume is already determined by the fixed displacements. This design isolates the pressure fitting process, allowing
+us to assess whether the unmodified image-derived motion fields, assumed to be error free, can satisfy the physical
+energy balance, and evaluates whether imaged displacements are consistent with biophysics.
+
+    Buoso et. al.’s PINN-FE adopts a PINN framework that predicts myocardial motion from pressure and active
+tension inputs. Unlike our method, which uses patient-specific motion fields to encode shape modes, Buoso et. al. uses
+multi-subject dataset and inter-patient shape variability to encode shape modes, and we use their published modes for
+implementing their approach. For inference, Buoso et. al. uses pressure and active tension waveforms derived from a
+Windkessel model to generate myocardial deformation over the cardiac cycle. At present, we have not implemented
+a Windkessel model for IMC-PINN-FE, but relies on imaged LV volumes rather than Windkessel computations as
+inputs. To enable comparisons between the two methods, we amended Buoso et. al.’s code to exclude the Windkessel
+model, using the FE simulation pressures instead of pressure from the Windkessel model as inputs.
+
+   The results are shown in Fig. 4. In both image cases, IMC-PINN-FE achieves P–V loops (blue) that are
+nearly identical to those obtained from the traditional volume-constrained FE simulations (orange), suggesting that
+IMC-PINN-FE effectively integrated biomechanics principles despite maintaining effective data-driven constraints.
+Meanwhile, IMC-PINN-FE also enables better match with imaged motion fields, as will be demonstrated in
+Section 3.3.2.
+
+   In contrast, the fixed image tracking approach (gray) shows clear deviations, particularly in the systolic phase,
+where it significantly underestimates pressure compared to traditional FE. This discrepancy arises because the network,
+constrained by fixed displacements, cannot adjust myocardial motion during training to minimize both the PS pressure
+control loss (Eq. 20) and the energy balance loss (Eq. 18), leading to poor pressure estimates. This highlights the
+importance of allowing the optimization of the imaged motions instead of directly adopting them, and that errors in
+image-derived displacements can lead to inconsistency with biophysics laws, and must be mitigated.
+
+    The loss component comparisons among IMC-PINN-FE, traditional volume-constrained FE, and fixed image
+tracking are presented in supplementary S3. The results demonstrate that IMC-PINN-FE consistently achieves low
+physics losses, comparable to the FE baseline, and substantially lower than those of Fixed Tracking, which has
+considerable physical inconsistencies in pressure regulation and energy accumulation.
+
+    The PINN-FE model proposed by Buoso et al. [7] also exhibits discrepancies compared to the traditional FE
+reference P–V loop, particularly in the systolic volumes, which often deviate from the FE references. These deviations
+arise from the absence of explicit volume constraints to match the imaged volumes, and from the use of an algorithm to
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                 Page 14 of 20
+                                                      IMC-PINN-FE
+
+  1）                                                           2）
+
+
+
+
+Figure 4: P–V loop evaluation for (1) adult-2 and (2) fetal-2 cases, comparing IMC-PINN-FE, FE simulation, fixed image
+tracking, and Buoso et al.’s PINN-FE [7]. Blue represents the P–V loop predicted by IMC-PINN-FE, orange represents the
+P–V loop from FE simulation, gray represents the P–V loop generated by fixed displacements from image tracking, and
+red represents the P–V loop predicted by Buoso et al.’s PINN-FE [7].
+
+
+
+construct the isovolumetric phases despite deviations from the measured volumes (i.e., a pressure adjustment scheme
+that iteratively updates the pressure during the isovolumetric phases toward the target volumes). While this method
+facilitates the generation of smooth and plausible curves, it introduces artificial vertical truncations in the P–V loop and
+reduces adaptability to subject-specific variations. In contrast, IMC-PINN-FE simultaneously optimizes both pressure
+through physics-based constraints, and displacements under volume constraints, enabling a more faithful reproduction
+of subject-specific P–V dynamics and better alignment with the imaged myocardial motion. However, since smoothing
+during image motion tracking removed constant volume features from the volume versus time curve, IMC-PINN-FE
+has the limitation of not explicitly demonstrating the isovolumetric phases.
+
+3.3.2. Results of Geometric Deformation Accuracy
+    Fig. 5 presents box plots of DSC evaluation over 20 uniformly sampled time frames across the cardiac cycle for each
+of the 6 cases. DSC quantifies the spatial overlap between the predicted 3D LV shapes (from PINN or FE simulations)
+and the image-derived ground truth (obtained via segmentation and EFDL motion tracking).
+
+    Across all cases, IMC-PINN-FE (blue) consistently achieves the highest DSC values (0.927 ± 0.039 across all
+6 cases), demonstrating superior shape reconstruction accuracy and robustness. Traditional FE simulations (orange)
+show moderate performance, with wider spreads and lower medians, indicating greater deviation from image-derived
+shapes. Buoso et al.’s PINN-FE [7] (red) yields the lowest DSC values overall, with large variability and systematic
+underperformance across both adult and fetal cases. This reflects its limited capability for patient-specific shape
+recovery, due to reliance on generic shape modes and the absence of image-based constraints.
+
+    These findings are further illustrated in Fig. 6, which presents pointwise deformation error maps at five
+representative time points throughout the cardiac cycle for the Adult-3 case. The color encodes the magnitude of
+displacement error relative to the image-derived tracking, with red indicating large errors and blue indicating small
+errors. Traditional FE shows substantial errors, particularly near the apex, where longitudinal motion is overestimated.
+The method by Buoso et al. exhibits even greater discrepancies from the ground truth, with widespread spatial errors
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                  Page 15 of 20
+                                                        IMC-PINN-FE
+
+                       1.00
+
+                       0.90
+
+                       0.80
+
+                       0.70
+                 DSC
+
+
+
+
+                       0.60
+
+                       0.50
+                                                                                  IMC-PINN-FE
+                                                                                  FE
+                                                                                  PINN-FE by Buoso, et al
+                       0.40
+                              Adult-1         Adult-2   Adult-3   Fetal-1     Fetal-2         Fetal-3
+Figure 5: Box plots of DSC evaluation (20 uniformly sampled frames across the cardiac cycle for each of the 6 cases),
+comparing LV geometries from IMC-PINN-FE, traditional FE, and Buoso et al.’s PINN-FE [7] against image-derived results.
+Orange indicates the DSC between FE outputs and image tracking, blue indicates IMC-PINN-FE vs. image tracking, and
+red indicates Buoso et al.’s PINN-FE vs. image tracking.
+
+
+
+across the myocardium. In contrast, IMC-PINN-FE consistently achieves the lowest deformation errors across the
+cycle, closely matching the image-derived motion.
+
+    This discrepancy stems from the lack of constraints to enforce a match of simulated cardiac motions to motions
+observed in the medical images. The traditional FE modeling generates deterministic solutions based on predefined
+material properties and boundary conditions, and to enable accurate replication of patient-specific dynamics typically
+requires extensive manual tuning of such input parameters. As for the PINN method by Buoso et al. [7], on top of not
+enfocing a match with imaged motions, its motion modes are not obtained from individual-specific dynamics, which
+may contribute further to mismatch with imaged motions. In contrast, IMC-PINN-FE integrates physics-informed
+constraints with image-derived priors, enabling the model to adapt to personalized motion patterns and produce
+deformation fields that are both data-consistent and physiologically realistic.
+
+3.3.3. Comparison of Computational Efficiency
+    In addition to its better motion accuracy, IMC-PINN-FE offers significant advantages in computational efficiency.
+The average runtime for IMC-PINN-FE PINN-FE solver (excluding motion tracking) is 5 minutes and 53 seconds (±
+193 seconds), while the traditional volume-controlled FE method requires 7 hours and 24 minutes (± 15 minutes),
+for a single cardiac cycle with a 1 ms time step. This corresponds to a nearly 75-fold reduction in computation time,
+demonstrating the scalability of IMC-PINN-FE for large-scale cardiac simulations.
+
+    Compared to Buoso et al’s PINN-FE [7], which requires 2 minutes and 20 seconds (± 23 seconds) for training for
+a similar resolution and using the same hardware, IMC-PINN-FE is moderately slower. However, this modest increase
+in runtime enables direct integration of patient-specific displacement data and volume constraints, which substantially
+improves the fidelity to imaged cardiac motion. Thus, IMC-PINN-FE is the balanced compromise between accuracy
+and efficiency.
+
+
+4. Discussion and Conclusion
+4.1. Discussion
+    In this study, we introduced IMC-PINN-FE, a novel PINN framework that integrates image motion consistency with
+biomechanical modeling for patient-specific LV FE simulations. Our method effectively addresses the limitations of
+traditional FE models and existing PINN-based approaches, which often fail to sufficiently adhere to imaged motion and
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                 Page 16 of 20
+                                                    IMC-PINN-FE
+
+                                 End-Diastole → End-Systole → End-Diastole
+ IMC-PINN-FE
+
+
+
+
+                                                                                                                   Error (mm)
+ FE
+ PINN by Buoso, et al
+
+
+
+
+Figure 6: Pointwise deformation error maps across different time points throughout the cardiac cycle (Adult-3). Each row
+corresponds to a different method: IMC-PINN-FE, traditional FE, and Buoso et al.’s PINN-FE [7]. Color encodes the
+magnitude of pointwise error with respect to the image-derived motion (contour).
+
+
+
+lack physics-based estimation of myocardial stiffness and contractile function. The proposed framework is applicable
+to both MRI and echocardiography data. In essence, it enhances the fidelity to imaged motion by incorporating physics
+constraints to derive more biophysically accurate myocardial dynamics.
+
+     In our experiments, we further observed that using shape modes for motion encoding improves convergence,
+whereas unencoded node-wise PINN-FE methods such as [35] often suffer from convergence issues when applied
+to patient-specific rather than idealized geometries. The use of shape modes also significantly enhances computational
+efficiency and reduces training time. For this reason, we adopted a reduced-order, motion-encoded PINN approach.
+
+    Compared to other reduced-order PINN frameworks, IMC-PINN-FE encodes motion based on patient-specific
+cardiac dynamics, rather than relying on inter-subject geometric variability from large multi-subject datasets. This
+strategy may improve patient specificity and eliminates the need for extensive training datasets with ground-truth
+reconstructions, which are often difficult to obtain in clinical settings.
+
+    Consequent to the reduced-order modeling, our approach offers substantial computational advantages, reducing
+simulation time from over 7 hours with traditional iterative FE models to under 10 minutes with IMC-PINN-FE,
+thereby improving its feasibility for clinical adoption. This efficiency also makes it feasible for IMC-PINN-FE to
+support high throughput applications, such as building large simulation database for deep learning training, or for
+large sample clinical testing.
+
+
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                               Page 17 of 20
+                                                                  IMC-PINN-FE
+
+    In terms of performance, our framework enables robust and efficient training by integrating image-informed
+constraints with physics-based governing equations. The inference results demonstrate high geometric accuracy (DSC:
+0.927 ± 0.039) for image-derived LV shapes, while maintaining physiological consistency in the predicted P–V
+loops. Furthermore, the biomechanical parameter estimation component yields reliable personalized predictions of
+myocardial stiffness and active tension, with relative errors of 2.81 ± 1.64% for 𝐶stiffness and 2.82 ± 1.79% for 𝑇max .
+
+    Although IMC-PINN-FE uses the same equation systems as traditional FE modeling, it yields different results with
+a better match to imaged motion, and yet produces a very similar P-V loop. This apparent discrepancy can be explained
+by the range of solution that are possible to the FE governing equations, and the difficult in establishing a uniqueness
+of solution with the large degree of freedom. Essentially, IMC-PINN-FE is able to find another displacement solution
+that is close to the imaged motions but which still conforms to the physics equations. The key to enabling this is to
+not directly constrain IMC-PINN-FE to the imaged displacement fields, in line with the understanding that motion
+extraction from images has errors, but to allow it to have some deviations and space to finds the closest solution
+conforming to both motion and physics constraints. Overall, IMC-PINN-FE offers an accurate and data-efficient
+alternative to conventional FE methods, which are typically time-consuming.
+
+4.2. Limitations and Future Work
+    Despite the promising performance of IMC-PINN-FE, several limitations remain. A primary limitation is the
+framework’s dependency on image quality and tracking accuracy. Since the motion modes in IMC-PINN-FE are
+derived from image tracking, inaccuracies or noise in the tracking process can directly affect the reliability of
+the estimated myocardial motion. This issue warrants further investigation. In addition, incorporating uncertainty
+quantification techniques could help assess the confidence of predictions under varying image qualities and tracking
+conditions, thereby improving model robustness.
+
+   Another current limitation is the lack of integration with a Windkessel model, although this can be readily
+addressed in future work. Moreover, the process of selecting temporal resolution could be refined through adaptive
+sampling strategies, with the goal of optimizing computational efficiency while preserving accuracy. In the current
+implementation, frames are uniformly sampled at a fixed interval of 1 ms, but this setting can be adjusted in future
+work to focus sampling on periods of high motion complexity or uncertainty.
+
+
+Acknowledgment
+   This work was supported by a PhD studentship funded by Imperial College London. Additional support was
+provided by the Additional Ventures Single Ventricle Research Fund #1019496.
+
+
+References
+ [1] Ahn, S.S., Ta, K., Thorn, S.L., Onofrey, J.A., Melvinsdottir, I.H., Lee, S., Langdon, J., Sinusas, A.J., Duncan, J.S., 2023. Co-attention spatial
+     transformer network for unsupervised motion tracking and cardiac strain analysis in 3d echocardiography. Medical image analysis 84, 102711.
+ [2] Arts, T., Reneman, R.S., Veenstra, P.C., 1979. A model of the mechanics of the left ventricle. Annals of biomedical engineering 7, 299–318.
+ [3] Avril, S., 2023. Inverse problems in the characterization of soft connective tissue: perspective for reproduction system, in: Biomechanics of
+     the Female Reproductive System: Breast and Pelvic Organs. Elsevier, pp. 115–138.
+ [4] Aydin, O.U., Taha, A.A., Hilbert, A., Khalil, A.A., Galinovic, I., Fiebach, J.B., Frey, D., Madai, V.I., 2021. On the usage of average hausdorff
+     distance for segmentation performance assessment: hidden error when used for ranking. European radiology experimental 5, 1–7.
+ [5] Balakrishnan, G., Zhao, A., Sabuncu, M.R., Guttag, J., Dalca, A.V., 2019. Voxelmorph: a learning framework for deformable medical image
+     registration. IEEE transactions on medical imaging 38, 1788–1800.
+ [6] Bernard, O., Lalande, A., Zotti, C., Cervenansky, F., Yang, X., Heng, P.A., Cetin, I., Lekadir, K., Camara, O., Gonzalez Ballester, M.A.,
+     Sanroma, G., Napel, S., Petersen, S., Tziritas, G., Grinias, E., Khened, M., Kollerathu, V.A., Krishnamurthi, G., Rohé, M.M., Pennec, X.,
+     Sermesant, M., Isensee, F., Jäger, P., Maier-Hein, K.H., Full, P.M., Wolf, I., Engelhardt, S., Baumgartner, C.F., Koch, L.M., Wolterink,
+     J.M., Išgum, I., Jang, Y., Hong, Y., Patravali, J., Jain, S., Humbert, O., Jodoin, P.M., 2018. Deep learning techniques for automatic mri
+     cardiac multi-structures segmentation and diagnosis: Is the problem solved? IEEE Transactions on Medical Imaging 37, 2514–2525.
+     doi:10.1109/TMI.2018.2837502.
+ [7] Buoso, S., Joyce, T., Kozerke, S., 2021. Personalising left-ventricular biophysical models of the heart using parametric physics-informed
+     neural networks. Medical Image Analysis 71, 102066.
+ [8] Buoso, S., Manzoni, A., Alkadhi, H., Plass, A., Quarteroni, A., Kurtcuoglu, V., 2019. Reduced-order modeling of blood flow for noninvasive
+     functional evaluation of coronary artery disease. Biomechanics and modeling in mechanobiology 18, 1867–1881.
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                                         Page 18 of 20
+                                                                   IMC-PINN-FE
+
+ [9] Burkhoff, D., Mirsky, I., Suga, H., 2005. Assessment of systolic and diastolic ventricular properties via pressure-volume analysis: a guide for
+     clinical, translational, and basic researchers. American Journal of Physiology-Heart and Circulatory Physiology .
+[10] Chan, W.X., Zheng, Y., Wiputra, H., Leo, H.L., Yap, C.H., 2021. Full cardiac cycle asynchronous temporal compounding of 3d
+     echocardiography images. Medical Image Analysis 74, 102229.
+[11] Di Achille, P., Harouni, A., Khamzin, S., Solovyova, O., Rice, J.J., Gurev, V., 2018. Gaussian process regressions for inverse problems and
+     parameter searches in models of ventricular mechanics. Frontiers in physiology 9, 1002.
+[12] Fowler, N.O., 1980. Cardiac Diagnosis and Treatment. 3 ed., JB Lippincott, Philadelphia.
+[13] Gao, H., Carrick, D., Berry, C., Griffith, B.E., Luo, X., 2014. Dynamic finite-strain modelling of the human left ventricle in health and disease
+     using an immersed boundary-finite element method. IMA journal of applied mathematics 79, 978–1010.
+[14] Gao, H., Griffith, B., Carrick, D., McComb, C., Berry, C., Luo, X., 2013. Electro-mechanical modelling of in-vivo human left ventricle.
+     Journal of Electrocardiology 46, e26.
+[15] Genet, M., Stoeck, C.T., von Deuster, C., Lee, L.C., Kozerke, S., 2018. Equilibrated warping: Finite element image registration with finite
+     strain equilibrium gap regularization. Medical image analysis 50, 1–22.
+[16] Geuzaine, C., Remacle, J.F., 2009. Gmsh: A 3-d finite element mesh generator with built-in pre-and post-processing facilities. International
+     journal for numerical methods in engineering 79, 1309–1331.
+[17] Green, L., Chan, W.X., Prakash, I., Tulzer, A., Tulzer, G., Yap, C.H., 2024a. Pre-intervention myocardial stress is a good predictor of aortic
+     valvuloplasty outcome for fetal critical aortic stenosis and evolving hlhs. The Journal of Physiology 602, 663–681.
+[18] Green, L., Chan, W.X., Ren, M., Mattar, C.N.Z., Lee, L.C., Yap, C.H., 2023. The dependency of fetal left ventricular biomechanics function
+     on myocardium helix angle configuration. Biomechanics and Modeling in Mechanobiology 22, 629–643.
+[19] Green, L., Chan, W.X., Tulzer, A., Tulzer, G., Yap, C.H., 2024b. Myocardial biomechanical effects of fetal aortic valvuloplasty. Biomechanics
+     and Modeling in Mechanobiology 23, 1433–1448.
+[20] Guccione, J.M., McCulloch, A.D., Waldman, L., 1991. Passive material properties of intact ventricular myocardium determined from a
+     cylindrical model .
+[21] Hasan, M.K., Luo, Y., Yang, G., Yap, C.H., 2025. Feedback attention to enhance unsupervised deep learning image registration in 3d
+     echocardiography. IEEE Transactions on Medical Imaging doi:10.1109/TMI.2025.3530501.
+[22] Heyde, B., Claus, P., Jasaityte, R., Barbosa, D., Bouchez, S., Vandenheuvel, M., Wouters, P., Maes, F., D’hooge, J., 2012. Motion and
+     deformation estimation of cardiac ultrasound sequences using an anatomical B-spline transformation model, in: 2012 9th IEEE International
+     Symposium on Biomedical Imaging (ISBI), IEEE, Barcelona, Spain. pp. 266–269. doi:10.1109/ISBI.2012.6235535.
+[23] Horn, B.K., Schunck, B.G., 1981. Determining optical flow. Artificial intelligence 17, 185–203.
+[24] Hurtado, D.E., Villarroel, N., Retamal, J., Bugedo, G., Bruhn, A., 2015. Improving the accuracy of registration-based biomechanical analysis:
+     a finite element approach to lung regional strain quantification. IEEE Transactions on Medical Imaging 35, 580–588.
+[25] Ilesanmi, A.E., Ilesanmi, T.O., Ajayi, B.O., 2024. Reviewing 3d convolutional neural network approaches for medical image segmentation.
+     Heliyon .
+[26] Johnson, P., Maxwell, D., Tynan, M., Allan, L., 2000. Intracardiac pressures in the human fetus. Heart 84, 59–63.
+[27] Klein, S., Staring, M., Murphy, K., Viergever, M.A., Pluim, J.P., 2009. Elastix: a toolbox for intensity-based medical image registration. IEEE
+     transactions on medical imaging 29, 196–205.
+[28] Lee, S., Wolberg, G., Shin, S., 1997. Scattered data interpolation with multilevel b-splines. IEEE Transactions on Visualization and Computer
+     Graphics 3, 228–244. doi:10.1109/2945.620490.
+[29] Luo, Y., Sesia, D., Wang, F., Wu, Y., Ding, W., Huang, J., Shi, F., Shah, A., Kaural, A., Mayet, J., Yang, G., Yap, C., 2024. Explicit differentiable
+     slicing and global deformation for cardiac mesh reconstruction. URL: https://arxiv.org/abs/2409.02070, arXiv:2409.02070.
+[30] Mancinelli, C., Livesu, M., Puppo, E., 2019. A comparison of methods for gradient field estimation on simplicial meshes. Computers &
+     Graphics 80, 37–50.
+[31] Manzoni, A., Quarteroni, A., Rozza, G., 2012. Model reduction techniques for fast blood flow simulation in parametrized geometries.
+     International journal for numerical methods in biomedical engineering 28, 604–625.
+[32] Marstal, K., Berendsen, F., Staring, M., Klein, S., 2016. Simpleelastix: A user-friendly, multi-lingual library for medical image registration,
+     in: Proceedings of the IEEE conference on computer vision and pattern recognition workshops, pp. 134–142.
+[33] Merck Manuals Professional Version, 2025. Normal pressures in the heart and great vessels. URL: https://www.merckmanuals.com/
+     professional/multimedia/table/normal-pressures-in-the-heart-and-great-vessels. accessed: 2025-05-11.
+[34] MOOSE Framework, 2025.                   Strain energy density.          URL: https://mooseframework.inl.gov/source/materials/
+     StrainEnergyDensity.html. accessed: 2025-02-24.
+[35] Motiwale, S., Zhang, W., Feldmeier, R., Sacks, M.S., 2024. A neural network finite element approach for high speed cardiac mechanics
+     simulations. Computer Methods in Applied Mechanics and Engineering 427, 117060.
+[36] Müller, A., Kovacheva, E., Schuler, S., Dössel, O., Baron, L., 2018. Effects of local activation times on the tension development of human
+     cardiomyocytes in a computational model. Current Directions in Biomedical Engineering 4, 247–250.
+[37] NVIDIA Modulus Team, 2023. Nvidia modulus. Computer Software. URL: https://github.com/NVIDIA/modulus/tree/main.
+[38] Ong, C.W., Ren, M., Wiputra, H., Mojumder, J., Chan, W.X., Tulzer, A., Tulzer, G., Buist, M.L., Mattar, C.N.Z., Lee, L.C., et al., 2021.
+     Biomechanics of human fetal hearts with critical aortic stenosis. Annals of biomedical engineering 49, 1364–1379.
+[39] Quarteroni, A., Rozza, G., 2007. Numerical solution of parametrized navier–stokes equations by reduced basis methods. Numerical methods
+     for partial differential equations: an international journal 23, 923–948.
+[40] Racca, A.W., Klaiman, J.M., Pioner, J.M., Cheng, Y., Beck, A.E., Moussavi-Harami, F., Bamshad, M.J., Regnier, M., 2016. Contractile
+     properties of developing human fetal cardiac muscle. The Journal of physiology 594, 437–452.
+[41] Raissi, M., Perdikaris, P., Karniadakis, G.E., 2019. Physics-informed neural networks: A deep learning framework for solving forward and
+     inverse problems involving nonlinear partial differential equations. Journal of Computational physics 378, 686–707.
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                                             Page 19 of 20
+                                                                  IMC-PINN-FE
+
+[42] Rowley, C.W., 2005. Model reduction for fluids, using balanced proper orthogonal decomposition. International Journal of Bifurcation and
+     Chaos 15, 997–1013.
+[43] Salih, A., Hamandi, F., Goswami, T., 2024. Advancements in finite element modeling for cardiac device leads and 3d heart models.
+     Bioengineering 11, 564.
+[44] Shavik, S.M., Jiang, Z., Baek, S., Lee, L.C., 2018. High spatial resolution multi-organ finite element modeling of ventricular-arterial coupling.
+     Frontiers in physiology 9, 119.
+[45] Van Heerden, I., Fossey, A., Booysen, G.J., 2018. 3d digital geometry designs for poland’s syndrome using magics and geomagic® freeform®.
+     Rapid Prototyping Journal 24, 229–236.
+[46] Wang, V., Nielsen, P., Nash, M., 2015. Image-based predictive modeling of heart mechanics. Annual review of biomedical engineering 17,
+     351–383.
+[47] Wang, V.Y., Lam, H.I., Ennis, D.B., Cowan, B.R., Young, A.A., Nash, M.P., 2010. Cardiac active contraction parameters estimated from
+     magnetic resonance imaging, in: Statistical Atlases and Computational Models of the Heart: First International Workshop, STACOM 2010,
+     and Cardiac Electrophysiological Simulation Challenge, CESC 2010, Held in Conjunction with MICCAI 2010, Beijing, China, September 20,
+     2010. Proceedings 1, Springer. pp. 194–203.
+[48] Wenk, J.F., Klepach, D., Lee, L.C., Zhang, Z., Ge, L., Tseng, E.E., Martin, A., Kozerke, S., Gorman III, J.H., Gorman, R.C., et al., 2012. First
+     evidence of depressed contractility in the border zone of a human myocardial infarction. The Annals of thoracic surgery 93, 1188–1193.
+[49] Wiputra, H., Chan, W.X., Foo, Y.Y., Ho, S., Yap, C.H., 2020. Cardiac motion estimation from medical images: a regularisation framework
+     applied on pairwise image registration displacement fields. Scientific reports 10, 18510.
+[50] Wiputra, H., Lai, C.Q., Lim, G.L., Heng, J.J.W., Guo, L., Soomar, S.M., Leo, H.L., Biwas, A., Mattar, C.N.Z., Yap, C.H., 2016. Fluid
+     mechanics of human fetal right ventricles from image-based computational fluid dynamics using 4d clinical ultrasound scans. American
+     Journal of Physiology-Heart and Circulatory Physiology 311, H1498–H1508.
+[51] Zhang, Y., Wang, V.Y., Morgan, A.E., Kim, J., Ge, L., Guccione, J.M., Weinsaft, J.W., Ratcliffe, M.B., 2020. A novel mri-based finite element
+     modeling method for calculation of myocardial ischemia effect in patients with functional mitral regurgitation. Frontiers in physiology 11,
+     158.
+[52] Zheng, Y., Chan, W.X., Charles, C.J., Richards, A.M., Lee, L.C., Leo, H.L., Yap, C.H., 2022. Morphological, functional, and biomechanical
+     progression of lv remodelling in a porcine model of hfpef. Journal of biomechanics 144, 111348.
+
+
+
+
+S.Mu et al.: Preprint submitted to Elsevier                                                                                         Page 20 of 20
+

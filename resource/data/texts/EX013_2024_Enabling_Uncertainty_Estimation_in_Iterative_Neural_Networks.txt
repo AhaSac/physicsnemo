@@ -1,0 +1,1232 @@
+                                                       Enabling Uncertainty Estimation in Iterative Neural Networks
+
+
+                                                               Nikita Durasov 1 Doruk Oner 1 Jonathan Donier 2 Hieu Le 1 Pascal Fua 1
+
+                                                                                                                              Iteration #1   Iteration #2   Iteration #3
+                                                                  Abstract                                                                                                 Uncertainty
+
+
+                                              Turning pass-through network architectures into
+                                              iterative ones, which use their own output as in-
+arXiv:2403.16732v3 [cs.AI] 25 May 2025
+
+
+
+
+                                              put, is a well-known approach for boosting perfor-
+                                              mance. In this paper, we argue that such architec-                   Low Uncertainty
+                                                                                                                                                                            Variance
+                                              tures offer an additional benefit: The convergence
+                                              rate of their successive outputs is highly corre-                               Iteration #1   Iteration #2   Iteration #3
+
+                                              lated with the accuracy of the value to which they
+                                              converge. Thus, we can use the convergence rate
+                                              as a useful proxy for uncertainty. This results in
+                                              an approach to uncertainty estimation that pro-
+                                              vides state-of-the-art estimates at a much lower                     High Uncertainty
+                                                                                                                                                                            Variance
+
+                                              computational cost than techniques like Ensem-                    Figure 1. Uncertainty in recursive models. Such models use their
+                                              bles, and without requiring any modifications to                  initial predictions as inputs to produce subsequent predictions. We
+                                              the original iterative model. We demonstrate its                  display the output of three consecutive iterations of a network
+                                              practical value by embedding it in two application                trained to compute distance maps to road pixels. (Top:) All roads
+                                              domains: road detection in aerial images and the                  are clearly visible. The three maps are similar and the per pixel
+                                              estimation of aerodynamic properties of 2D and                    variance is low. (Bottom:) The road in the red square is tree-
+                                              3D shapes.                                                        covered. It is eventually detected properly but the variance is high.
+
+                                                           poster / code / web
+                                                                                                                performance over non-iterative methods using the same net-
+                                                                                                                work architectures (Shen et al., 2017; Zhang et al., 2018b;
+                                         1. Introduction                                                        Wang et al., 2019; Oner et al., 2021; 2022), while requir-
+                                         It has long been known that using deep networks to recur-              ing less labeled data for training purposes (Mosińska et al.,
+                                         sively refine predictions is often beneficial. This has been           2018). In essence, giving a previous output as input to the
+                                         demonstrated for semantic segmentation (Zhou et al., 2018;             network sets up a virtuous circle in which the model receives
+                                         Wang et al., 2019), pose estimation (Newell et al., 2016),             relevant spatial attention signals that serve as priors and help
+                                         depth estimation (Zhang et al., 2018a), multi-task learn-              generate improved predictions. For example, in the road de-
+                                         ing (Xu et al., 2018), delineation (Mosińska et al., 2018),           lineation example of Fig. 1, the presence of road fragments
+                                         natural language processing (Vaswani et al., 2017; Devlin              with gaps in them cues the network to the possible existence
+                                         et al., 2018), among others. Given a network f parame-                 of connecting segments. These ideas been explored before
+                                         terized by weights Θ and takes as input a vector x, which              the advent of Deep Learning, for example using Tensor Vot-
+                                         can represent an image or a text, and produces an output               ing (Medioni et al., 2000), but incorporating them into deep
+                                         y, the output of the recursion’s ith iteration can be writ-            networks has given them a new lease on life.
+                                         ten as yi = fΘ (x, yi−1 ), where yi−1 is the output of the             The key insight of this paper is that how fast this refinement
+                                         previous iteration. This recursion often yields improved               occurs is closely connected to the accuracy of the prediction.
+                                            This work was supported in part by the Swiss National Science       A hard sample typically requires more refinement iterations
+                                         Foundation. 1 Computer Vision Laboratory, École Polytechnique         than an easy one. Thus, convergence speed can be used as a
+                                         Fédérale de Lausanne, Lausanne, Switzerland 2 Neural Concept         proxy for certainty. This yields an approach to uncertainty
+                                         SA, Lausanne, Switzerland. Correspondence to: Nikita Durasov           estimation that is on par with Deep Ensembles (Lakshmi-
+                                         <yassnda@gmail.com>.                                                   narayanan et al., 2017), while delivering increased accuracy
+                                         Proceedings of the 41 st International Conference on Machine           at a much lower computational cost and without requiring
+                                         Learning, Vienna, Austria. PMLR 235, 2024. Copyright 2024 by           any modifications to the original iterative model. This makes
+                                         the author(s).                                                         our approach practical and easy to deploy across many dif-
+
+                                                                                                            1
+                                 Enabling Uncertainty Estimation in Iterative Neural Networks
+
+ferent applications. This is significant because Ensembles            single one and of performing several forward passes at infer-
+is often considered to be one of the very best uncertainty            ence time. One of the active research directions is reducing
+estimation methods whose only severe drawback is its high             the training and inference time of ensembling methods, as
+computational cost.                                                   well as their memory requirements. For example, Antorán
+                                                                      et al. (2020) try to emulate ensemble predictions by produc-
+More specifically, we derive uncertainty measures by ana-
+                                                                      ing several outputs based on features at different levels of
+lyzing the variance in outputs from consecutive iterations of
+                                                                      the model, and Daxberger et al. (2021) perform Bayesian
+an iterative model, where higher variance indicates greater
+                                                                      inference only on a subset of the model’s weights chosen
+uncertainty. We demonstrate that this is fast, accurate, and
+                                                                      through a pruning-like procedure.
+easy to deploy in two very different application domains,
+road detection in aerial images and the estimation of aero-           Among the other techniques, MC-Dropout involves ran-
+dynamic properties of 2D and 3D shapes. These two appli-              domly zeroing out network weights and assessing the effect
+cations feature unique sets of challenges, which underscore           and is popular due to its lower computational cost. Un-
+the versatility and broad applicability of our approach.              fortunately, its estimates remain less reliable than those of
+                                                                      Deep Ensembles (Ashukha et al., 2020), even though there
+Our contributions are as follows:
+                                                                      has been recent attempts at improving it (Wen et al., 2020;
+                                                                      Durasov et al., 2021). Similarly, Bayesian Networks rarely
+   • We introduce an effective method for estimating un-
+                                                                      outperform Deep Ensembles (Blundell et al., 2015; Graves,
+     certainty in iterative models. It relies on consistency
+                                                                      2011; Hernández-Lobato & Adams, 2015; Kingma et al.,
+     across consecutive predictions and does not require
+                                                                      2015).
+     modifying the network architectures.
+                                                                      All the above methods are sampling-based and require sev-
+   • We provide extensive experiments and analyses to                 eral forwards passes at inference time. Thus, when a fast
+     demonstrate the correctness and effectiveness of the             response time is required, as in robotics control, sampling-
+     proposed method. In particular, we show that going               free approaches with single-pass inference become of in-
+     from a toy example to our two complex real-world sce-            terest. However, deploying them often requires significant
+     narios, there remains a consistent correlation between           modifications to the network’s architecture (Postels et al.,
+     convergence speed and prediction accuracy.                       2019), substantial changes to the training procedures (Ma-
+   • Our method, once embedded in a Bayesian Optimiza-                linin & Gales, 2018), limiting their application to very spe-
+     tion framework, delivers state-of-the-art accuracy and           cific tasks (Amersfoort et al., 2020; Malinin & Gales, 2018;
+     predictive uncertainty quantification in both road detec-        Mukhoti et al., 2021), or reducing the quality of the uncer-
+     tion from aerial images and 2D/3D shape optimization.            tainty estimate (Postels et al., 2022; Ashukha et al., 2020).
+                                                                      As a result, they have not gained as much traction as MC-
+The code will be made publicly available.                             Dropout and Ensembles.
+
+                                                                      2.2. Iterative Refinement Methods
+2. Related Work
+                                                                      Iterative refinement techniques have been for many differ-
+2.1. Uncertainty Estimation                                           ent purposes (Mnih & Hinton, 2010; Pinheiro & Collobert,
+Uncertainty Estimation (UE) aims at accurately evaluat-               2014; Tu & Bai, 2009; Shen et al., 2017). This incorporates
+ing the reliability of a model’s predictions. Deep Ensem-             surrounding context into the prediction (Seyedhosseini et al.,
+bles (Lakshminarayanan et al., 2017), MC-Dropout (Gal                 2013), proving particularly useful for tasks such delineation
+& Ghahramani, 2016), and Bayesian Networks (Mackay,                   (Sironi et al., 2016), human pose estimation (Newell et al.,
+1995) have emerged as the most influential approaches.                2016), semantic segmentation (Zhang et al., 2018b; Wang
+                                                                      et al., 2019), depth estimation (Durasov et al., 2019; Xu
+Deep Ensembles involve training multiple networks, start-             et al., 2018), and multi-task learning (Durasov et al., 2022b).
+ing from different initial conditions. They are noted for the         In the first use case of this work, we build upon the recursive
+potential diversity of their predictions, attributable to ran-        networks used in (Mosińska et al., 2018) to delineate roads
+domness from weight initialization, data augmentation, and            by computing distance maps to the road pixels, as shown in
+stochastic gradient updates. This diversity is central to their       Fig. 1. The network is a UNet (Ronneberger et al., 2015)
+effectiveness (Perrone & Cooper, 1995; Fort et al., 2019).            that takes as input the image and the distance map computed
+In many situations, they deliver more reliable uncertainty es-        at the previous iteration, starting from a blank one. However,
+timates than other methods (Ovadia et al., 2019; Gustafsson           whereas the typical focus of delineation papers is to increase
+et al., 2020; Ashukha et al., 2020; Postels et al., 2022). They       performance in terms of a number of delineation metrics,
+therefore remain the leading technique, despite the high              ours is to provide an uncertainty estimate on the detections
+computational cost of training several networks instead of a
+
+                                                                  2
+                                 Enabling Uncertainty Estimation in Iterative Neural Networks
+
+without sacrificing performance. In the second use case, we            can rewrite the update equation of Eq. 1 as
+use an iterative model with Graph Neural Networks (Monti
+                                                                                                                   ∂ log p(yi |x)
+et al., 2017; Baqué et al., 2018) for 2D and 3D shape opti-                yi+1 − yi = fΘ (x, yi ) − yi ∝                        ,   (2)
+mization. We show that uncertainty measures can be used                                                                 ∂yi
+to effectively select out-of-distribution data to enhance the          where p(yi |x) is the probability of the model yielding the
+training dataset.                                                      prediction yi given the input x. In other words, the recur-
+                                                                       sion can be understood as a gradient ascent on log p(yi |x),
+3. Method                                                              which explains why the prediction progressively improves
+                                                                       as illustrated by Fig. 2 in a simple regression case. We can
+Let us consider a recursive network fΘ , where Θ are the               distinguish three different scenarios
+network weights. fΘ takes as input a vector x—an image or
+a 3D shape in the examples presented in the results section—              • In distribution, without aleatoric noise. x is in-
+and its own output y—a segmentation image or a pressure                     distribution, there is little noise in the training data,
+field in our examples. At the ith iteration, we have                        which makes the aleatoric uncertainty low and the
+                     yi = fΘ (x, yi−1 ) ,                   (1)             probability p peaked. So, if yi is already close to being
+                                                                            correct, the derivative of the log probability will be
+where the initial value y0 can be taken to be a vector of ze-               small and it will not move much. In contrast, it is not
+ros. This computation is repeated N times and yN is taken                   correct but still within the main mode of the proba-
+to be the final output. In supervised approaches, the network               bility distribution, the derivative will be large and the
+is trained so that yN matches the ground truth, with (Newell                convergence rapid. This is the case x = 2.0.
+et al., 2016; Carreira et al., 2016) or without (Chen et al.,
+2018; Gupta & Chandraker, 2020) supervision on the inter-                 • In distribution, with aleatoric noise. x is in-
+mediate outputs {y1 , . . . yN −1 }. Our key insight is that, at            distribution, the training data is noisy, making the he
+inference time, rather than treating yN as the sole output,                 aleatoric uncertainty higher and the probability p less
+as is usually done, we should consider the whole sequence                   peaked. If yi is not initially correct but still within the
+Y = {y1 , . . . yN } because it provides valuable information               main mode of the probability distribution, the deriva-
+about prediction certainty.                                                 tive will be smaller than in the no-noise scenario, and
+                                                                            thus the convergence slower, as in the case of x = 5.0.
+In the remainder of this section, we first discuss the behav-
+ior of this series of estimates and then propose a simple                 • Out of distribution. x is out-of-distribution, which
+algorithm that exploits it to estimate uncertainty.                         can be understood as epistemic uncertainty and p can-
+                                                                            not be expected to have a well-defined peaked shape
+3.1. Motivation                                                             but often tends to be flatter. The behavior is then some-
+                                                                            what random as in the case of x = −2.0 and x = 7.0.
+Each iteration of Eq.1 takes the current prediction yi−1 and
+refines it into yi . This resembles what a denoising auto-             In short, both aleatoric and epistemic uncertainty are likely
+encoder does when mapping a noisy input signal to its true             to impact convergence speed negatively.
+value. Hence, the theoretical understanding of reconstruc-
+tion errors in auto-encoders is relevant to our problem.               3.2. Estimating Uncertainty
+In fact, the reconstruction error for a sample fed into an             In Section 3.1, we have argued that when the input x to net-
+autoencoder can indicate whether the sample lies within the            work fΘ is in-domain with respect to the sample distribution
+training distribution of the model or not (Japkowicz et al.,           that was used to train the network and the aleatoric uncer-
+1995). More formally, given a denoising or contractive                 tainty is low, we can expect the convergence of sequence Y
+autoencoder, R, and a sample x, the reconstruction error               tends to be quick. In contrast, when x is out-of-domain or
+|R(x) − x| is closely related to the log-probability of the            the aleatoric uncertainty is high, we can expect it to be far
+data distribution pdata (x) (Bengio et al., 2013; Alain &              more erratic. To exploit this insight, for a given x t we take
+Bengio, 2014). This understanding was later expanded to                the variance of sequence Y as a proxy for uncertainty. We
+include a broader spectrum of autoencoders (Kamyshanska                take it to be
+& Memisevic, 2013), and then to standard autoencoders
+trained under stochastic optimization (Solinas et al., 2020).
+                                                                                                                      i
+                                                                                     U i = V ar({y1i , y2i , · · · , yN }) ,          (3)
+This theoretical work has been effectively applied to many
+                                                                       where i corresponds to the ith pixel/node in the original in-
+practical tasks requiring out-of-distribution detection (Zhou,
+                                                                       put x and N is the number of iterations passing through the
+2022; Sabokrou et al., 2016).
+                                                                       iterative network. Here the variance represents the conver-
+Thus, as in Bengio et al. (2013); Alain & Bengio (2014), we            gence speed, where higher values imply slower convergence
+
+                                                                   3
+                                                                     Enabling Uncertainty Estimation in Iterative Neural Networks
+
+                        1.0                                                                         Training data
+                                                                                                    Uncertainty
+                                                                                                                             4. Experiments
+                        0.5                                                                         Final prediction
+                                                                                                                             Our approach applies to both classification and regression.
+                        0.0
+                                                                                                                             To demonstrate the first, we use it for road delineation pur-
+                        0.5
+  y-axis
+
+
+
+
+                                                                                                                             poses, that is, classifying pixels in aerial images as belong-
+                        1.0
+                                                                                                                             ing to roads or not. To demonstrate the second, we use
+                        1.5
+                                                                                                                             it to assess the reliability of performance numbers—-drag
+                        2.0
+                                                                                                                             for cars and lift-to-drag for airfoils—predicted by networks
+                        2.5
+                                      2              0                2             4               6                        given 2D and 3D shapes as input. We then use these re-
+                                                                     x-axis
+                              x = 2.0                    x = 2.0               x = 5.0                   x = 7.0
+                                                                                                                             liability estimates to implement a Bayesian optimization
+                                                                       0.2                    0.8
+                        1.8                    1.2                                                                           scheme that enables us to refine the shapes for improved
+                        1.9                                            0.0                    1.0                            performance. For both classification and regression, we
+                                               1.0
+ y i = f ( x, y i 1 )
+
+
+
+
+                        2.0                                            0.2
+                                                                                              1.2                            outperform Deep Ensembles and MC-Dropout, along with
+                        2.1                    0.8
+                        2.2
+                                                                       0.4
+                                                                                              1.4
+                                                                                                                             Kriging in the regression case.
+                                               0.6
+                        2.3                                            0.6
+                                                                                              1.6
+                              2      4    6          2      4    6            2      4    6             2      4    6        4.1. Delineation
+                              Iteration #            Iteration #              Iteration #               Iteration #
+Figure 2. Uncertainty vs Convergence. In this example, we gen-                                                               Tasks such as road detection or modeling thin biological
+erated training data from a sinusoidal function for x ∈ [1, 6] and                                                           structures from images fall within the heading of visual
+added Gaussian noise with a variance that increases from left to                                                             delineation. After more than 50 years of research, it remains
+right. We take fΘ to be a simple MLP with three hidden layers
+                                                                                                                             an open topic even though modern networks have boosted
+that takes two inputs, x and the output of the previous iteration.
+We train it to predict the noisy data points at each step of the
+                                                                                                                             the state-of-the-art. Their final output often is a binary map
+iterative process by minimizing the loss of Eq. 4. Once trained,                                                             indicating where in the image pixels belonging to structures
+we use fΘ to produce predictions Y(x) = {y1 (x), . . . yN (x)}                                                               of interest are. Generating such a map can be viewed as
+for x ∈ [−3, 7] (Top): The red line denotes the final prediction                                                             classifying the pixels as belonging to the target structures or
+yN (x), and the standard deviation of Y(x) is shown in pink. It                                                              not.
+increases away from the data and when the data is noisy, as it
+                                                                                                                             Datasets. We experimented on two publicly available
+should. (Bottom): The plots depict the values in the sequence
+Y(x) for four different values. For x = 2, both aleatoric and sys-
+                                                                                                                             datasets.
+temic uncertainties are low and convergence quickly. For x = 5,
+the aleatoric uncertainty data is high because the data is noisy and                                                            • RoadTracer. It comprises high-resolution satellite im-
+the convergence is slow. For x = −2.0 and x = 7.0 the systemic                                                                    ages covering urban areas of forty cities in six different
+uncertainty is high because the points are out of distribution and                                                                countries (Bastani et al., 2018). Fifteen cities are set
+the convergence is slow or erratic.                                                                                               aside for validation purposes. The ground truth was
+                                                                                                                                  generated using OpenStreetMap.
+
+and vice versa. This approach lets us evaluate uncertainties                                                                    • Massachusetts. The Massachusetts dataset features
+at the pixel or node level. To obtain a scalar uncertainty es-                                                                    both urban and rural neighborhoods, with many differ-
+timate for the whole output y, we average the values across                                                                       ent kinds of roads ranging from small paths to high-
+all pixels/nodes.                                                                                                                 ways. We used the same splits as in (Hu et al., 2019).
+In the result section, we show that this variance estimate
+strongly correlates with the actual accuracy of the prediction                                                               Together, these datasets exhibit a very large variety of urban
+on experimental data. Note that for the arguments made for                                                                   scapes, which makes them a comprehensive benchmark for
+two in-distribution cases discussed at the end Section 3.1 to                                                                aerial road network reconstruction.
+apply, the prediction yi has to fall within the mode of the                                                                  Baselines. Architectures such as U-Net (Ronneberger
+probability distribution. To maximize the chances of this                                                                    et al., 2015) or SegNet (Badrinarayanan et al., 2017) are
+happening, at training time, we supervise the network so                                                                     commonly employed for delineation purposes, given their
+that all yi in Y are as close possible to the ground-truth by                                                                effectiveness in image segmentation challenges. For a fair
+minimizing                                                                                                                   comparison, all the method we tested rely on the standard U-
+                                                             N                                                               Net (Ronneberger et al., 2015) architecture, with five blocks,
+                                                             X
+                                              Ltotal =               D(yi , ygt ),                                 (4)       each with three sequences of convolution-ReLU-batch nor-
+                                                              i=1                                                            malization. Max-pooling in 2 × 2 windows followed each
+                                                                                                                             of the blocks. The initial feature size was set to 32 and grew
+where D is a measure of distance and gt stands for ground-                                                                   to 1024 in the smallest feature map in the network. The
+truth.                                                                                                                       network is trained to output a distance map that can then be
+
+                                                                                                                         4
+                                 Enabling Uncertainty Estimation in Iterative Neural Networks
+
+thresholded to produce the binary one. We augmented the                     segmentation to equally weigh false positives and false
+training data with vertical and horizontal flips, along with                negatives (Fawcett, 2006).
+random rotations. Thus, the four methods we compare are
+                                                                       To similarly evaluate the quality of the uncertainty estimates,
+   • U-Net. Standard U-Net (Ronneberger et al., 2015).                 as in (Postels et al., 2022), we compute
+
+   • MC-Dropout. Adding drop-out layers (Gal & Ghahra-
+                                                                          • Relative Area Under the Lift Curve (rAULC). It is de-
+     mani, 2016) into the standard U-Net to estimate the
+                                                                            rived from the Area Under the Lift Curve concept (Vuk
+     mean and variance of the predictions.
+                                                                            & Curk, 2006) and assesses the calibration quality of
+   • Deep Ensembles. Using five standard U-Nets to esti-                    uncertainty measures across various methods.
+     mate the mean and variance of the predictions (Laksh-
+     minarayanan et al., 2017).                                           • Pearson Correlation Coefficient (Corr). It measures
+                                                                            the correlation between the estimated uncertainty and
+   • Ours. Using a recursive version of the standard U-                     the actual error.
+     Net (Wang et al., 2019), A dual-gated recurrent unit has
+     been added in the bridge part of the network. During              Evaluation. We report accuracy and uncertainty results in
+     training, we performed three iterations. After each one,          Tabs. 1 and 2. For all uncertainty evaluations, we calculate
+     the output of the network is used as an additional input          predictions and uncertainty for each pixel in the image.
+     channel for the next one.                                         We then divide these into 512 × 512 crops, averaging the
+                                                                       uncertainties and errors across each crop to ensure a more
+                     Corr    Comp     Qual     F1     APLS             stable evaluation of the metrics. In terms of uncertainty
+     U-Net           85.2    59.5     54.3    21.1    65.04            estimation, Deep Ensembles and Ours are comparable and
+  MC-Dropout         87.1    58.2     54.1    20.4    58.78            outperform the others. In terms of accuracy, Ours does
+                                                              RT
+
+
+
+
+ Deep Ensembles      87.4    66.7     60.8    22.1    68.81            best. To highlight this, in Fig. 3, we show scatter plots
+      Ours           85.2    77.8     68.6    24.5    77.21            of estimated uncertainty vs actual accuracy. Note that our
+     U-Net           81.5    91.4     77.8    13.8    65.42
+  MC-Dropout         81.6    92.3     78.2    13.6    59.65            results exhibit a more linear behavior, which is what the
+                                                              MS
+
+
+
+
+ Deep Ensembles      83.6    90.4     78.7    14.1    67.53            Pearson Correlation Coefficient measures.
+      Ours           92.3    86.7     81.1    15.4    78.04
+                                                                                               rAULC       Corr      Train    Inf
+Table 1. Delineation accuracy on RoadTracer (top), and Mas-              MC-Dropout             30.18      59.72      1x       5x
+
+
+
+
+                                                                                                                                      RT
+sachusetts (bottom). The best result in each category is in bold        Deep Ensembles          72.19      79.42      5x       5x
+and the second best is in bold. Most correspond to Ours and                  Ours               69.23      74.73     2.8x     2.7x
+DeepE.
+                                                                         MC-Dropout             19.56      32.50      1x       5x
+
+
+
+
+                                                                                                                                      MS
+                                                                        Deep Ensembles          78.65      76.39      5x       5x
+Metrics. For road delineation, the true measure of success                   Ours               79.27      87.46     2.8x     2.7x
+is preservation of the topology of the road networks rather
+than the very precise location of the centerline. This is              Table 2. Delineation uncertainty quality on RoadTracer (top),
+ussually expressed in terms of hte following metrics:                  and Massachusetts (bottom). The best result in each category is
+                                                                       in bold and the second best is in bold. Most correspond to Ours
+   • APLS (↑). Average Path Length Similarity, defined as              and DeepE. The Train and Inf metrics represent the total training
+                                                                       time and inference time for the model, respectively, relative to a
+     an aggregation of relative length difference of shortest
+                                                                       single model.
+     paths between pairs of corresponding points in the
+     reconstructed and predicted maps (van Etten, 2019).
+                                                                                                    ROC-AUC         PR-AUC
+   • CCQ (↑). Metric that measures spatial co-occurrence of                   MC-Dropout              61.25          62.64
+                                                                                                                                 RT
+
+
+
+
+     annotated and predicted road pixels. The Correctness,                   Deep Ensembles           67.03          67.85
+     Completeness and Quality are equivalent to precision,                        Ours                67.09          72.11
+     recall and intersection-over-union, where the definition
+     of a true positive has been relaxed from spatial coin-            Table 3. RoadTracer vs Massachusetts out-of-distribution de-
+     cidence of prediction and annotation to co-occurrence             tection results. The best result in each category is in bold and the
+     within a distance of 5 pixels (Wiedemann et al., 1998).           second best is in bold. Most correspond to Ours and DeepE
+
+   • F1 Score (↑). A balance between precision and recall,             To further evaluate our uncertainty estimates, we use the
+     the F1 score is twice the product of precision and re-            same insight as in (Malinin & Gales, 2018; Durasov et al.,
+     call divided by their sum. It’s widely used in binary             2022a): A network trained on samples drawn from a given
+
+                                                                   5
+                                                                                                                             Enabling Uncertainty Estimation in Iterative Neural Networks
+
+distribution should be more confident on samples drawn                                                                                                                                                                              the shapes in the unlabelled pool. This function balances
+from the same distribution than on samples drawn from a                                                                                                                                                                             between exploration and exploitation, and it is the key to
+different one. In this context, we conducted an out-of-                                                                                                                                                                             the success of Bayesian optimization.
+distribution detection task. We utilized the model trained on
+the RoadTracer dataset, treating its test set as in-distribution                                                                                                                                                                 4. Pick the best new shapes in terms of the acquisition
+data. For out-of-distribution data, we selected the test set                                                                                                                                                                        function, optimize their shape with gradient optimization,
+of the Massachusetts dataset. These two datasets exhibit                                                                                                                                                                            add them to the training set, and iterate.
+markedly different landscapes. RoadTracer primarily fea-
+tures images of urban centers, whereas Massachusetts en-                                                                                                                                                                         These are standard BO steps, as described in Appendix A.2,
+compasses aerial images of rural areas.                                                                                                                                                                                          except for step #4. It involves exploring the shape space
+                                                                                                                                                                                                                                 without running additional simulations. It takes advantage
+We rely on the uncertainty measure generated by our model                                                                                                                                                                        of the fact that GNNs allow for gradient-based shape opti-
+to decide whether a sample is in-domain or out-of-domain.                                                                                                                                                                        mization. The key to implementing Bayesian shape opti-
+We then apply standard detection metrics, ROC and PR                                                                                                                                                                             mization is an effective way to estimate not only the perfor-
+AUCs (Malinin & Gales, 2018), to quantify the performance                                                                                                                                                                        mance value associated with a shape but also the uncertainty
+of our model. As for calibration metrics, we perform this                                                                                                                                                                        on this estimate in step #3, which is something ordinary
+evaluation using 512 × 512 crops: we average per-pixel                                                                                                                                                                           GNNs (Monti et al., 2017) do not provide, and which is
+uncertainties across the entire crop and classify it as in- or                                                                                                                                                                   being addressed by our approach.
+out-of-distribution based on this averaged uncertainty value.
+We report our results in Tab. 3.                                                                                                                                                                                                 Datasets. Given a set of N 3D shapes {xi }1≤i≤N rep-
+                              MC Dropout                                                                  Deep Ensembles                                                                        OURS
+                                                                                                                                                                                                                                 resented by triangulated meshes, we run a physics-based
+                                                                                     6                                                                                   7
+        6
+        5
+                                                                                     5                                                                                   6
+                                                                                                                                                                         5
+                                                                                                                                                                                                                                 simulator yielding a corresponding set {yi }1≤i≤N of phys-
+        4                                                                            4
+                                                                                                                                                                         4
+                                                                                                                                                                                                                                 ical values, such as pressure at each vertex. Let R be the
+Error
+
+
+
+
+                                                                             Error
+
+
+
+
+                                                                                                                                                                 Error
+
+
+
+
+        3                                                                            3
+                                                                                                                                                                         3
+        2                                                                            2
+                                                                                                                                                                         2
+        1
+        0
+                                                                                     1
+
+                                                                                     0
+                                                                                                                                                                         1
+                                                                                                                                                                         0
+                                                                                                                                                                                                                                 function that takes as input the y values and returns an over-
+            0.4   0.6    0.8       1.0         1.2         1.4         1.6                  0.2    0.4      0.6       0.8     1.0      1.2          1.4                      0      1     2       3          4     5     6
+                               Uncertainty                                                                        Uncertainty                                                                  Uncertainty
+                                                                                                                                                                                                                                 all performance value r = R(y), such as overall drag for a
+        7
+                              MC Dropout
+                                                                                     6
+                                                                                                          Deep Ensembles
+                                                                                                                                                                         5
+                                                                                                                                                                                                OURS                             car or lift for a wing. R is task-specific. For example, in the
+        6
+        5
+        4
+                                                                                     5
+                                                                                     4
+                                                                                                                                                                         4
+
+                                                                                                                                                                         3
+                                                                                                                                                                                                                                 case of drag, it is computed by integrating pressure values
+Error
+
+
+
+
+                                                                             Error
+
+
+
+
+                                                                                                                                                                 Error
+
+
+
+
+        3
+        2
+                                                                                     3
+                                                                                     2
+                                                                                                                                                                         2
+
+                                                                                                                                                                         1
+                                                                                                                                                                                                                                 over the 3D shape. The simulator also generates {ri }1≤i≤N
+        1                                                                            1
+        0
+            0.0   0.5   1.0      1.5     2.0
+                               Uncertainty
+                                                     2.5         3.0
+                                                                                     0
+                                                                                     0.00   0.25   0.50    0.75     1.00    1.25
+                                                                                                                  Uncertainty
+                                                                                                                                    1.50     1.75         2.00
+                                                                                                                                                                         0
+                                                                                                                                                                             0.0   0.5   1.0    1.5     2.0
+                                                                                                                                                                                               Uncertainty
+                                                                                                                                                                                                                 2.5   3.0
+                                                                                                                                                                                                                                 in conjunction with the yi ’s. Assuming that each mesh xi
+                                                                                                                                                                                                                                 is parameterized by a lower-dimensional latent vector zi
+Figure 3. Error vs Uncertainty. These plots illustrate the error-
+                                                                                                                                                                                                                                 and that there is a differentiable mapping P : z → x, this
+uncertainty relationship for three methods on the RoadTracer (Top)
+and Massachusetts (Bottom) datasets. Our method surpasses the
+                                                                                                                                                                                                                                 gives us the initial training set T = {(zi , xi , ri , yi )}i that
+others on the Massachusetts dataset and performs comparably with                                                                                                                                                                 we need to initialize our optimization scheme. Similarly,
+Ensembles on RoadTracer. Correlation numbers are in Tab. 2. The                                                                                                                                                                  we expect a larger pool of unlabeled shapes, consisting of
+red line indicates the optimal linear fit.                                                                                                                                                                                       latent vectors and meshes denoted as U = {(zi , xi )}i , but
+                                                                                                                                                                                                                                 no simulation data. We train the surrogate model using sam-
+                                                                                                                                                                                                                                 ples from T (Step 1) and use it to perform predictions (Step
+4.2. Aerodynamics Prediction and Optimization                                                                                                                                                                                    2), compute the acquisition function (Step 3), and select
+We now showcase the effectiveness of our approach at esti-                                                                                                                                                                       samples for simulations from the set U (Step 4).
+mating the uncertainly of surrogate models used to estimate
+and optimize aerodynamic performance.                                                                                                                                                                                               • Airfoils. We generated a dataset comprising 1500 two-
+                                                                                                                                                                                                                                      dimensional airfoil shapes. This was achieved by ran-
+Bayesian optimization. To refine 2D and 3D shapes and                                                                                                                                                                                 domly selecting NACA parameters, zi , and producing
+increase their expected aerodynamic performance, we rely                                                                                                                                                                              corresponding airfoil contours, xi . The pressure dis-
+on Bayesian Optimization (BO) (Mockus, 2012) as depicted                                                                                                                                                                              tribution, yi , over each airfoil surface was computed
+by Fig. 4. Our implementation comprises four steps:                                                                                                                                                                                   using the XFoil simulator. Additionally, the global
+                                                                                                                                                                                                                                      lift-to-drag ratio, ri , a measure of aerodynamic effi-
+1. Use the training shapes and simulation results to train a                                                                                                                                                                          ciency, was calculated for each shape. The dataset
+   surrogate model fΘ .                                                                                                                                                                                                               was divided into 1000 training samples, 300 testing
+                                                                                                                                                                                                                                      samples, and 200 high-performance shapes, treated as
+2. Take each shape from the unlabelled pool and make a                                                                                                                                                                                out-of-distribution samples for uncertainty analysis.
+   prediction with fΘ .
+                                                                                                                                                                                                                                    • Cars. We use a cleaned-up and processed subset of
+3. Given the uncertainty of the predictions, compute the                                                                                                                                                                              the ShapeNet dataset (Chang et al., 2015) that features
+   acquisition function (Auer, 2002; Qin et al., 2017) for                                                                                                                                                                            N = 1500 car meshes suitable for CFD simulation.
+
+                                                                                                                                                                                                                             6
+                                  Enabling Uncertainty Estimation in Iterative Neural Networks
+
+
+
+
+Figure 4. Bayesian optimization pipeline. (1) Run physical simulations. (2) Train the GNN. (3) Evaluate the acquisition function on
+samples without an associated physical simulation. (4) Select promising samples according the acquisition function, optimize their shape,
+add them to the training set, and go back to step 1.
+
+     For each such mesh xi , we run OpenFOAM (Jasak                       • Deep Ensembles: We use sets of GNNs to predict mean
+     et al., 2007) to estimate the pressure field yi and drag ri            and variances of performance values, which is known
+     created by air traveling at 15 meters per second towards               as an Ensemble-based technique. These are then ex-
+     the car. We also use MeshSDF (Remelli et al., 2020)                    ploited by the procedure introduced previously in this
+     in conjunction with an auto-decoding approach (Park                    section. For all of the experiments, we use 5 GNNs in
+     et al., 2019) to learn a function P : R256 → R and a                   ensemble.
+     set of latent vectors {zi } such that ∀i xi = P (zi ). We
+     use the same protocols as for Airfoils for splitting.                • MC-Dropout: Instead of using Ensembles to estimate
+                                                                            the performance numbers and their uncertainty, we use
+Baselines. We compare our method against widely recog-                      MC-Dropout in the Bayesian optimization procedure.
+nized and universally adopted baselines, which are consid-
+ered the gold standard in the field:                                      • Ours: Using the iterative GNN to simultaneously esti-
+                                                                            mate the performance values and their uncertainty for
+                                                                            the Bayesian optimization procedure.
+   • KNN: Given a set of simulated shapes, we use a stan-
+     dard K-Nearest Neighbors regressor to estimate the
+     performance of additional shapes and add the best one             Metrics. We use the following metrics to evaluate the
+     to the training set. No uncertainty is computed. For this         quality of our baselinse in terms of predictions accuracy and
+     approach, we use K = 8 and employ distance-based                  uncertainty estimation:
+     neighbor weighting, as this has been shown to be the
+     optimal choice for this task (Baqué et al., 2018).                  • Mean absolute error (↓) (MAE). It is the average of the
+                                                                            absolute differences between the predicted and actual
+   • Kriging: Using a Gaussian Processes (GPs) to esti-
+                                                                            values. It is a common metric for regression tasks.
+     mate performance values and corresponding uncer-
+     tainty (Laurenceau et al., 2010) directly from param-                • Opimized performance. We use our baselines to per-
+     eters z. As discussed above, it can be directly used                   form Bayesian optimization as it was described above.
+     to perform Bayesian Optimization. For GPs, we use                      We then report the best performance value, ri lift-to-
+     the squared exponential kernel, which has been shown                   drag value for airfoils and ri drag value for cars, ob-
+     to be particularly effective for aerodynamic predic-                   tained by each method and the dynamics of optimiza-
+     tion (Toal & Keane, 2011; Rosenbaum & Schulz,                          tion process.
+     2013).
+   • GNN: GNNs (Baqué et al., 2018; Hines & Bekemeyer,                Evaluation. As all six methods being compared rely on
+     2023) are a valid alternative to GPs for the purpose of           an emulator, the left Airfoil and Cars plots in Fig. 5 depict
+     estimating performance numbers. Since they do not                 the accuracy of each on the test set as a function of the
+     compute uncertainties, we simply add the ones that                number of samples from the training set used to train it.
+     receive the best score from the GNN to the training set           Ours outperforms the others consistently, especially when
+     and optimize their shape as in (Baqué et al., 2018).             there are only a few training examples. For this accuracy
+
+                                                                   7
+                                  Enabling Uncertainty Estimation in Iterative Neural Networks
+
+
+
+
+            (Airfoils)                        (Cars)                            (Airfoils)                             (Cars)
+Figure 5. Left. Accuracy of the lift-to-drag estimate as a function of the number of exemplars used to train the emulators. Right.
+Lift-to-drag ratio of the shapes during optimization, as a function of number of iterations.
+
+
+                   Krig    MC-DP       DeepE      Ours
+   ROC-AUC         0.79     0.84        0.88      0.87
+
+
+
+
+                                                          AIR CAR
+                                                                                                               Convergence
+
+
+    PR-AUC         0.78     0.82        0.86      0.88                                                                             Error
+
+   ROC-AUC         0.62     0.73        0.90      0.86
+    PR-AUC         0.52     0.62        0.78      0.79
+                                                                                                                                Convergence
+
+
+Table 4. Evaluation the uncertainty measure for 2D airfoils
+                                                                                                                                    Error
+(AIR) and 3D cars (CAR). The best result in each category is
+in bold and the second best is in bold. They all correspond to
+Ours and Deep Ensembles. The two approaches are comparable
+in terms of evaluating uncertainty but the reentrant GNNs deliver
+better accuracy, as shown in Fig. 5.                                    Figure 6. Convergence rate vs error. For the in-distribution air-
+                                                                        foil at the top, the consecutive values of predicted lift-to-drag
+                                                                        values converge quickly and the limit is very close to the correct
+                                                                        answer. By contrast, for an out-of-distribution airfoil below, the
+evaluation, at each iteration, we add 100 new samples for               convergence is much slower and the limit is wrong. This is a
+Airfoils and 150 for Cars.                                              behavior that we have consistently observed in our experiments.
+
+As in the delineation experiments, we also evaluate the
+quality of uncertainty estimates through the lens of Out-               and GNN), this yielded predicted performance values, and
+of-distribution Detection (Fort et al., 2021) task. To this             for the other values of the acquisition function (UCB (Auer,
+end, given all the 3D shapes we have, we took the 200 top-              2002) with λ = 3). We sorted the unlabelled shapes accord-
+performing ones in terms of their lift-to-drag ratio to be the          ing to these values and picked the 10 best. For GNN-based
+out-of-distribution samples. For both datasets, the remain-             methods, for each one of these 10 shapes, we also per-
+ing shapes were then considered as the in-distribution ones.            formed 10 steps of gradient-based optimization (Kingma &
+One thousand of these were used to train the emulators, and             Ba, 2015). This relatively small number of iterations was
+the others were used for testing purposes. After training,              chosen to allow us to reap the benefits of GNN-based shape
+we generated uncertainty values for each shape in the in-               optimization (Baqué et al., 2018), without moving too far
+distribution and out-of-distribution test sets. Finally, we             away from the starting points and producing shapes whose
+computed standard ROC-AUC, PR-AUC (Malinin & Gales,                     acquisition value is too different from that of the starting
+2018) metrics for in- or out-of-distribution classification             point. We discuss the influence of the number of iterations
+based on the uncertainty estimate. As can be seen in the                we perform in Appendix A.5. Finally, we ran simulations
+top rows of Tab. 4, our approach generates uncertainty of a             for these chosen shapes, added them to the training set, and
+quality similar to that of ensembles. Furthermore, as shown             iterated. For each method, we ran this whole process three
+in Fig. 7, our method often only require 3 iterations to con-           times and plot the resulting lift-to-drag ratios as a function
+verge. This makes them a little faster than an ensemble of 5            of the number of BO iterations performed in the airfoil plot
+ordinary GNNs and, importantly, requires far less memory                in Fig. 5. The shaded areas depict the corresponding vari-
+and training time. We provide more details in Appendix A.3.             ances. Again, our method outperforms the other approaches
+                                                                        by a statistically significant margin.
+We now turn to shape optimization using each one of the
+6 methods. In each case, we used 100 randomly chosen                    Recall from Section 3 that our approach is predicated on the
+samples from the training set, along with the corresponding             fact that convergence of the iterative GNNs can be expected
+simulations, to train the initial emulator. The rest of the             to be slower for out-of-distribution samples than for in-
+training set, plus the OOD set, were treated as a set of unla-          distribution ones. The plot on the left side of Fig. 7 validates
+belled shapes. After the initial training, we ran the inference         this hypothesis on the in-distribution and out-of-distribution
+for each shape in it. For non-uncertainty approaches (KNN               splits.
+
+                                                                    8
+                                       Enabling Uncertainty Estimation in Iterative Neural Networks
+
+                                      Airfoils                                              2.0                      Cars
+                     2.0
+
+
+
+
+                                                                       Normalized density
+                                         In-distribution data                                                         In-distribution data
+Normalized density
+
+                     1.5                 Out-of-distribution data                           1.5                       Out-of-distribution data
+                     1.0                                                                    1.0
+                     0.5                                                                    0.5
+                     0.0   1    2        3        4         5
+                                                                                            0.0      1       2       3         4           5
+                               Convergence iteration                                                        Convergence iteration
+Figure 7. Convergence rates for in- and out-of-distribution samples. We plot the distribution of the number of iterations to convergence
+of our iterative GNNs for in-distribution vs. out-of-distribution samples from the test sets of airfoils and cars. In general, convergence
+takes significantly fewer steps for in-distribution samples than for out-of-distribution ones.
+
+
+5. Ablation study                                                                   our previous evaluations, ensuring consistency and compa-
+                                                                                    rability. The results are summarized in Table 6. As for our
+5.1. Calibration Evaluation                                                         previous results, our method outperforms other approaches
+Though rAULC and correlation metrics from Sec. 4 pro-                               both in terms of model’s accuracy and uncertainty quality.
+vide comprehensive information about calibration quality,
+we also provide the results for Expected Calibration Error                                                  MC-DP      Ensembles     Ours
+(ECE) (Guo et al., 2017) evaluation. Tab. 5 provides ECE                                             Acc     97.8        98.8         99.0
+values for different methods, including MC-Dropout, En-                                             ECE      0.021       0.018       0.013
+sembles, and our proposed method. The results show that                                           ROC-AUC    94.4        98.5         98.5
+
+
+
+
+                                                                                                                                               CNN
+our method achieves better calibration than both Ensembles                                         PR-AUC    93.8        98.1         98.5
+and MC-Dropout for all datasets.                                                                    Train     1x          5x           3x
+                                                                                                     Inf      5x          5x           3x
+                               MC-Dropout    Ensembles     Ours                                      Acc     96.1        97.7         97.4
+             ECE (RT)            0.997         1.138       0.475                                    ECE      0.026       0.022       0.020
+            ECE (MS)             0.558         0.794       0.419                                  ROC-AUC    61.5        89.5         89.6
+
+
+
+
+                                                                                                                                               MLP
+           ECE (Airfoils)        1.758         1.162       1.142                                   PR-AUC    69.2        89.9         88.7
+            ECE (Cars)           0.267         0.232       0.227                                    Train     1x          5x           3x
+                                                                                                     Inf      5x          5x           3x
+Table 5. Expected Calibration Error (ECE) evaluation. As it
+was previously demonstrated for the rAULC metric, our method                        Table 6. MNIST classification results for CNN (top), and MLP
+outperforms other approaches in terms of ECE calibration.                           (bottom) architectures. The best result in each category is in bold
+                                                                                    and the second best is in bold. Most correspond to Ours and Deep
+                                                                                    Ensembles.
+5.2. Image Classification
+We expanded our experimental evaluation to include the
+                                                                                    6. Conclusion
+widely-used task of image classification on the MNIST
+dataset, a popular benchmark for out-of-distribution (OOD)                          We have presented an approach to assessing the quality
+detection and uncertainty estimation. For the OOD task,                             of predictions by iterative networks at a much lower cost
+we used FashionMNIST as the OOD samples, which is a                                 than Deep Ensembles, currently the most reliable approach
+standard choice in this context. To add more variability, we                        to such an assessment, and more reliably than other state-
+ran these experiments with two model architectures:                                 of-the-art methods. Our method relies on measuring how
+                                                                                    fast successive estimates converge and does require neither
+            • CNN Architecture: A convolutional neural network                      any change in network architecture nor training more than
+              (CNN) with several 2D convolutional layers followed                   one. In the shape optimization part of this work, we have
+              by a fully-connected classification head.                             focused on aerodynamics but the principle applies to many
+                                                                                    other devices, ranging from the cooling plates of an electric
+            • MLP Architecture: A multilayer perceptron (MLP)
+                                                                                    vehicle battery to the optics of an image acquisition device.
+              with 5 fully-connected layers, treating images as 784-
+                                                                                    In future work, we will therefore explore a broader set of
+              dimensional vectors.
+                                                                                    potential applications.
+We evaluated these experiments using the same metrics as in
+
+                                                                       9
+                               Enabling Uncertainty Estimation in Iterative Neural Networks
+
+Impact Statement                                                    Carreira, J., Agrawal, P., Fragkiadaki, K., and Malik, J.
+                                                                      Human Pose Estimation with Iterative Error Feedback. In
+This paper presents work whose goal is to advance the field           Conference on Computer Vision and Pattern Recognition,
+of Machine Learning. There are many potential societal                2016.
+consequences of our work, none which we feel must be
+specifically highlighted here.                                      Chang, A., Funkhouser, T., G., L., Hanrahan, P., Huang, Q.,
+                                                                      Li, Z., Savarese, S., Savva, M., Song, S., Su, H., Xiao,
+                                                                      J., Yi, L., and Yu, F. Shapenet: An Information-Rich 3D
+References
+                                                                      Model Repository. In arXiv Preprint, 2015.
+Alain, G. and Bengio, Y. What regularized auto-encoders
+  learn from the data-generating distribution. The Journal          Chen, R., Rubanova, Y., Bettencourt, J., and Duvenaud, D.
+  of Machine Learning Research, 15(1):3563–3593, 2014.                Neural Ordinary Differential Equations. In Advances in
+                                                                      Neural Information Processing Systems, 2018.
+Allaire, G. A Review of Adjoint Methods for Sensitivity
+  Analysis, Uncertainty Quantification and Optimization             Clevert, D.-A., Unterthiner, T., and Hochreiter, S. Fast and
+  in Numerical Codes. Ingénieurs de l’Automobile, 836:               Accurate Deep Network Learning by Exponential Linear
+  33–36, July 2015.                                                   Units (ELUs). In arXiv Preprint, 2015.
+
+Amersfoort, V., Smith, J. A., Teh, L. A., Whye, Y., and Gal,        Daxberger, E., Nalisnick, E., Allingham, J. U., Antorán, J.,
+ Y. Uncertainty Estimation Using a Single Deep Deter-                 and Hernández-Lobato, J. M. Bayesian deep learning via
+ ministic Neural Network. In International Conference on              subnetwork inference. In International Conference on
+ Machine Learning, pp. 9690–9700, 2020.                               Machine Learning, pp. 2510–2521. PMLR, 2021.
+                                                                    Devlin, J., Chang, M., Lee, K., and Toutanova, K. BERT:
+Antorán, J., Allingham, J., and Hernández-Lobato, J. M.
+                                                                      Pre-Training of Deep Bidirectional Transformers for Lan-
+  Depth uncertainty in neural networks. Advances in neural
+                                                                      guage Understanding. In arXiv Preprint, 2018.
+  information processing systems, 33:10620–10634, 2020.
+                                                                    Durasov, N., Romanov, M., Bubnova, V., Bogomolov, P.,
+Ashukha, A., Lyzhov, A., Molchanov, D., and Vetrov, D.
+                                                                      and Konushin, A. Double Refinement Network for Ef-
+  Pitfalls of In-Domain Uncertainty Estimation and Ensem-
+                                                                      ficient Monocular Depth Estimation. In International
+  bling in Deep Learning. In International Conference on
+                                                                     Conference on Intelligent Robots and Systems, pp. 5889–
+  Learning Representations, 2020.
+                                                                      5894, 2019.
+Auer, P. Using confidence bounds for exploitation-
+                                                                    Durasov, N., Bagautdinov, T., Baque, P., and Fua, P.
+  exploration trade-offs. Journal of Machine Learning
+                                                                      Masksembles for Uncertainty Estimation. In Conference
+ Research, 3(Nov):397–422, 2002.
+                                                                      on Computer Vision and Pattern Recognition, 2021.
+Badrinarayanan, V., Kendall, A., and Cipolla, R. Segnet:
+                                                                    Durasov, N., Dorndorf, N., and Fua, P. ZigZag: Universal
+  A Deep Convolutional Encoder-Decoder Architecture
+                                                                      Sampling-free Uncertainty Estimation Through Two-Step
+  for Image Segmentation. IEEE Transactions on Pattern
+                                                                      Inference. arXiv Preprint, 2022a.
+  Analysis and Machine Intelligence, 2017.
+                                                                    Durasov, N., Dorndorf, N., and Fua, P. Partal: Efficient
+Baqué, P., Remelli, E., Fleuret, F., and Fua, P. Geodesic
+                                                                      partial active learning in multi-task visual settings. arXiv
+  Convolutional Shape Optimization. In International Con-
+                                                                      preprint arXiv:2211.11546, 2022b.
+  ference on Machine Learning, 2018.
+                                                                    Fawcett, T. An introduction to roc analysis. Pattern recog-
+Bastani, F., He, S., Alizadeh, M., Balakrishnan, H., Madden,
+                                                                      nition letters, 27(8):861–874, 2006.
+  S., Chawla, S., Abbar, S., and Dewitt, D. Roadtracer:
+  Automatic Extraction of Road Networks from Aerial Im-             Fey, M. and Lenssen, J. E. Fast graph representation learning
+  ages. In Conference on Computer Vision and Pattern                  with PyTorch Geometric. In ICLR Workshop on Repre-
+  Recognition, 2018.                                                  sentation Learning on Graphs and Manifolds, 2019.
+Bengio, Y., Yao, L., Alain, G., and Vincent, P. Generalized         Fort, S., Hu, H., and Lakshminarayanan, B. Deep en-
+  denoising auto-encoders as generative models. Advances              sembles: A loss landscape perspective. arXiv preprint
+  in neural information processing systems, 26, 2013.                 arXiv:1912.02757, 2019.
+Blundell, C., Cornebise, J., Kavukcuoglu, K., and Wierstra,         Fort, S., Ren, J., and Lakshminarayanan, B. Exploring
+  D. Weight Uncertainty in Neural Network. In Interna-                the limits of out-of-distribution detection. Advances in
+  tional Conference on Machine Learning, pp. 1613–1622,               Neural Information Processing Systems, 34:7068–7081,
+  2015.                                                               2021.
+
+                                                               10
+                               Enabling Uncertainty Estimation in Iterative Neural Networks
+
+Gal, Y. and Ghahramani, Z. Dropout as a Bayesian Ap-                Kingma, D. P., Salimans, T., and Welling, M. Variational
+  proximation: Representing Model Uncertainty in Deep                 Dropout and the Local Parameterization Trick. Advances
+  Learning. In International Conference on Machine Learn-             in Neural Information Processing Systems, 28, 2015.
+  ing, pp. 1050–1059, 2016.
+                                                                    Kumar, S. K. On Weight Initialization in Deep Neural
+Graves, A. Practical variational inference for neural net-            Networks. arXiv Preprint, 2017.
+  works. Advances in Neural Information Processing Sys-
+  tems, 24, 2011.                                                   Lakshminarayanan, B., Pritzel, A., and Blundell, C. Simple
+                                                                      and Scalable Predictive Uncertainty Estimation Using
+Guo, C., Pleiss, G., Sun, Y., and Weinberger, K. Q. On                Deep Ensembles. In Advances in Neural Information
+  Calibration of Modern Neural Networks. In International             Processing Systems, 2017.
+ Conference on Learning Representations, 2017.
+                                                                    Laurenceau, J., Meaux, M., Montagnac, M., and Sagaut, P.
+Gupta, K. and Chandraker, M. Neural Mesh Flow: 3D Man-                Comparison of Gradient-Based and Gradient-Enhanced
+  ifold Mesh Generation via Diffeomorphic Flows. In Ad-               Response-Surface-Based Optimizers. American Institute
+  vances in Neural Information Processing Systems, 2020.              of Aeronautics and Astronautics Journal, 48(5):981–994,
+                                                                      2010.
+Gustafsson, F. K., Danelljan, M., and Schön, T. B. Eval-
+  uating Scalable Bayesian Deep Learning Methods for                Mackay, D. J. Bayesian Neural Networks and Density Net-
+  Robust Computer Vision. In Conference on Computer                  works. Nuclear Instruments and Methods in Physics Re-
+ Vision and Pattern Recognition, 2020.                               search Section A: Accelerators, Spectrometers, Detectors
+                                                                     and Associated Equipment, 354(1):73–80, 1995.
+He, K., Zhang, X., Ren, S., and Sun, J. Deep Residual Learn-
+                                                                    Malinin, A. and Gales, M. Predictive Uncertainty Estima-
+  ing for Image Recognition. In Conference on Computer
+                                                                     tion via Prior Networks. In Advances in Neural Informa-
+  Vision and Pattern Recognition, pp. 770–778, 2016.
+                                                                     tion Processing Systems, 2018.
+Hernández-Lobato, J. M. and Adams, R. Probabilistic
+                                                                    Medioni, G., Tang, C., and Lee, M. Tensor Voting: The-
+  Backpropagation for Scalable Learning of Bayesian Neu-
+                                                                     ory and Applications. In Reconnaissance des Formes et
+  ral Networks. In International Conference on Machine
+                                                                     Intelligence Artificielle, 2000.
+  Learning, pp. 1861–1869, 2015.
+                                                                    Mnih, V. and Hinton, G. Learning to Detect Roads in High-
+Hines, D. and Bekemeyer, P. Graph Neural Networks for
+                                                                     Resolution Aerial Images. In European Conference on
+  the Prediction of Aircraft Surface Pressure Distributions.         Computer Vision, pp. 210–223, 2010.
+  Aerospace Science and Technology, 137:108268, 2023.
+                                                                    Mockus, J. Bayesian Approach to Global Optimization:
+Hu, X., Li, F., Samaras, D., and Chen, C. Topology-                  Theory and Applications, volume 37. Springer Science &
+  Preserving Deep Image Segmentation. In Advances in                 Business Media, 2012.
+ Neural Information Processing Systems, pp. 5658–5669,
+  2019.                                                             Monti, F., Boscaini, D., Masci, J., Rodolà, E., Svoboda,
+                                                                     J., and Bronstein, M. M. Geometric Deep Learning on
+Japkowicz, N., Myers, C., Gluck, M., et al. A novelty                Graphs and Manifolds Using Mixture Model CNNs. In
+  detection approach to classification. In IJCAI, volume 1,          Conference on Computer Vision and Pattern Recognition,
+  pp. 518–523. Citeseer, 1995.                                       pp. 5425–5434, 2017.
+Jasak, H., Jemcov, A., Tukovic, Z., et al. OpenFOAM:                Mosińska, A., Marquez-Neila, P., Kozinski, M., and Fua, P.
+  A C++ Library for Complex Physics Simulations. In                  Beyond the Pixel-Wise Loss for Topology-Aware Delin-
+  International workshop on coupled methods in numerical             eation. In Conference on Computer Vision and Pattern
+  dynamics, 2007.                                                    Recognition, pp. 3136–3145, 2018.
+
+Kamyshanska, H. and Memisevic, R. On autoencoder scor-              Mukhoti, J., van Amersfoort, Torr, J. A., HS, P., and Gal, Y.
+  ing. In International Conference on Machine Learning,              Deep Deterministic Uncertainty for Semantic Segmenta-
+  pp. 720–728. PMLR, 2013.                                           tion. In arXiv Preprint, 2021.
+
+Kingma, D. P. and Ba, J. Adam: A Method for Stochastic              Newell, A., Yang, K., and Deng, J. Stacked Hourglass
+  Optimisation. In International Conference on Learning               Networks for Human Pose Estimation. In European Con-
+  Representations, 2015.                                              ference on Computer Vision, 2016.
+
+                                                               11
+                                Enabling Uncertainty Estimation in Iterative Neural Networks
+
+Oner, D., Koziński, M., Citraro, L., Dadap, N. C., Konings,          Ronneberger, O., Fischer, P., and Brox, T. U-Net: Convolu-
+ A. G., and Fua, P. Promoting Connectivity of Network-                  tional Networks for Biomedical Image Segmentation. In
+  Like Structures by Enforcing Region Separation. IEEE                  Conference on Medical Image Computing and Computer
+ Transactions on Pattern Analysis and Machine Intelli-                  Assisted Intervention, pp. 234–241, 2015.
+  gence, 44(9):5401–5413, 2021.
+                                                                      Rosenbaum, B. and Schulz, V. Response Surface Methods
+Oner, D., Koziński, M., Citraro, L., and Fua, P. Adjusting             for Efficient Aerodynamic Surrogate Models. In Compu-
+  the Ground Truth Annotations for Connectivity-Based                   tational Flight Testing, pp. 113–129. Springer, 2013.
+  Learning to Delineate. IEEE Transactions on Medical
+ Imaging, 41(12):3675–3685, 2022.                                     Sabokrou, M., Fathy, M., and Hoseini, M. Video anomaly
+                                                                        detection and localisation based on the sparsity and re-
+Ovadia, Y., Fertig, E., Ren, J., Nado, Z., Sculley, D.,                 construction error of auto-encoder. Electronics Letters,
+  Nowozin, S., Dillon, J., Lakshminarayanan, B., and                    52(13):1122–1124, 2016.
+  Snoek, J. Can You Trust Your Model’s Uncertainty?
+  Evaluating Predictive Uncertainty Under Dataset Dhift.              Seyedhosseini, M., Sajjadi, M., and Tasdizen, T. Image
+  In Advances in Neural Information Processing Systems,                 Segmentation with Cascaded Hierarchical Models and
+  pp. 13991–14002, 2019.                                                Logistic Disjunctive Normal Networks. In International
+                                                                        Conference on Computer Vision, 2013.
+Park, J. J., Florence, P., Straub, J., Newcombe, R. A., and
+                                                                      Shen, W., Wang, B., Jiang, Y., Wang, Y., and Yuille, A.
+  Lovegrove, S. Deepsdf: Learning Continuous Signed Dis-
+                                                                        Multi-Stage Multi-Recursive-Input Fully Convolutional
+  tance Functions for Shape Representation. In Conference
+                                                                        Networks for Neuronal Boundary Detection. In Interna-
+  on Computer Vision and Pattern Recognition, 2019.
+                                                                        tional Conference on Computer Vision, 2017.
+Paszke, A., Gross, S., Chintala, S., Chanan, G., Yang, E.,
+                                                                      Sironi, A., Turetken, E., Lepetit, V., and Fua, P. Multiscale
+  Devito, Z., Lin, Z., Desmaison, A., Antiga, L., and Lerer,
+                                                                        Centerline Detection. IEEE Transactions on Pattern Anal-
+  A. Automatic Differentiation in Pytorch. In Advances in
+                                                                        ysis and Machine Intelligence, 38(7):1327–1341, 2016.
+  Neural Information Processing Systems, 2017.
+                                                                      Solinas, M., Galiez, C., Cohendet, R., Rousset, S., Rey-
+Perrone, M. P. and Cooper, L. N. When networks disagree:
+                                                                        boz, M., and Mermillod, M. Generalization of iterative
+  Ensemble methods for hybrid neural networks. In How
+                                                                        sampling in autoencoders. In 2020 19th IEEE Interna-
+  We Learn; How We Remember: Toward An Understand-
+                                                                        tional Conference on Machine Learning and Applications
+  ing Of Brain And Neural Systems: Selected Papers of
+                                                                        (ICMLA), pp. 877–882. IEEE, 2020.
+  Leon N Cooper, pp. 342–358. World Scientific, 1995.
+                                                                      Toal, D. and Keane, A. Efficient Multipoint Aerodynamic
+Pinheiro, P. and Collobert, R. Recurrent Neural Networks
+                                                                        Design Optimization via Cokriging. Journal of Aircraft,
+  for Scene Labelling. In International Conference on
+                                                                        48(5):1685–1695, 2011.
+  Machine Learning, 2014.
+                                                                      Tu, Z. and Bai, X. Auto-Context and Its Applications to
+Postels, J., Ferroni, F., Coskun, H., Navab, N., and Tombari,
+                                                                        High-Level Vision Tasks and 3D Brain Image Segmenta-
+  F. Sampling-Free Epistemic Uncertainty Estimation Us-
+                                                                        tion. IEEE Transactions on Pattern Analysis and Machine
+  ing Approximated Variance Propagation. In Conference
+                                                                        Intelligence, 2009.
+  on Computer Vision and Pattern Recognition, pp. 2931–
+  2940, 2019.                                                         van Etten, A. Spacenet road detection and routing challenge
+                                                                        part ii—apls implementation, 2019.
+Postels, J., Segu, M., Sun, T., Gool, L. V., Yu, F., and
+  Tombari, F. On the Practicality of Deterministic Epis-              Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones,
+  temic Uncertainty. In International Conference on Ma-                 L., Gomez, A. N., Kaiser, L., and Polosukhin, I. Attention
+  chine Learning, pp. 17870–17909, 2022.                                is All You Need. In Advances in Neural Information
+                                                                        Processing Systems, 2017.
+Qin, C., Klabjan, D., and Russo, D. Improving the expected
+  improvement algorithm. Advances in Neural Information               Vuk, M. and Curk, T. ROC curve, lift chart and calibration
+  Processing Systems, 30, 2017.                                         plot. Advances in methodology and Statistics, 3(1):89–
+                                                                        108, 2006.
+Remelli, E., Lukoianov, A., Richter, S., Guillard, B., Bagaut-
+  dinov, T., Baque, P., and Fua, P. MeshSdf: Differentiable           Wang, W., Yu, K., Hugonot, J., Fua, P., and Salzmann, M.
+  Iso-Surface Extraction. In Advances in Neural Informa-               Recurrent U-Net for Resource-Constrained Segmentation.
+  tion Processing Systems, 2020.                                       In International Conference on Computer Vision, 2019.
+
+                                                                 12
+                              Enabling Uncertainty Estimation in Iterative Neural Networks
+
+Wen, Y., Tran, D., and Ba, J. Batchensemble: An Alternative
+ Approach to Efficient Ensemble and Lifelong Learning.
+ In International Conference on Learning Representations,
+ 2020.
+Wiedemann, C., Heipke, C., Mayer, H., and Jamet, O. Em-
+ pirical Evaluation of Automatically Extracted Road Axes.
+ In Empirical Evaluation Techniques in Computer Vision,
+ pp. 172–187, 1998.
+Xu, D., Ouyang, W., Wang, X., and Sebe, N. Pad-Net:
+  Multi-Task Guided Prediction-And-Distillation Network
+  for Simultaneous Depth Estimation and Scene Parsing. In
+ Conference on Computer Vision and Pattern Recognition,
+  pp. 675–684, 2018.
+Zhang, P., Wang, F., and Zheng, Y. Deep Reinforcement
+  Learning for Vessel Centerline Tracing in Multi-Modality
+  3D Volumes. In Conference on Medical Image Comput-
+  ing and Computer Assisted Intervention, pp. 755–763,
+  2018a.
+Zhang, Z., Cui, Z., Xu, C., Jie, Z., Li, X., and Yang, J.
+  Joint task-recursive learning for semantic segmentation
+  and depth estimation. In Proceedings of the European
+  Conference on Computer Vision (ECCV), pp. 235–251,
+  2018b.
+Zhou, Y. Rethinking reconstruction autoencoder-based
+  out-of-distribution detection. In Proceedings of the
+  IEEE/CVF Conference on Computer Vision and Pattern
+  Recognition, pp. 7379–7387, 2022.
+
+Zhou, Z., Rahman Siddiquee, M. M., Tajbakhsh, N., and
+  Liang, J. Unet++: A Nested U-Net Architecture for Med-
+  ical Image Segmentation. In Deep Learning in Medical
+  Image Analysis and Multimodal Learning for Clinical
+  Decision Support, 2018.
+
+
+
+
+                                                              13
+                                 Enabling Uncertainty Estimation in Iterative Neural Networks
+
+A. Appendix                                                             A.2. Bayesian Optimization
+In this section, we first examine the behavior of iterative net-        Given a performance estimator of uknown reliability,
+works in a very simple case. We then provide details about              exploration-and-exploitation techniques seek to find global
+the training procedure and additional supporting evidence               optimum of that estimator while at the same time accounting
+for some of the claims made in the paper.                               for potential inaccuracies in its predictions.
+                                                                        Bayesian Optimization (BO) (Mockus, 2012) is one of the
+A.1. Analysis of a Simple Case                                          best-known approaches to finding global minima of a black-
+To model the behavior of our iterative networks in a simpler            box function g : A → R, where A represents the space of
+and easier-to-analyze context, we replace CNNs and GNNs                 possible shapes, without assuming any specific functional
+with a perceptron fW that takes two scalar inputs x and y               form for g. It is often preferred to more direct approaches,
+and outputs a scalar. Given a training set {(xi , ri ) , 1 ≤ i ≤        such as the adjoint method (Allaire, 2015), when g is expen-
+N }, we make it iterative by computing                                  sive to evaluate, which often is the case when g is imple-
+                                                                        mented by a physics-based simulator.
+                     yi1 = fW (x, 0)
+                                                                        BO typically starts with a surrogate model fΘ : A → R
+                     yi2 = fW (x, yi1 )
+                                                                        whose output depends on a set of parameters Θ. fΘ is
+                      ...                                               assumed to approximate g, to be fast to compute, and to
+                      yit = fW (x, yit−1 )                  (5)         be able to evaluate the reliability of its own predictions in
+                                                                        terms of a uncertainty. It is used to explore A quickly in
+for each i, where ti is a different random integer between 1            search of a solution of x∗ = argminx∈A g(x). Given an
+and T for each sample. In these examples, we use T = 5.                 initial training set {(xi , ri )}i of input shapes xi and outputs
+                                                 (t )
+We then minimize the total loss i (ri − yi i )2 . Fig. 8
+                                      P
+                                                                        ri = g(xi ), it iterates the following steps:
+depicts the results of this process when the xi are uniformly
+sampled between 0 and 1 and the ri are taken to be sin(a ∗
+xi ) ∗ cos(b ∗ xi ) for different values of a and b. For values            Step 1: Find Θ that yields the best possible predic-
+of x between 0 and 1, that is, for values that are within                      tion by fΘ .
+the training domain, we have yi0 ≈ yi1 .... ≈ yiT ≈ ri . In
+                                                                           Step 2: Generate new samples not present in the
+contrast, out of domain, that is, outside the range [0,1], this
+                                                                               training set.
+is not true anymore, and we can see strong oscillations of
+the successive yit values for 1 ≤ t ≤ T . This makes sense                 Step 3: Evaluate an acquisition function on these
+because deep networks are known not to extrapolate well.                       samples.
+Thus, even though the network is trained to produce similar
+predictions for all values of t in-domain, the out-of-domain               Step 4: Add the best ones to the training set and go
+predictions are essentially random, and there is no reason for                 back to Step 1.
+them to be equal. In the results section, we showed that, for
+both airfoils and car shapes, out-of-domain values of x tend            As shown in the example of Fig. 13, the role of the acqui-
+to produce oscillations and slow convergence. Interestingly,            sition function is to gauge how desirable it is to evaluate a
+we observe exactly the same behavior on this very simple                point, based on the current state of the model. It is often
+example, as evidenced by the fact that the curves of Fig. 8             taken to be the Expected Improvement (EI) (Qin et al., 2017)
+are not superposed for x < 0 and x > 1.                                 or Upper Confidence Bound (UCB) (Auer, 2002) that favor
+                                                                        samples with the greatest potential for improvement over the
+The exact values obtained for these out-of-domain samples
+                                                                        current optimum. It is computed as a function of the values
+are very hard to predict. As can be seen by comparing the
+                                                                        predicted by the surrogate and their associated uncertainty.
+two rows of Fig. 8, they depend critically on the chosen
+activation function, tanh or ReLu in this case. They also de-
+pend heavily on how the networks have been initialized, as              A.3. Training setups
+can be seen in Fig. 9. In one case, we initialized the weights          For our experiments, we used single Tesla V100 GPU with
+of our perceptrons using normally distributed weights. In               32Gb of memory. The training process was implemented
+the other, we used the slightly more sophisticated Xavier               using the Pytorch (Paszke et al., 2017) and Pytorch Geomet-
+Initialization (Kumar, 2017).                                           rics (Fey & Lenssen, 2019) frameworks.
+Crucially, in all cases, seeing large variations in the values
+of the successive yk (x) for a given x is always a warning              Airfoils. For airfoils, we have generated 1500 shapes from
+sign that the estimated value is likely to be incorrect. This           NACA parameters, and simulated pressure and lift-to-drag
+is what we exploit in this work.                                        values with XFOIL simulator. As an emulator, we use archi-
+
+                                                                   14
+                                   Enabling Uncertainty Estimation in Iterative Neural Networks
+
+
+
+
+                  (a = 3, b = 4)                             (a = 5, b = 4)                            (a = 8, b = 9)
+Figure 8. Learning to interpolate a 1D function. Using a two-layer perceptron to interpolate f (x) = sin(a ∗ x) cos(b ∗ y) given training
+pairs (x, f (x)) for which 0 < x < 1. Each curve represents the value of yit from Eq. 5 for values of x ranging from -1.0 to 2.0, that is,
+both inside and outside the training domain. There is one curve per iteration i in Eq. 5, ranging from 1 to 5. Top row. Taking tanh to be
+the activation function. Bottom row. Using ReLu.
+
+                                               GNN      Deep Ensembles        MC-Dropout        Ours
+                                Memory          1x            5x                 1x              1x
+
+
+
+
+                                                                                                         AIR
+                               Inf. Time        1x            5x                 5x              3x
+                              Train. Time       1x            5x                 1x              2x
+                                Memory          1x            5x                 1x              1x
+
+
+
+                                                                                                         CAR
+                               Inf. Time        1x            5x                 5x              3x
+                              Train. Time       1x            5x                 1x              2x
+
+Table 7. Computational costs. The Memory, Inference Time, and Training Time metrics measure the amount of time and memory
+required to train the network(s) and to perform inference, in comparison to a single model.
+
+
+tecture that consists of 35 GMM layers (Monti et al., 2017)             epochs with 8 batch size and 0.001 learning rate. Both for
+with ReLU activations. First, we extract node features with             lift-to-drag and pressure, we use mean squared error (MSE)
+these GMM layers and pass them to pressure branch, that                 loss and combine them into final loss with weights 1 for
+consists out of 3 GMM layers, and lift-to-drag branch, that             scalar and 1/200 for pressure.
+uses global pooling and 3 fully-connected layers to predict
+final scalar. For training, we use Adam optimizer (Kingma               A.4. Propagating Information
+& Ba, 2015) and perform 200 epochs with 128 batch size
+and 0.001 learning rate. Both for lift-to-drag and pressure,            In a standard GNN information is propagated across the
+we use mean squared error (MSE) loss and combine them                   shape with each successive convolution. Hence, it is com-
+into final loss with weights 1 for scalar and 100 for pressure.         paratively slow and our reentrant GNNs address this. To
+                                                                        support, this claim we ran an experiment to test the influ-
+                                                                        ence of the receptive fields of the GNNs, which control the
+Cars. For cars dataset, we have generated 1500 shapes                   speed at which information percolates across the network.
+from MeshSDF vectors, and simulated pressure and drag                   We trained 5 airfoils and car emulator models of increasing
+values with OpenFOAM simulator. As an emulator, we use                  depth while keeping total weights number fixed. Starting
+architecture that consists of 50 GMM layers with ELU acti-              from the original architecture, we plot the prediction mean
+vations (Clevert et al., 2015) and skip-connections (He et al.,         error for both lift-to-drag and drag in Fig. 10 in red. As
+2016). Similar to airfoils, we extract node features with               expected, the error decreases as depth increases and more
+these GMM layers and pass them to pressure branch, that                 information is propagated across the shape. The exact same
+consists out of 5 GMM layers, and drag branch, that uses                behavior can be observed when using our GNN run iter-
+global pooling and 5 fully-connected layers to predict final            atively, as shown by the black curves. This supports our
+scalar. For training, we use Adam optimizer and perform 6
+
+                                                                   15
+                                   Enabling Uncertainty Estimation in Iterative Neural Networks
+
+
+
+
+                               (Before training)                                           (After training)
+
+Figure 9. Influence of initialization. We plot the same curves as in Fig. 8 when learning to interpolate the function f (x) = sin(5 ∗
+x) cos(4 ∗ y), but over a more extended range of x and starting from a different initialization of the perceptron weights in each row.
+Before training. As before, each curve represents the values yit as a function of x. Here we plot those returned by our perceptrons after
+initialization of their activation weights, but before actual training. The two plots correspond to the two different initializations. After
+training. Values after training. There are similar for 0 < x < 1 but different out of this domain. Not that they are also very different
+across the two rows because of the slightly different initializations.
+
+
+
+
+          Lift-to-Drag                          Drag
+                                                                          Figure 11. Impact of refining the shapes. Turning on gradient
+Figure 10. Propagating information across an shape. A compa-              optimization of new samples delivers a small performance increase,
+rable behavior is observed when increasing the depth of a standard        but smaller than the one used by replacing ensembles with a version
+GNN (red curves) and when running several iterations of a shal-           of our approach without the refinement.
+lower iterative GNN (black curves).
+
+
+                                                                          ine the impact of performing this optimization.
+claim that each iteration helps propagate the information
+across the shape just as effectively as when using the deeper             In the results shown in the main paper, given the current
+network.                                                                  state of the emulator, we performed 10 steps of an Adam-
+                                                                          based optimizer with a 1e − 4 learning rate to refine each
+                                                                          selected shape. In Fig. 11, we plot the results obtained for
+A.5. Gradient Optimization
+                                                                          the airfoils by doing this refinement (Ours), not doing it
+Given the shapes selected according to the acquisition func-              (Ours w/o grad), or using deep ensembles (Deep Ensem-
+tion during Bayesian Optimization, our method performs                    bles) baseline. Ours without refinement already delivers an
+several gradient steps in order to refine these shapes and                improvement overs ensembles, with a further but smaller
+makes them more performant. In this subsection, we exam-                  improvement when performing the refinement. We tried
+
+                                                                     16
+                              Enabling Uncertainty Estimation in Iterative Neural Networks
+
+increasing the number of refinement steps but that brought
+no further improvement.
+
+
+
+
+                                                             17
+                              Enabling Uncertainty Estimation in Iterative Neural Networks
+
+                               RoadTracer                                          Massachusetts
+
+
+Image
+Label
+MC Pred.
+MC Unc.
+Ensemble Pred.
+Ensemble Unc.
+Ours Pred.
+Ours Unc.
+
+
+
+
+                 Figure 12. Test predictions and uncertainties produced by different methods on two datasets.
+
+
+                                                             18
+                                  Enabling Uncertainty Estimation in Iterative Neural Networks
+
+                   MC-DP         Ens.    Ens. Iter.    Ours
+      Corr           87.1        87.4      88.1         85.2
+      Comp           58.2        66.7      76.1         77.8
+      Qual           54.1        60.8      69.1         68.6
+        F1           20.4        22.1      24.4         24.5
+      APLS          58.78       68.81     78.40        77.21
+     rAULC          30.18       72.19     69.03        69.23
+    Corr (unc.)     59.72       79.42     79.17        74.73
+      ECE           0.997       1.138     0.850        0.475
+      Train           1x          5x       14x          2.8x
+       Inf            5x          5x      13.5x         2.7x
+
+Table 8. Uncertainty and performance metrics on RT Dataset.
+The best result in each category is in bold and the second best is
+in bold. Most correspond to Ours and Iterative Ensembles.
+
+
+A.6. Ensembles on Iterative Architecture
+Another baseline for comparison could involve applying
+Deep Ensembles (DE) to our iterative architecture. While
+this approach would significantly increase computational
+complexity, it could provide better metrics for uncertainty
+estimation. In this subsection, we compare the proposed DE
+baseline against our model.
+In the Tables 8 and 9 below, we present the results of this
+comparison. While the DE baseline delivers good accuracy
+and uncertainty quality, it is approximately 14 times slower
+than the single model baseline and about 5 times slower
+than our approach. These results confirm that while DE
+applied to the iterative architecture provides high-quality un-
+certainty estimates and accuracy, the computational cost is
+significantly higher compared to our approach. Our method
+strikes a balance between computational efficiency and per-
+formance, making it a more practical choice for real-world
+applications where computational resources and time are
+critical factors.
+
+                   MC-DP        Ens.     Ens. Iter.    Ours
+      Corr          81.6        83.6       93.9         92.3
+      Comp          92.3        90.4       85.9         86.7
+      Qual          78.2        78.7       81.3         81.1
+       F1           13.6        14.1       14.8         15.4
+      APLS          59.65      67.53      78.81        78.04
+     rAULC          19.56      78.65      69.03        79.27
+   Corr (unc.)      32.50      76.39      76.51        87.46
+      ECE           0.558      0.794      0.746        0.419              Figure 13. Bayesian Optimization. Given three initial data points
+   ROC-AUC          61.25      67.03      68.42        67.09              for the function (dashed blue), we want to optimize, we train a
+    PR-AUC          62.64      67.85      71.25        72.11              GP surrogate model (Step 1) and compute the UCB acquisition
+      Train          1x          5x        14x          2.8x              function (Auer, 2002) over the [0, 1] range (Steps 2-3). We then
+       Inf           5x          5x       13.5x         2.7x              select the points that maximize, evaluate the target function at
+                                                                          those points, and include the results in our training dataset (Step
+Table 9. Uncertainty and performance metrics on MS Dataset.               4). The process is then iterated and, eventually, we find the true
+The best result in each category is in bold and the second best is        maximum of the function at x ≈ 1, whereas a simple gradient
+in bold. Most correspond to Ours and Iterative Ensembles.                 based method would probably have remained trapped at the local
+                                                                          maximum x ≈ 0.58.
+
+                                                                     19
+

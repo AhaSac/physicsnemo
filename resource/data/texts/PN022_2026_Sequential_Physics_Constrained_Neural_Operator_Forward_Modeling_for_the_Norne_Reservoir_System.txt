@@ -1,0 +1,1220 @@
+                                              S EQUENTIAL P HYSICS -C ONSTRAINED N EURAL O PERATOR
+                                              F ORWARD M ODELING FOR THE Norne R ESERVOIR S YSTEM
+
+
+                                              Clement Etienam∗1,∗        Juntao Yang1         Oleg Ovcharenko1          Nick Luiken1         Tsubasa Onishi1
+
+                                                                       Nefeli Moridis1                                  Issam Said1
+arXiv:2605.28909v1 [cs.LG] 27 May 2026
+
+
+
+
+                                                                                              A BSTRACT
+                                                  We develop a comprehensive mathematical and computational framework for sequential surrogate
+                                                  modeling of three-phase black-oil reservoir dynamics using neural operators, with particular empha-
+                                                  sis on Fourier Neural Operators (FNO) and their physics-informed variant (PINO). The application
+                                                  focus is the Norne benchmark reservoir, defined on a heterogeneous 46×112×22 grid (N = 113,344
+                                                  cells), with a production history spanning T = 30 timesteps covering 3298 days.
+                                                  Our theoretical contributions are organized around four interlocking problems.
+                                                  (1) Functional-analytic formulation. We embed the discrete-time black-oil system in a rigorous
+                                                  product-Sobolev-space setting. The finite-volume implicit residual operator R : R4N ×R4N → R4N
+                                                  is the canonical mathematical object bridging simulator physics to neural-operator training; its zero
+                                                  set M defines the physics-consistent manifold on which PINO training concentrates predictions.
+                                                  We prove well-posedness of the implicit timestep map F under a discrete coercivity condition
+                                                  (Theorem 2.6), provide sharp local Lipschitz estimates (Lemma 2.7), and characterize the elliptic–
+                                                  hyperbolic structural dichotomy that governs differential stability across state variables.
+                                                  (2) Covariate shift and distributional divergence. We prove that the Wasserstein-2 distance be-
+                                                  tween the true-state distribution µn and the predicted-state distribution µ̂θn grows as W2 (µ̂θn , µn ) ≤
+                                                  ε(Ln −1)/(L−1), where L is the operator Lipschitz constant and ε the one-step error (Theorem 4.1).
+                                                  We further bound the resulting population-risk discrepancy between one-step and autoregressive
+                                                  training paradigms (Corollary 4.2) and show this gap drives exponential R2 degradation for L > 1
+                                                  hyperbolic variables.
+                                                  (3) Physics-constrained spectral stability. We prove that PINO training with physics weight λR ≥
+                                                                                                                                                      −1/2
+                                                  λ∗R reduces the spectral radius of the learned operator’s Jacobian to ϱ(Dx Gθ ) ≤ ρF + CλR ,
+                                                  where ρF < 1 is the dissipativity rate of the true dynamics (Theorem 6.5). A companion result
+                                                  (Theorem 6.6) establishes that the PINO residual penalty acts as a spectral Jacobian regularizer: it
+                                                  penalizes deviations of Dx Gθ from the true dynamics Jacobian Dx F in a weighted operator norm,
+                                                                   −1/2
+                                                  with error O(λR ). Combining these, we prove a uniform-in-time rollout error bound ∥δn ∥ϕ ≤
+                                                  ε/(1 − ρ) for PINO-trained autoregressive operators (Theorem 6.7).
+                                                  (4) TBPTT gradient analysis. We formalize K-step truncated backpropagation through time
+                                                  (TBPTT) as a biased stochastic gradient estimator for the autoregressive objective. We prove the
+                                                  cross-window gradient contributions decay geometrically as O(ρK ) (Theorem 7.3), derive the op-
+                                                  timal window size K ∗ = O(log(T /σ 2 )) from a bias-variance decomposition (Corollary 7.4), and
+                                                  establish a non-asymptotic convergence
+                                                                                      √     rate for TBPTT-trained autoregressive operators under the
+                                                                                                    ∗
+                                                  Adam optimizer of the form O(1/ t) + O(ρK ) (Proposition 7.5). Crucially, PINO training and
+                                                  TBPTT form a self-reinforcing cycle: physics constraints reduce ρ, which shrinks the TBPTT bias
+
+                                             ∗1
+                                                NVIDIA Corporation.
+                                         ∗
+                                           Corresponding author: cetienam@nvidia.com
+                                         Keywords: Physics-Informed Neural Operators; Fourier Neural Operators; Sequential Auto-regressive Modeling; Reservoir Simu-
+                                         lation; Supervised learning.
+for any fixed K, allowing shorter windows, more gradient steps per epoch, and further physics
+improvement.
+Empirical validation on the full Norne production timeline confirms all theoretical predictions quan-
+titatively. Autoregressive PINO surrogates sustain R2 > 0.99 (oil saturation), R2 > 0.90 (gas
+saturation), R2 ≈ 0.80 (pressure), and monotonically improving R2 (water saturation) across the
+full 3298-day horizon, trained on eight NVIDIA B200 (HGX B200 / Blackwell) GPUs in under
+one hour. In contrast, teacher-forced one-step models degrade to R2 ≈ 0.96, 0.38, 0.72, and 0.75
+respectively—with the gas saturation collapse at t ≈ 1250 days accurately predicted by the rollout
+bound of Theorem 5.1 using LG ≈ 1.15 and ε ≈ 3 × 10−3 . A 1000-member ensemble runs in under
+one minute on a single NVIDIA B200 GPU, providing a ∼104 × wall-clock speedup over the OPM
+finite-volume simulator and enabling Bayesian inversion and uncertainty quantification workflows
+at industrial scale.
+
+
+
+
+                                                 2
+1     Introduction
+1.1    Motivation
+
+Multiphase flow simulation in heterogeneous porous media is the governing forward problem in petroleum reser-
+voir management, geological carbon storage, and groundwater remediation. Industrial-grade simulators — Newton-
+Raphson-based implicit finite-volume codes such as the Open Porous Media Flow simulator (OPM) [25] — solve large-
+scale coupled systems of nonlinear algebraic equations at each timestep, with wall-clock times of hours to days on
+CPU clusters. In ensemble-based workflows such as history matching, uncertainty quantification (UQ), and production
+optimization, this single forward solve must be repeated 103 –105 times, making direct simulator use computationally
+prohibitive [10, 11].
+Neural-operator surrogates that learn to approximate the simulator response at a fraction of the cost are therefore of
+substantial practical importance [13, 16, 20, 22]. Among available architectures, the Fourier Neural Operator (FNO)
+[20] has emerged as a leading approach: it is resolution-invariant by construction (parameters are discretization-
+independent), provides an efficient global receptive field via spectral convolution, and admits a rigorous universal
+approximation theory for maps between Banach spaces [16, 19]. Its physics-informed extension PINO [21] addition-
+ally penalizes PDE or discrete residuals during training, providing regularization that improves physical consistency.
+
+1.2    The sequential surrogate problem and its mathematical challenges
+
+A fundamental difficulty, underappreciated in much of the existing surrogate literature, is that neural operators for
+reservoir simulation must be deployed autoregressively: at each production timestep, predictions are fed back as
+inputs for subsequent timesteps. This creates a sharp tension between the one-step (teacher-forced, “1–1”) training
+paradigm — in which ground-truth simulator states are provided at every step — and the closed-loop inference mode
+in which the model operates. The mismatch is known as exposure bias or covariate shift in the sequence modeling
+literature [4, 18, 31] and has been studied in recurrent language models, learned weather forecasters [5, 17, 27], and
+neural PDE surrogates [36].
+The mathematical mechanism underlying this instability is well understood in the theory of iterated function systems
+and discrete-time dynamical systems. For a learned one-step operator Gθ , the rollout error after n steps satisfies a
+                                           Qn−1
+recursion driven by the Jacobian product j=0 Dx Gθ (xj ) along the predicted trajectory. Even a marginally super-
+unitary operator norm leads to exponential error amplification [3, 23, 26]. For black-oil reservoirs, the saturation
+equations are advection-dominated and can develop sharp saturation fronts, gravity fingers, and dissolution-driven
+instabilities — all of which correspond to Jacobian norms exceeding unity along front-aligned state directions. This
+makes long-horizon stability a particularly acute concern for gas saturation dynamics in Norne-type systems.
+
+1.3    Overview of contributions
+
+The contributions of this paper are organized as follows.
+
+    (i) Rigorous formulation (Section 2). We embed the discrete-time black-oil system in a product-Sobolev-space
+        framework. We prove well-posedness of the implicit timestep map, provide sharp local Lipschitz estimates link-
+        ing the Lipschitz constant to the coercivity of the finite-volume residual, and characterize the elliptic–hyperbolic
+        structural distinction that governs different stability behaviors across state variables.
+ (ii) Covariate shift quantification (Section 4). We prove explicit W2 and total-variation bounds on the distribu-
+      tional discrepancy between 1–1 and AR training measures, show this gap drives an exponential population-risk
+      discrepancy for L > 1, and prove a matching lower bound showing the upper bound is tight for hyperbolic
+      transport.
+(iii) Rollout error analysis with sharp constants (Section 5). We prove a sharp rollout bound covering general,
+      uniform, contractive, and marginally unstable cases, together with a characterization of which PDE types fall
+      in each regime. A dimension-dependent amplification factor is derived for the mixed-elliptic–hyperbolic Norne
+      state space.
+(iv) PINO spectral stability theory (Section 6). We prove that PINO training constrains the learned Jacobian
+     spectral radius below the true dissipation rate, with explicit constants. We show the physics residual acts as
+     a spectral Jacobian regularizer and prove a uniform-in-time PINO rollout bound.
+ (v) TBPTT gradient bias theory (Section 7). Full bias-variance analysis of K-step TBPTT as a gradient estimator,
+     including optimal window size selection and a convergence rate under Adam.
+
+
+                                                              3
+ (vi) FNO approximation theory for mixed PDE types (Section 8). We prove spectral approximation rates for FNO
+      applied to elliptic versus hyperbolic variables and quantify why gas saturation requires deeper networks or AR
+      training to compensate for Gibbs-like spectral truncation artifacts near fronts.
+(vii) Empirical validation on Norne (Section 11). Full time-resolved R2 benchmarks for all four state variables,
+      with theory-consistent quantitative interpretation of each observed behavior.
+
+2     Mathematical Preliminaries
+2.1   Domains, grids, and function spaces
+
+Let Ω ⊂ R3 be an open bounded Lipschitz domain representing the reservoir. We work with the Norne Cartesian
+grid of dimensions (nx , ny , nz ) = (46, 112, 22), yielding N := nx ny nz = 113,344 cells. Each cell Ωi ⊂ Ω is a
+rectangular cuboid of volume |Ωi | > 0. For 1 ≤ p ≤ ∞, Lp (Ω) is the standard Lebesgue space; H s (Ω) the Sobolev
+space of order s ≥ 0. On the discrete grid,  Pa scalar field a : Ω → R sampled cell-wise is identified with a vector
+a ∈ RN . The discrete ℓp norm is ∥a∥p := ( i |ai |p )1/p and the grid Lp norm (with cell volumes) is
+                                                          N
+                                                                          !1/p
+                                                         X
+                                                                        p
+                                            ∥a∥Lp :=         |Ωi | |ai |       .
+                                                  h
+                                                          i=1
+
+Definition 2.1 (Pore-volume weighted inner product). Define the pore-volume-weighted inner product on RN :
+                                                            N
+                                                            X
+                                               ⟨a, b⟩ϕ :=         ϕi |Ωi | ai bi ,
+                                                            i=1
+                                                                    q
+where ϕi ∈ (0, 1) is the cell porosity. The induced norm ∥a∥ϕ := ⟨a, a⟩ϕ weights errors proportionally to pore
+volume, which is the physically natural metric for mass-conservation-relevant quantities.
+
+2.2   The black-oil PDE system and its structure
+
+The three-phase (water, oil, gas) black-oil model on Ω × (0, Tf ] is:
+                                        ∂Sw                              
+                                      ϕ       − ∇ · Tw (∇Pw + ρw ge3 ) = Qw ,                                       (1)
+                                         ∂t
+                                          ∂So                            
+                                        ϕ      − ∇ · To (∇Po + ρo ge3 ) = Qo ,                                      (2)
+                                           ∂t
+                                                               
+                              ∂       ρg       Rso ρg                ρg
+                                  ϕ      Sg +         So    −∇·         Tg (∇Pg + ρg ge3 )                          (3)
+                              ∂t      Bg        Bo                   Bg
+                                                                                  
+                                                         Rso ρg
+                                                      +         To (∇Po + ρo ge3 ) = Qg .                           (4)
+                                                          Bo
+with saturation constraint Sw + So + Sg = 1 and capillary relations Pcwo := Po − Pw , Pcog := Pg − Po . The phase
+transmissibilities are
+                                               K(x) Krα (S)
+                                        Tα :=                 , α ∈ {w, o, g},                                      (5)
+                                                     µα
+where K(x) > 0 is the absolute permeability tensor (treated as scalar here), Krα ≥ 0 are relative permeability
+functions, and µα > 0 are phase viscosities. When a fault transmissibility multiplier (FTM) f ∈ [0, 1] is present, K is
+replaced by f · K. The boundary condition is ∇Pα · ν = 0 on ∂Ω (no-flow).
+
+Elliptic–hyperbolic structure. After summing equations (1)–(4) with appropriate formation-volume-factor weights,
+the total compressibility equation for pressure takes the form
+                                                    ∂P
+                            −∇ · Ttot ∇P + ct ϕ          = Qtot ,      Ttot := Tw + To + Tg ,                            (6)
+                                                      ∂t
+which is a parabolic (nearly elliptic for small ct ) equation for pressure. Substituting the Darcy flux into the saturation
+equations gives a nonlinear advection-diffusion system for Sw , So , Sg with characteristic speed vα = Tα /ϕ, which
+is hyperbolic-dominated for typical mobility ratios. For gas, the combination of free gas (Bg−1 Sg ) and dissolved gas
+(Rso Bo−1 So ) makes the gas equation strongly nonlinear and particularly sensitive to front tracking.
+
+
+                                                             4
+2.3   Discrete-time formulation and state space
+
+Definition 2.2 (State space). The physically admissible state space is
+             X := x = (p, Sw , So , Sg ) ∈ R4N pi > 0, Sα,i ≥ 0 ∀α, i, Sw,i + So,i + Sg,i = 1 ∀i .
+                    
+
+The constraint Sw + So + Sg = 1N defines a hyperplane in R3N ; thus X is a closed convex subset of R4N of intrinsic
+dimension 3N + 1 (pressure has N degrees of freedom; saturations have 2N after the volume constraint).
+Definition 2.3 (Input channels). Static reservoir parameters: u := (log k, ϕ, f ) ∈ R3N . Well controls at step n:
+cn := (Qn , Qw,n , Qg,n ) ∈ R3Nw , Nw = 22 producers + 13 injectors. Temporal scalars: τn := (tn , ∆tn ) ∈ R2 . The
+full input at step n is ξn := (u, xn , cn , τn ).
+
+2.4   The finite-volume residual operator and well-posedness
+
+The implicit (backward-Euler) finite-volume discretization of (1)–(4) at timestep n → n + 1 assembles the nonlinear
+algebraic system
+                                           R(xn+1 , xn ; u, cn , τn ) = 0,                                      (7)
+where R : R4N × R4N × R3N × R3Nw × R2 → R4N is the finite-volume residual operator. Its water-component
+block at cell i reads explicitly:
+                                            +      −
+                                           Sw,i − Sw,i   X T ij,+
+                    Riw (x+ , x− ) := ϕi               −    w       +
+                                                                  (Pw,j    +
+                                                                        − Pw,i )|∂Ωij | − Qw,i ,                     (8)
+                                                ∆t          dij
+                                                          j∈N (i)
+
+where x+ = xn+1 , x− = xn , N (i) is the cell-face stencil, Twij,+ is the upstream-weighted transmissibility at face ij
+evaluated at the new state, and dij is the cell-center distance. Analogous blocks Rio and Rig are defined for oil and
+                                                                                                                  +
+gas, with the gas block including the formation-volume-factor-weighted accumulation term ϕi ∆t−1 [(ρg /Bg )Sg,i       +
+              +               −                   −
+(Rso ρg /Bo )So,i − (ρg /Bg )Sg,i − (Rso ρg /Bo )So,i ].
+Assumption 2.4 (Discrete coercivity). For all x− ∈ X and all ∆t ∈ (0, ∆tmax ], the Jacobian of R with respect to its
+first argument evaluated at any (x+ , x− ) ∈ X 2 satisfies a coercivity condition:
+                                                       
+                                    ∂R + −                              2
+                                         (x , x ) v, v         ≥ α ∥v∥ϕ ∀v ∈ R4N ,                              (9)
+                                   ∂x+                    ϕ−1
+
+for some α > 0 depending on ∆tmax , min ϕi , min Ki , the relative permeability slopes, and the capillary pressure
+derivatives.
+Remark 2.5. Assumption 2.4 holds for the standard implicit finite-volume scheme when capillary pressure Pc,α (S) is
+monotone (which is physical) and ∆t is below a threshold determined by the stability of the advective flux linearization.
+The coercivity constant α is bounded below by α ≥ ϕmin /∆tmax − Cadv , where Cadv is related to the maximum phase
+velocity.
+Theorem 2.6 (Well-posedness of the implicit timestep). Under Assumption 2.4, for each xn ∈ X , u ∈ R3N , cn ∈
+R3Nw , and τn with 0 < ∆tn ≤ ∆tmax , there exists a unique solution xn+1 ∈ X to (7). This defines the true
+time-advance map F : X → X by
+                                             F(xn ; u, cn , τn ) := xn+1 .                                          (10)
+
+                                                     −1
+Proof. Define Ψx− (x+ ) := x+ − α−1 (∂R/∂x+ ) R(x+ , x− ; ·) restricted to X . Coercivity (9) implies ∂R/∂x+ is
+invertible with (∂R/∂x+ )−1 ϕ−1 →ϕ ≤ α−1 . A contraction estimate shows Ψx− maps a closed ball Br (x− ) to itself
+for sufficiently small r (using the Lipschitz continuity of R in both arguments), and the Banach fixed-point theorem
+yields a unique fixed point, which is the solution x+ . Uniqueness follows immediately from strict monotonicity of R
+                                                                                                              2
+in x+ : if R(a, x− ) = R(b, x− ) = 0 with a ̸= b, then 0 = ⟨R(a, x− ) − R(b, x− ), a − b⟩ϕ−1 ≥ α ∥a − b∥ϕ > 0, a
+contradiction. The solution lies in X by checking that the saturation constraint is preserved under the implicit update
+(it is, since the residual explicitly includes the volume constraint via the capillary pressure formulation).
+Lemma 2.7 (Local Lipschitz estimate for F). Under Assumption 2.4, for any x, y ∈ X with ∥x − y∥ϕ ≤ r:
+                                      ∥F(x; ·) − F (y; ·)∥ϕ ≤ LF (r) ∥x − y∥ϕ ,                                     (11)
+where
+                                                     ∥∂R/∂x− ∥ϕ           Cflux (r)
+                                     LF (r) = 1 +                   ≤1+             ,                               (12)
+                                                           α                 α
+
+                                                               5
+and Cflux (r) captures the inter-cell flux Jacobian magnitude. For the pressure component alone (elliptic), LPF ≤
+1 + Cell /α with Cell depending on Ttot . For the gas saturation component (hyperbolic), LG
+                                                                                          F can exceed unity by an
+amount proportional to the local front velocity.
+
+Proof. Let x+                     +                         +              +
+            x := F(x; ·) and xy := F(y; ·). Then R(xx , x; ·) = R(xy , y; ·) = 0. Subtracting and applying the
+mean-value theorem:
+                                      ∂R                        ∂R
+                                              · (x+     +
+                                                  x − xy ) = −         · (x − y),
+                                      ∂x+ ξ                     ∂x− η
+where ξ and η lie on the line segment. Inverting with the coercivity bound:
+
+                                            1 ∂R                                 Cflux (r)
+                           x+    +
+                            x − xy ϕ ≤                             ∥x − y∥ϕ =:             ∥x − y∥ϕ .
+                                            α ∂x− η                                 α
+                                                             ϕ→ϕ
+                            P     −
+For the pressure block, ∂R /∂x is dominated by the accumulation term ϕ/∆t, and Cell ≈ ϕmax /∆t. For gas, the
+off-diagonal coupling through relative permeability nonlinearities adds terms proportional to front velocities, giving
+            G
+the larger Cflux .
+
+2.5   Neural operator surrogate and rollout
+
+Definition 2.8 (Learned one-step operator). A neural operator surrogate is a parametric family {Gθ : θ ∈ Θ ⊂ RP }
+of maps Gθ : X × R3N × R3Nw × R2 → X approximating F. For FNO, the architecture is described in Section 8.
+Definition 2.9 (Autoregressive rollout). Given initial condition x0 ∈ X , define the closed-loop trajectory
+                            x̂0 := x0 ,     x̂n+1 := Gθ (u, x̂n , cn , τn ),     n = 0, . . . , T − 1.             (13)
+The n-step rollout operator is the composition
+                                                  (n)
+                                             Gθ (x0 ) := Gθ ◦ · · · ◦ Gθ (x0 ).                                    (14)
+                                                         |    {z       }
+                                                                      n
+
+The rollout error at step n is δn := x̂n − xn .
+
+2.6   Probability spaces and distributional setup
+
+Let (Ωω , A, P) be a probability space supporting random initial conditions x0 ∼ µ0 , static fields u, and control
+sequences c0:T −1 . Define:
+                                   µn := law(xn )          under true simulator trajectories,
+                                   µ̂θn := law(x̂n )       under AR rollout (13).
+The empirical training measure on one-step pairs from Ns simulator trajectories is
+                                                             Ns T −1
+                                                         1 X     X
+                                          P̂N :=                     δ (i) (i) (i) .
+                                                        Ns T i=1 n=0 (xn ,xn+1 ,ξn )
+
+Remark 2.10 (The covariate shift problem, precisely stated). The 1–1 empirical risk minimizer θ̂1−1 minimizes
+EP̂N [ℓ(Gθ (ξn ), xn+1 )], i.e., the loss is evaluated at inputs drawn from µn (the true state distribution). At deploy-
+ment, the surrogate is evaluated at inputs drawn from µ̂θn (the predicted state distribution). Whenever µ̂θn ̸= µn , the
+model operates outside its training distribution, and its actual deployment error can be far larger than the training
+loss suggests. The magnitude of this gap is the subject of Section 4.
+
+3     Two Training Paradigms and Risk Analysis
+3.1   One-step (teacher-forced) training
+
+Definition 3.1 (1–1 loss). The one-step (teacher-forced) population risk is
+                                                   " T −1                     #
+                                                     1 X                    
+                                     L1−1 (θ) := E          ℓ Gθ (ξn ), xn+1 ,                                     (15)
+                                                     T n=0
+
+
+                                                                  6
+                                                                                       2   2
+where ξn = (u, xn , cn , τn ) with xn drawn from µn , and ℓ(a, b) := ∥a − b∥ϕ / ∥b∥ϕ is the relative ℓ2 loss. The
+empirical version over Ns trajectories is
+                                                         Ns T −1
+                                                     1 X     X                   (i) 
+                                      L̂1−1 (θ) =                ℓ Gθ (ξn(i) ), xn+1 .                          (16)
+                                                    Ns T i=1 n=0
+
+3.2   Autoregressive (closed-loop) training
+
+Definition 3.2 (AR loss). The autoregressive population risk is
+                                                 " T −1                      #
+                                                   1 X                     
+                                    LAR (θ) := E          ℓ x̂n+1 (θ), xn+1 ,                                   (17)
+                                                   T n=0
+
+where x̂n (θ) is the AR rollout (13). The expectation is over (x0 , u, c0:T −1 ) ∼ P.
+Remark 3.3 (Gradient structure of AR loss). The gradient of LAR with respect to θ is
+                                                                                                  
+                                                                                    
+                                 T −1 n                            n                              
+                               1 XX          ∂ℓ(x̂n+1 , xn+1 )  Y              ˆj ) Dθ Gθ (ξˆm ) ,
+                                                                                                   
+               ∇θ LAR (θ) =               E                            D x Gθ ( ξ                              (18)
+                              T n=0 m=0          ∂ x̂n+1        j=m+1
+                                                                                                   
+                                                                                                   
+                                                                |       {z           }
+                                                                          Jacobian chain
+                                                     Qn
+where ξˆj := (u, x̂j , cj , τj ). The Jacobian chain j=m+1 Dx Gθ (ξˆj ) ∈ R4N ×4N is the product of n − m matrices,
+which can explode for ∥Dx Gθ ∥op > 1 or vanish for ∥Dx Gθ ∥op < 1. This is the central numerical challenge motivating
+TBPTT.
+
+3.3   Generalization bounds
+
+Theorem 3.4 (Uniform generalization bound). Let H = {Gθ : θ ∈ Θ} be the hypothesis class, ℓ be Lℓ -Lipschitz in its
+first argument and bounded by Mℓ > 0. With probability ≥ 1 − δ over the draw of Ns i.i.d. trajectories,
+                                                                          s
+                                                                            log(1/δ)
+                           sup |L1−1 (θ) − L̂1−1 (θ)| ≤ 2Lℓ RNs (H) + Mℓ              ,                       (19)
+                           θ∈Θ                                                2Ns
+
+where RNs (H) is the Rademacher complexity of H with respect to P̂N .
+
+Proof. Define the composed function class FH := {(a, b) 7→ ℓ(Gθ (a), b) : θ ∈ Θ}. Since ℓ is Lℓ -Lipschitz, the
+Rademacher contraction lemma (Ledoux–Talagrand) gives RNs (FH ) ≤ Lℓ RNs (H). The uniform bound (19) then
+follows from the standard symmetric Rademacher argument applied to the function (d1 , . . . , dNs ) 7→ supθ |L − L̂|,
+combined with McDiarmid’s inequality (bounded differences of size 2Mℓ /Ns ) and symmetrization via Rademacher
+variables [2].
+Proposition 3.5 (Physics constraints reduce Rademacher complexity). Let Θphys (λ) ⊂ Θ denote the sublevel set
+                            2
+{θ : E[∥R(Gθ (ξn ), xn ; ·)∥ ] ≤ 1/λ}. Then RNs (Hphys ) ≤ RNs (H), with equality only if the physics penalty is
+non-binding. Moreover, for FNO hypothesis classes parameterized by spectral mode coefficients {R(ℓ) (k)}, the PINO
+physics constraint reduces the effective covering number:
+                            log N (Hphys , ε, ∥·∥∞ ) ≤ log N (H, ε, ∥·∥∞ ) − Cλ1/2 ε−dphys ,                    (20)
+where dphys > 0 is the effective co-dimension of M in X and C depends on the coercivity constant α in Assump-
+tion 2.4.
+
+Proof. Hphys ⊂ H implies the first claim by monotonicity of Rademacher complexity in the function class. For
+                                                                              2
+the covering number bound, note that the physics constraint E[∥R(Gθ , xn ; ·)∥ ] ≤ 1/λ restricts Gθ to lie within an
+O(λ−1/2 )-tube of the manifold M in the L2 (PX )-sense. Standard metric entropy estimates for tube neighborhoods
+of smooth manifolds of co-dimension d give the ε−dphys correction.
+
+
+                                                             7
+4     Covariate Shift: Quantitative Analysis
+4.1   Wasserstein and total-variation bounds
+
+Theorem 4.1 (Covariate shift quantification). Assume Gθ has Lipschitz constant L ≥ 0 (in the ∥·∥ϕ metric) and
+one-step error bounded by ε > 0:
+                                      ∥Gθ (u, x, c, τ ) − F (x; u, c, τ )∥ϕ ≤ ε      ∀x ∈ X .
+Then, for every n ≥ 1:
+
+(a) Wasserstein-2 bound:
+                                                  Ln − 1
+                            W2 (µ̂θn , µn ) ≤ ε             (L ̸= 1),        W2 (µ̂θn , µn ) ≤ nε     (L = 1).    (21)
+                                                  L−1
+
+(b) Contractive case: For L < 1,
+                                                                        ε
+                                                   W2 (µ̂θn , µn ) ≤           ∀n ≥ 0.                            (22)
+                                                                       1−L
+(c) Risk discrepancy: For any Lℓ -Lipschitz loss ℓ,
+                                         Eµn [ℓ(Gθ , ·)] − Eµ̂θn [ℓ(Gθ , ·)] ≤ Lℓ W2 (µ̂θn , µn ).                (23)
+
+(d) Total population-risk gap:
+                                                        T −1
+                                                   Lℓ ε X Ln − 1   Lℓ ε LT − T L + T − 1
+                            |L1−1 (θ) − LAR (θ)| ≤               =     ·                 .                        (24)
+                                                    T n=0 L − 1     T       (L − 1)2
+
+Proof. Part (a). Construct the canonical coupling (x̂n , xn ) by running both the predicted and true trajectories from
+the same initial condition x0 :
+                                 x̂n+1 = Gθ (u, x̂n , cn , τn ),        xn+1 = F(xn ; u, cn , τn ).
+Define δn := x̂n − xn with δ0 = 0. Adding and subtracting Gθ (u, xn , cn , τn ):
+                      ∥δn+1 ∥ϕ = ∥Gθ (u, x̂n , cn , τn ) − F (xn ; u, cn , τn )∥ϕ
+                                   ≤ ∥Gθ (u, x̂n , ·) − Gθ (u, xn , ·)∥ϕ + ∥Gθ (u, xn , ·) − F(xn ; ·)∥ϕ
+                                  ≤ L ∥δn ∥ϕ + ε.
+                                   Pn−1
+Iterating from δ0 = 0: ∥δn ∥ϕ ≤ j=0 Ln−1−j ε = ε(Ln − 1)/(L − 1) for L ̸= 1. Since the Wasserstein-2 distance
+                                          2          2
+satisfies W2 (µ̂θn , µn )2 ≤ E[∥x̂n − xn ∥ϕ ] ≤ ∥δn ∥ϕ (using the constructed coupling as a transport plan), and the
+pathwise bound ∥δn ∥ϕ ≤ ε(Ln − 1)/(L − 1) holds for all ω in the probability space, taking the square root gives (21).
+                                                Pn−1
+Part (b). For L < 1, the geometric series gives j=0 Ln−1−j ≤ 1/(1 − L) independent of n.
+Part (c). For any Lℓ -Lipschitz function g, the dual representation of the Wasserstein-1 distance gives |Eµ g − Eν g| ≤
+Lg W1 (µ, ν) ≤ Lg W2 (µ, ν) (since W1 ≤ W2 by Cauchy–Schwarz on the transport plan).
+Part (d). Apply (c) to each summand in L1−1 − LAR and sum over n = 0, . . . , T − 1, then divide by T :
+                                            T −1
+                                         Lℓ X ε(Ln − 1)
+                                                                       T               
+                                                               Lℓ ε       L −1
+                         |L1−1 − LAR | ≤                 =                         −T ,
+                                         T n=0 L − 1        T (L − 1) L − 1
+which simplifies to (24).
+Corollary 4.2 (Exponential risk gap for L > 1). If L > 1 and ε > 0, then
+                                                                  Lℓ εLT
+                                                                          
+                                     |L1−1 (θ) − LAR (θ)| = Θ                ,
+                                                                T (L − 1)2
+i.e., the population-risk gap grows exponentially in the horizon T . A model achieving small 1–1 training loss can have
+arbitrarily large AR deployment loss when L > 1.
+
+
+                                                                   8
+Proof. For large T , the dominant term in (24) is Lℓ εLT /(T (L − 1)2 ). The Θ (i.e., matching upper and lower bounds)
+follows because the n = T − 1 term alone already contributes Lℓ εLT −1 /((L − 1)T ).
+Remark 4.3 (Gas saturation vs. pressure in Norne). For pressure (elliptic), L = LP ≈ 1 (marginally stable), so
+the risk gap grows as O(T ε) — slowly. For gas saturation (hyperbolic front), L = LG > 1, so the gap grows
+exponentially, explaining the catastrophic 1–1 model failure in Figure 2d.
+
+4.2   Lower bound: the bound is sharp for hyperbolic transport
+
+Proposition 4.4 (Sharpness for hyperbolic transport). Consider the one-dimensional scalar conservation law ∂t S +
+v∂x S = 0 on a periodic grid of N cells, discretized by a first-order upwind scheme with CFL number ν = v∆t/∆x.
+For ν ∈ (0, 1), the discrete time-advance operator has ∥Dx F∥op,ℓ2 ∈ [1 − ν, 1] and the bound in Theorem 4.1(a) is
+tight to within a constant factor: for any θ with ∥Gθ − F ∥∞ = ε, there exists an initial condition x0 such that
+                                                   ∥x̂n − xn ∥ℓ2 ≥ c ε n
+for a universal constant c > 0.
+
+Proof. The upwind Jacobian has spectrum {1 − ν(1 − e−ik∆x ) : k = 0, . . . , N − 1}, giving ∥Dx F∥op,ℓ2 = 1 for
+k = 0 (the DC mode). For a perturbation ε aligned with the DC eigenvector
+                                                                  √         (a constant shift), Gθ (x) = F (x) + √
+                                                                                                                 ε1N
+(constant modeling offset). Then ∥x̂n − xn ∥ℓ2 = nε ∥1N ∥ℓ2 = nε N , matching the L = 1 bound with c = 1/ N .
+For L > 1, a perturbation aligned with the growing eigenmode (exists when ν > 1 or near resonance) gives exponential
+growth.
+
+5     Rollout Error: Sharp Analysis
+5.1   The fundamental rollout error recursion
+
+Theorem 5.1 (Decomposed rollout error bound). Let L ≥ 0 be the Lipschitz constant of Gθ and define the open-loop
+one-step residual on true states:
+                                         en := ∥Gθ (ξn ) − xn+1 ∥ϕ .                                         (25)
+Then for all n ≥ 1:
+
+(a) General bound:
+                                                               n−1
+                                                               X
+                                                   ∥δn ∥ϕ ≤          Ln−1−j ej .                                   (26)
+                                                               j=0
+
+(b) Uniform error (ej ≤ ε for all j):
+                                               Ln − 1
+                                  ∥δn ∥ϕ ≤ ε            (L ̸= 1),        ∥δn ∥ϕ ≤ nε     (L = 1).                  (27)
+                                               L−1
+
+(c) Contractive case (L < 1):
+                                                              ε
+                                                  ∥δn ∥ϕ ≤       ,       ∀n ≥ 0.                                   (28)
+                                                             1−L
+(d) Marginally unstable case (L = 1 + η, 0 < η ≪ 1):
+                                                        eηn − 1   εneηn
+                                           ∥δn ∥ϕ ≤ ε           ≤       = εneηn .                                  (29)
+                                                           η       ηn
+
+Proof. Part (a). Add and subtract Gθ (ξn ) evaluated at the true state:
+                ∥δn+1 ∥ϕ = ∥Gθ (u, x̂n , cn , τn ) − xn+1 ∥ϕ
+                          ≤ ∥Gθ (u, x̂n , cn , τn ) − Gθ (u, xn , cn , τn )∥ϕ + ∥Gθ (u, xn , cn , τn ) − xn+1 ∥ϕ
+                          ≤ L ∥δn ∥ϕ + en .
+This is the fundamental recursion ∥δn+1 ∥ϕ ≤ L ∥δn ∥ϕ + en . With δ0 = 0, unrolling gives (26): ∥δn ∥ϕ ≤
+Pn−1 n−1−j
+  j=0 L       ej .
+
+
+                                                               9
+                                                                    Pn−1   n−1−j
+Part (b). Set ej = ε and sum the geometric series: ∥δn ∥ϕ ≤ ε         j=0 L      = ε(Ln − 1)/(L − 1).
+                               Pn−1
+Part (c). For L < 1, ∥δn ∥ϕ ≤ ε k=0 Lk ≤ ε/(1 − L).
+Part (d). For L = 1 + η, (1 + η)n ≤ eηn (Bernoulli inequality in reverse), so ε(Ln − 1)/(L − 1) ≤ ε(eηn − 1)/η ≤
+εneηn .
+Theorem 5.2 (Dimension-dependent amplification in mixed-type systems). For the Norne system with state x =
+(p, Sw , So , Sg ) ∈ R4N , write δn = (δnP , δnW , δnO , δnG ) for the component errors. Assume Dx F has block structure re-
+flecting the elliptic–hyperbolic coupling, with blocks AP P , AP S , ASP , ASS (pressure–pressure, pressure–saturation,
+saturation–pressure, saturation–saturation). Then:
+
+(a) The pressure error satisfies
+                                                             n−1
+                                                             X
+                                δnP   ϕ
+                                        ≤ (LP )n δ0P   ϕ
+                                                         +         (LP )n−1−j (eP         S
+                                                                                j + CP S δj ϕ ),                       (30)
+                                                             j=0
+
+      where LP ≤ 1 + O((∆t)−1 α−1 ) is close to (or below) unity due to elliptic regularization, and CP S captures
+      saturation-to-pressure coupling.
+(b) The gas saturation error can grow faster than the overall system Lipschitz constant suggests:
+                                                                      (LG )n − 1
+                                                  δnG ϕ ≥ cG εG                                                        (31)
+                                                                       LG − 1
+      for some LG > LP when the mobility ratio M := Krg /(µg Kro /µo ) > 1 (favorable displacement unstable),
+      which is typical in Norne-type gas injection scenarios.
+
+Proof sketch. Part (a): The pressure block RP is governed by the pressure equation (6). The implicit Jacobian block
+(∂RP /∂p+ )−1 is bounded above in operator norm by Cell (a fixed multiple of Ttot -related constants) due to elliptic
+coercivity of the pressure operator. This gives LP < 1 or LP ≈ 1, resulting in controlled error accumulation. The
+coupling term CP S δjS accounts for saturation changes feeding back into the pressure equation through the total
+mobility Ttot .
+Part (b): The gas saturation block RG includes the nonlinear relative permeability Krg (Sg ) and the dissolved gas
+coupling. For M > 1, the gas front advances faster than stable displacement, and small perturbations in Sg near
+the front are amplified by the characteristic speed mismatch. A first-order WKB analysis of the linearized transport
+equation near the front shows an effective amplification factor LG = LG (front velocity) > 1. The lower bound (31)
+follows by constructing an explicit perturbation aligned with the unstable front mode.
+
+5.2    The AR training advantage: Lipschitz constant reduction on the predicted manifold
+
+Assumption 5.3 (AR contractivity on predicted manifold). Under autoregressive training with loss LAR , the effective
+Lipschitz constant of Gθ on the predicted-state distribution µ̂θn satisfies
+                                                                               
+                                   L̃ := sup Ex̂∼µ̂θn ∥Dx Gθ (u, x̂, c, τ )∥op,ϕ < L,
+                                            n
+
+where L is the global Lipschitz constant.
+Proposition 5.4 (Stability improvement from AR training). Under Assumption 5.3, the expected rollout error under
+AR training satisfies
+                                                                 ε
+                                     E ∥δn ∥ϕ ≤ L̃n E ∥δ0 ∥ϕ +        (L̃ < 1),                             (32)
+                                                               1 − L̃
+whereas under 1–1 training with L > 1 the bound from (27) grows as (Ln − 1)ε/(L − 1). The relative improvement
+is
+                      AR error bound          ε/(1 − L̃)
+                                      ≤      n
+                                                             → 0 as n → ∞ for L > 1, L̃ < 1.                (33)
+                      1–1 error bound    ε(L − 1)/(L − 1)
+
+Proof. Under AR training, the effective recursion on the predicted manifold uses L̃ < 1: E ∥δn+1 ∥ϕ ≤ L̃ E ∥δn ∥ϕ +
+                                                                             Pn−1
+Een ≤ L̃ E ∥δn ∥ϕ + ε. Iterating from n = 0 and using δ0 = 0: E ∥δn ∥ϕ ≤ ε k=0 L̃k ≤ ε/(1 − L̃). The ratio (33)
+follows directly.
+
+
+                                                             10
+6     PINO: Physics-Constrained Stability Theory
+6.1    PINO objective and the physics-consistent manifold
+
+Definition 6.1 (PINO loss). The PINO training objective augments the supervised loss with the discrete finite-volume
+residual penalty:
+                                                     " T −1                                  #
+                                                       1 X                                 2
+                        LPINO (θ) := LAR (θ) + λR E          ∥R(x̂n+1 , x̃n ; u, cn , τn )∥ϕ ,                   (34)
+                                                       T n=0
+where x̃n is either xn (teacher-forced physics penalty) or x̂n (closed-loop physics penalty), and λR > 0 is the physics
+weight.
+Definition 6.2 (Physics-consistent manifold). For fixed (u, cn , τn ), define
+                                     Mn := {(a, b) ∈ X 2 : R(a, b; u, cn , τn ) = 0}.                                 (35)
+                                                                                  2
+By Theorem 2.6, Mn is the graph of F: Mn = {(xn+1 , xn ) : (xn+1 , xn ) ∈ X , xn+1 = F(xn ; ·)}.
+
+6.2    Jacobian structure on the physics-consistent manifold
+
+Lemma 6.3 (Jacobian from implicit differentiation). Let Gθ (ξn ) = x̂n+1 satisfy R(x̂n+1 , xn ; u, cn , τn ) = 0 (i.e., the
+prediction lies on Mn ). Then the Jacobian J := Dx Gθ (ξn ) ∈ R4N ×4N satisfies
+                                                             !−1
+                                                  ∂R              ∂R
+                                         J =−                             .                                            (36)
+                                                    +
+                                                 ∂x x̂n+1         ∂x− xn
+
+Moreover, if Gθ = F exactly, then J = JF := Dx F(xn ; ·).
+
+Proof. Differentiating R(Gθ (u, x, c, τ ), x; ·) = 0 with respect to x:
+                                                ∂R             ∂R
+                                                    · D x Gθ +     = 0,
+                                                ∂x+            ∂x−
+which gives (36) upon inverting ∂R/∂x+ (which is invertible by Assumption 2.4). The second claim follows since if
+Gθ = F, this reduces to the implicit differentiation of F.
+
+Assumption 6.4 (Discrete dissipativity). The true time-advance map F is dissipative in the pore-volume metric: there
+exist 0 < ρF < 1 and R0 > 0 such that
+                    ∥F(x; ·) − F (y; ·)∥ϕ ≤ ρF ∥x − y∥ϕ        for all x, y ∈ X with ∥x − y∥ϕ > R0 .                  (37)
+
+For ∥x − y∥ϕ ≤ R0 (near-front regime), the Lipschitz constant is LF . The global Lipschitz constant is max(ρF , LF ).
+Theorem 6.5 (Spectral stability under PINO training). Suppose Assumption 6.4 holds. Let θ̂ be a minimizer
+of LPINO (θ) over a hypothesis class such that for any θ, Gθ is C 1 in x. Then for all ξ = (u, x, c, τ ) with
+x ∈ Mn,x := {a : (a, b) ∈ Mn for some b}:
+
+(a) The spectral radius of the learned Jacobian satisfies
+                                                                    CJ
+                                                 ϱ Dx Gθ̂ (ξ) ≤ ρF + √ ,                                              (38)
+                                                                      λR
+      where CJ depends on the Sobolev regularity of R, the coercivity constant α, and the Lipschitz constant of the
+      relative permeability functions.
+(b) The induced operator norm satisfies
+                                                                       CJ
+                                               ∥Dx Gθ̂ (ξ)∥op,ϕ ≤ ρF + √ .                                            (39)
+                                                                        λR
+
+(c) For λR ≥ λ∗R := (CJ /(1 − ρF ))2 , the learned operator is contractive: ∥Dx Gθ̂ ∥op,ϕ < 1.
+
+
+                                                            11
+Proof. Step 1: Residual magnitude at minimizer. At a minimizer θ̂ of LPINO , standard KKT/first-order optimality
+conditions imply
+                                          h                        i C
+                                                                 2     0
+                                         E R(Gθ̂ (ξn ), x̃n ; ·) ϕ ≤
+                                                                      λR
+                                                                                                       2
+for some constant C0 depending on the supervised loss value. Let rn := R(Gθ̂ (ξn ), xn ; ·), so E[∥rn ∥ϕ ] ≤ C0 /λR .
+Step 2: Perturbed implicit differentiation. From the residual equation R(x̂n+1 , xn ; ·) = rn (off manifold by rn ),
+differentiating in xn :
+                                              ∂R         ∂R     ∂rn
+                                                +
+                                                  ·J + − =           .
+                                              ∂x        ∂x       ∂x
+Thus                                                        −1
+                                                         ∂R       ∂rn
+                                            J = JF +                   ,
+                                                        ∂x+       ∂x
+where JF = −(∂R/∂x+ )−1 (∂R/∂x− ) is the true dynamics Jacobian (cf. Lemma 6.3).
+Step 3: Norm bound. Using coercivity (∥(∂R/∂x+ )−1 ∥op,ϕ ≤ 1/α):
+                                                  1 ∂rn         ∥∇x rn ∥H 1
+                                                                         ϕ
+                                  ∥J − JF ∥op,ϕ ≤            ≤              .
+                                                  α ∂x ϕ            α
+                                                                                             ′            1/2     1/2
+By the Poincaré–Sobolev embedding and the residual bound: ∥∇x rn ∥L2 ≤ CR ∥rn ∥H 1 ≤ CR        ∥rn ∥ϕ ∥rn ∥H 1
+                                         ′′     1/2           √
+(interpolation), giving ∥J − JF ∥op,ϕ ≤ CR ∥rn ∥ϕ /α ≤ CJ / λR .
+                                                                                                   √
+Step 4: Spectral radius. By Weyl’s inequality for matrices,
+                                                    √       |ϱ(J) − ϱ(JF )| ≤ ∥J − JF ∥op,ϕ ≤ CJ / λR . Since
+ϱ(JF ) ≤ ρF (by Assumption 6.4), ϱ(J) ≤ ρF + CJ / λR , which gives (38) and (39).
+                            √
+Part (c). Setting ρF + CJ / λR < 1 gives λR > (CJ /(1 − ρF ))2 =: λ∗R .
+Theorem 6.6 (PINO residual as Jacobian spectral regularizer). The physics residual term in LPINO penalizes the
+deviation of the learned Jacobian from the true dynamics Jacobian in a weighted operator norm. Specifically, for the
+PINO minimizer θ̂:
+                                                                           C2
+                                     E ∥Dx Gθ̂ (ξn ) − Dx F(ξn )∥2op,ϕ ≤ 2 J .
+                                                                     
+                                                                                                                 (40)
+                                                                          α λR
+Consequently, PINO training implicitly learns the spectral structure of the true dynamics Jacobian, with error in the
+                                   −1/2
+learned spectrum decaying as O(λR ).
+
+Proof. From Step 2–3 of the proof of Theorem 6.5: ∥J − JF ∥op,ϕ ≤ CJ ∥rn ∥ϕ /α. Squaring and taking expectations:
+                                     2
+E[∥J − JF ∥2op,ϕ ] ≤ (CJ /α)2 E[∥rn ∥ϕ ] ≤ CJ2 /(α2 λR ), which is (40). The spectral claim follows from the expected
+form of Weyl’s inequality: E[|ϱ(J) − ϱ(JF )|2 ] ≤ E[∥J − JF ∥2op,ϕ ] ≤ CJ2 /(α2 λR ).
+Theorem 6.7 (Uniform-in-time PINO rollout bound). Suppose λR ≥ λ∗R (so ∥Dx Gθ̂ ∥op,ϕ ≤ ρ < 1) and the one-step
+error is bounded by ε. Then
+                                                          ε
+                                              ∥δn ∥ϕ ≤       , ∀n ≥ 0.                                           (41)
+                                                        1−ρ
+Moreover, if the training loss also ensures en → 0 as training progresses, then supn ∥δn ∥ϕ → 0 uniformly in time.
+
+Proof. This is Part (c) of Theorem 5.1 applied with L = ρ < 1. Under PINO training, L = ∥Dx Gθ̂ ∥op,ϕ ≤ ρ by
+Theorem 6.5(c).
+
+7     K-Step Truncated Backpropagation Through Time
+7.1   TBPTT as a biased stochastic gradient estimator
+
+Definition 7.1 (TBPTT gradient estimator). Partition {0, . . . , T − 1} into windows Wr = {rK, . . . , min((r + 1)K −
+1, T − 1)} for r = 0, . . . , ⌈T /K⌉ − 1. The TBPTT gradient estimator is
+                                          ⌈T /K⌉−1
+                                                                            !
+                                             X        X
+                                gK (θ) :=          ∇θ     ℓ(x̂n+1 , xn+1 )               ,                        (42)
+                                         r=0        n∈Wr                    x̂rK =sg(x̂rK )
+
+
+
+                                                         12
+where sg denotes the stop-gradient (detach) operation: the predicted state at each window boundary is treated as a
+constant for the purposes of gradient computation.
+Remark 7.2 (What TBPTT discards). The full AR gradient (cf. (18)) contains terms
+                                                         
+                                         Y n
+                                             Dx Gθ (ξˆj ) Dθ Gθ (ξˆm )
+                                              j=m+1
+
+for all 0 ≤ m ≤ n ≤ T − 1. TBPTT retains only the terms where m and n lie in the same window: ⌊n/K⌋ = ⌊m/K⌋.
+The discarded terms involve Jacobian chains of length n − m ≥ K (crossing window boundaries).
+
+7.2   Bias decay theorem
+
+Theorem 7.3 (TBPTT gradient bias decay). Let g(θ) := ∇θ LAR (θ) be the exact AR gradient. Assume the closed-loop
+dynamics satisfy the average contractivity condition: there exists ρ ∈ [0, 1) such that
+
+                                            sup E ∥Dx Gθ (ξˆn )∥op,ϕ ≤ ρ.
+                                                                    
+                                                                                                             (43)
+                                              n
+
+Then the bias of the TBPTT estimator (42) satisfies:
+                                                                        C g ρK
+                                        ∥E[g(θ)] − E[gK (θ)]∥ ≤                · T,                              (44)
+                                                                        1−ρ
+
+where Cg := supn,θ E[ Dθ Gθ (ξˆn )          · ∥∂ℓ/∂ x̂n+1 ∥ϕ ].
+                                     ϕ→RP
+
+
+Proof. The gradient bias is
+                                                                                                          
+                                         T −1        n−1                       n
+                                     1 X             X                  ∂ℓ     Y
+               E[g(θ)] − E[gK (θ)] =                              E               Dx Gθ (ξˆj )Dθ Gθ (ξˆm ) ,
+                                     T n=0          m=0
+                                                                     ∂ x̂n+1 j=m+1
+                                                ⌊m/K⌋<⌊n/K⌋
+
+where the inner sum runs over all cross-window pairs (m and n in different windows). For such pairs, n − m ≥ K.
+Taking norms and using the bound (43) and the submultiplicativity of operator norms:
+                                                                    
+                                         n
+                                 ∂ℓ      Y
+                          E                 Dx Gθ (ξˆj )Dθ Gθ (ξˆm )
+                              ∂ x̂n+1 j=m+1
+                                                                                        
+                                              n
+                                     ∂ℓ       Y
+                         ≤ E                     ∥Dx Gθ (ξˆj )∥op,ϕ · Dθ Gθ (ξˆm )      
+                                  ∂ x̂n+1 ϕ j=m+1                                   ϕ→RP
+
+
+                           ≤ Cg ρn−m ≤ Cg ρK .
+
+The number of cross-windowPpairs (m, n) with n −Pm ≥ K is at most T (T − 1)/2 ≤ T 2 /2. However, for each n,
+                                                   ∞
+the sum over m telescopes: m:n−m≥K ρn−m ≤ s=K ρs = ρK /(1 − ρ). Summing over n = 0, . . . , T − 1 and
+dividing by T :
+                                                       T −1
+                                                     1 X C g ρK   C g ρK
+                                  ∥E[g] − E[gK ]∥ ≤             =        ,
+                                                    T n=0 1 − ρ    1−ρ
+                  to the factor T from the unnormalized version).
+which is (44) (up P                                               The factor T appears when working with the
+unnormalized loss n ℓ rather than the averaged LAR = T −1 n ℓ.
+                                                          P
+
+                                                        2
+Corollary 7.4 (Bias–variance optimal window size). Let σK := V[gK (θ)]/R be the per-window gradient variance
+(approximately constant in K for moderate K). The mean-squared error of gK as an estimator of g is
+
+                                                          2  2              Cg2 ρ2K   σ2 K
+                              MSE(K) = ∥E[g] − E[gK ]∥ + σK ≤                       +      ,                     (45)
+                                                                           (1 − ρ)2    T
+
+                                                            13
+where the second term reflects that larger K means fewer independent windows and higher gradient variance. Mini-
+mizing over K ≥ 1:
+                                                            2T Cg2 log(1/ρ)
+                                                                  
+                                                      log     σ 2 (1−ρ)2
+                                                 ∗
+                                              K =                 ,                                      (46)
+                                                     2 log(1/ρ)
+which grows logarithmically in T and decreases as ρ → 0 (more contractive dynamics allow shorter windows with
+the same bias).
+
+                                                                               2
+Proof. The MSE is the sum of bias squared and variance. The variance term σK       ≈ σ 2 K/T reflects that for fixed
+total data, a window of size K gives T /K independent gradient estimates, each with variance σ 2 , so the aggregated
+variance scales as (T /K)−1 · σ 2 = σ 2 K/T . Differentiating MSE(K) with respect to K (treating K as continuous):
+
+                                    d            2Cg2 log(1/ρ)ρ2K   σ2
+                                      MSE(K) = −                  +    = 0,
+                                   dK                 (1 − ρ)2      T
+           ∗
+giving ρ2K = σ 2 (1 − ρ)2 /(2T Cg2 log(1/ρ)), from which (46) follows by taking logarithms.
+
+Proposition 7.5 (Convergence rate under Adam with TBPTT). Suppose the PINO-AR objective LPINO (θ) is β1 -
+                                                                           2
+smooth and satisfies the Polyak–Łojasiewicz (PL) condition: ∥∇LPINO (θ)∥ ≥ 2µ(LPINO (θ) − L∗ ) for some µ > 0.
+     (t)
+Let θ be the Adam iterates
+                       √     with learning rate ηt , using the TBPTT gradient estimator gK . With K = K ∗ from (46)
+and step sizes ηt = η/ t, the expected suboptimality satisfies
+                                                                                 ∗
+                                                          CAdam   Cg ρK
+                                     E LPINO (θ(t) ) − L∗ ≤ √
+                                      
+                                                                 +       ,                                         (47)
+                                                              t    1−ρ
+                                                                                                     ∗
+                  √ on µ, β1 , η, and σ, and the second term is the irreducible TBPTT bias. For K = K , the
+where CAdam depends
+TBPTT bias is O(1/ T ), matching the statistical rate.
+
+                               √ under the PL condition and stochastic gradients with bounded bias b :=
+Proof. Standard Adam convergence
+∥E[g] − E[gK√]∥ gives rate O(1/ t) + b. The bias term b ≤ Cg ρK /(1 − ρ) from Theorem 7.3. At K = K ∗ ,
+   ∗
+ρK = O(1/ T ) (from the definition of K ∗ ), giving the stated bound.
+Remark 7.6 (Virtuous feedback loop: physics → contraction → TBPTT). Theorems 6.5 and 7.3 together establish a
+self-reinforcing cycle: PINO training reduces ρ (spectral contraction); smaller ρ reduces TBPTT bias Cg ρK /(1 − ρ)
+for fixed K; smaller K ∗ reduces memory and compute per iteration; more iterations improve both supervised loss and
+physics residual; better physics residual further reduces ρ. This feedback loop makes joint PINO-AR-TBPTT training
+strictly better than any of its components alone.
+
+8     FNO Architecture: Approximation Theory for Mixed-Type PDEs
+8.1   Neural operators in Banach spaces
+                                                                                                     ′
+Theorem 8.1 (Universal approximation for neural operators [16]). Let V = H s (Ω) and W = H s (Ω) for s, s′ ≥ 0.
+Let G : V → W be a continuous nonlinear operator. Then for any compact K ⊂ V and ε > 0, there exists a neural
+operator Gθ (in the FNO family) such that
+                                              sup ∥Gθ (v) − G(v)∥W < ε.
+                                             v∈K
+
+
+8.2   FNO layer and spectral parameterization
+
+An FNO layer transforms a latent channel field v (ℓ) ∈ Rdv ×N :
+                                                                                    
+                             v (ℓ+1) (x) = σ W (ℓ) v (ℓ) (x) + F −1 [R(ℓ) · v̂ (ℓ) ] (x) ,                         (48)
+
+where v̂ (ℓ) := F [v (ℓ) ] is the discrete Fourier transform (DFT) on the grid, R(ℓ) (k) ∈ Cdv ×dv are learnable complex
+weights truncated to k ∈ [−kmax , kmax ]3 , W (ℓ) ∈ Rdv ×dv is a pointwise linear map, and σ is a nonlinear activation.
+The spectral truncation introduces a bias toward low-frequency features.
+
+
+                                                            14
+Proposition 8.2 (Spectral approximation rates for elliptic vs. hyperbolic). (a) Elliptic (pressure). If p ∈ H s+2 (Ω) is
+   the pressure field (from elliptic regularity applied to (6) with f ∈ H s (Ω)), the FNO truncation error satisfies
+                                                                  −(s+2)
+                                           ∥p − pkmax ∥L2 ≤ Cell kmax    ∥f ∥H s .                                 (49)
+          −(s+2)
+     The kmax      decay is fast for smooth source terms.
+(b) Hyperbolic (gas saturation). If Sg has a sharp front of width δ ≪ 1 (discontinuity or near-discontinuity), the
+    Gibbs phenomenon gives
+                                                                    −1/2
+                                           ∥Sg − Sg,kmax ∥L2 ≥ cG kmax   ,                                    (50)
+                                                                          −1/2
+     where cG > 0 is a constant depending on the jump magnitude. The kmax rate is the optimal L2 rate for functions
+     of bounded variation with a single jump discontinuity.
+Consequently, FNO with fixed kmax has dramatically better approximation quality for pressure than for gas saturation,
+explaining the differential R2 behavior observed in Figure 2.
+
+Proof. Part (a): Standard Sobolev spectral approximation theory. The Fourier coefficients of p decay as |p̂(k)| ≤
+                                                                                            2
+C(1 + |k|2 )−(s+2)/2 by elliptic regularity, and truncation at |k| ≤ kmax gives ∥p − pkmax ∥L2 = |k|>kmax |p̂(k)|2 ≤
+                                                                                                P
+                                         −(2s+4−d)
+C 2 |k|>kmax (1 + |k|2 )−(s+2) ≤ C ′2 kmax
+   P
+                                                     (for d = 3), which is (49).
+Part (b): For a function with a jump discontinuity in one direction, the partial Fourier sum overshoots by the Gibbs
+constant ≈ 8.9% of the jump magnitude near the discontinuity. The L2 error for truncation at |k| ≤ kmax of a function
+                                                                −1/2
+in BV (Ω) (bounded variation) satisfies ∥Sg − Sg,kmax ∥L2 ≥ ckmax [40], which gives (50).
+
+9    Training Algorithm
+Algorithm 1 presents the complete autoregressive PINO training step with K-step TBPTT and a Peacemann well-
+response head. It directly implements the objectives in Definitions 3.2 and 6.1, with the detach operation at TBPTT
+boundaries corresponding to the stop-gradient in Definition 7.1.
+
+Correctness and theoretical connection. The detach at line 22 is exactly the stop-gradient of Definition 7.1; the
+Jacobian chains in (18) beyond window K are truncated. The PINO residual at lines 12–15 evaluates R(x̂n+1 , x̂n ; ·)
+as in Definition 6.1, driving predictions toward the physics-consistent manifold Mn (Definition 6.2) and activating the
+spectral stability mechanism of Theorem 6.5. The Peacemann head predicts well responses (WOPR, WWPR, WBHP)
+using a sequence-to-sequence sub-network; its gradient is computed in a separate backward pass.
+
+Code availability. Implementation is available at:
+https://github.com/clementetienam/physicsnemo/tree/801a85bc08aa9caa0d54027a145b88c68e5e5f36/
+examples/reservoir_simulation/norne.
+
+10    Computational Platform and Performance
+Hardware. All experiments were executed on a single NVIDIA HGX B200 node (Blackwell generation, TSMC
+4NP), equipped with eight NVIDIA B200 GPUs. Each B200 integrates two Blackwell dies via a 10 TB/s NV-HBI
+interconnect: 192 GB HBM3e memory per GPU (≈ 8 TB/s peak bandwidth); fifth-generation NVLink, 1.8 TB/s
+bidirectional peer-bandwidth per GPU; 14.4 TB/s aggregate intra-node bandwidth via the NVSwitch crossbar. Peak
+BF16 Tensor Core throughput: 4,500 TFLOPS per GPU.
+
+Memory analysis. The Norne state tensor (B, T, 4N ) with B = 8, T = 10, N = 113,344 at FP32 requires
+≈ 3.3 GB per forward pass. The full physics-residual tensor (four blocks, same shape) adds ≈ 3.3 GB. Combined
+with FP32 optimizer states (≈ 2P bytes for Adam, P ≈ 50M parameters for PINO), all tensors fit in a single
+B200’s HBM3e with no host offloading. No domain decomposition, activation checkpointing, or gradient offloading
+is required.
+
+Software. NVIDIA PhysicsNeMo [29], CUDA 12.8, BF16 mixed-precision with dynamic loss scaling,
+torch.distributed DDP for eight-GPU training. The 3D FFT in FNO spectral layers uses cuFFT with mode
+truncation (kmax,z , kmax,x , kmax,y ) = (6, 16, 16), operating in compute-bound regime.
+
+
+                                                            15
+Algorithm 1 TRAINING _ STEP: AR PINO + K-step TBPTT + Peacemann head
+Require: Model Gθ ; horizon T ; TBPTT window K; physics weight λR ; component weights wP , wW , wO , wG , wΠ .
+Require: Inputs: X[k] ∈ RB×T ×nz ×nx ×ny for k ∈ {perm,poro,fault,Q,Qg,Qw,dt,t,pini,sini,sgini,soini}.
+Require: Targets: YP , YW , YO , YG ∈ RB×T ×nz ×nx ×ny ; Peacemann target YΠ ∈ RB×66×T .
+                                                  2
+Ensure: Loss scalar ℓ ∈ R; updated metrics Rα       , RMSEα for α ∈ {P, W, O, G}.
+ 1: ℓwin ← 0; ℓtotal ← 0; ŝ−1 ← ∅. // Window accumulator, running total, prev. state
+ 2: for n = 0 to T − 1 do                                                                                            // AR loop over timesteps
+ 3:     if n = 0 then X(n) ← slice X at step 0.                                                // First step: use true initial state from data
+ 4:     else X(n) ← slice X at step n, but replace pini,sini,sgini,soini with (P̂ n−1 , Ŝw               n−1
+                                                                                                              , Ŝgn−1 , Ŝon−1 ).  // AR: feed
+    predicted state as new initial condition
+ 5:     end if
+ 6:     U(n) ← Pack(X(n) ).                                                                   // Stack all input channels into single tensor
+ 7:     // Forward pass: predict pressure and saturations
+ 8:     P̂ n ← Gθ (U(n) , pressure) ∈ RB×1×nz ×nx ×ny .
+ 9:     Ŝwn
+             , Ŝon , Ŝgn ← Gθ (U(n) , saturation) ∈ RB×3×nz ×nx ×ny .
+10:     // Supervised loss at step n
+          (n)
+11:     ℓsup ← wP L(P̂ n , YP,n ) + wW L(Ŝw     n
+                                                   , YW,n ) + wO L(Ŝon , YO,n ) + wG L(Ŝgn , YG,n ).
+12:     if PINO enabled and (epoch mod pino_freq = 0) then                          // PINO residual (evaluated periodically for efficiency)
+                (n)      (n) (n)
+13:           rP , rS , rG ← BlackOilResidual(X(n) , P̂ n , Ŝw  n
+                                                                   , Ŝon , Ŝgn ).                                                    // Eq. (7)
+                                         2               2                2
+              (n)                  (n)             (n)              (n)
+14:          ℓphys ← λR (λP rP               + λS rS         + λG rG          ).
+                 (n)
+15:     else    ℓphys ← 0.
+16:     end if
+                             (n)        (n)
+17:     ℓwin ← ℓwin + ℓsup + ℓphys .
+18:     if TBPTT and ((n + 1) mod K = 0 or n = T − 1) then                       // End of TBPTT window: backprop and detach
+19:         ∇θ (ℓwin /T ).backprop().                                             // Backpropagate through current window only
+20:         ℓtotal ← ℓtotal + detach(ℓwin ).
+21:         ℓwin ← 0.
+22:         ŝn ← detach(ŝn ).                             // Stop gradient: predicted state treated as constant for next window
+23:     end if
+24:                     n
+        ŝn ← (P̂ n , Ŝw , Ŝon , Ŝgn ).                                                // Store predicted state for next AR step
+25: end for
+26: // Peacemann head: sequence-to-sequence well response prediction
+27: ŶΠ ← Gθ (X(p) , peacemann) ∈ RB×66×T , where X(p) ∈ RB×90×T .
+28: ℓΠ ← wΠ L(ŶΠ , YΠ ).
+29: if TBPTT enabled then
+30:     ∇θ ℓΠ .backprop(); return ℓ = ℓtotal /T + detach(ℓΠ ).
+31: else
+32:     ∇θ (ℓtotal + ℓΠ ).backprop(); return detach(ℓtotal + ℓΠ ).
+33: end if
+
+
+
+Table 1: Wall-clock performance on 8× NVIDIA B200 (HGX B200). “OPM equiv.” denotes approximate wall-time
+for equivalent work using the Open Porous Media Flow finite-volume simulator on CPU clusters.
+                     Stage                                  B200×8 time OPM FV equiv.
+                          FNO 1–1 training (30 epochs)                             ≈15 min              —
+                          FNO AR-TBPTT training (30 epochs)                        ≈30 min              —
+                          PINO AR-TBPTT training (full)                            ≈60 min              —
+                          Single trajectory inference (T = 30)                      <1s              ≈4–5 min
+                          1,000-member ensemble inference                          < 1 min           ≈20–32 hr
+
+
+
+11     Norne Benchmark: Results and Theory-Consistent Interpretation
+
+11.1    Setup and evaluation metric
+
+The Norne field [9] is an offshore Norwegian oil-and-gas field on a 46 × 112 × 22 Cartesian grid. Key simulation
+properties are given in Table 2. Training data: Ns OPM simulator trajectories with randomized permeability, porosity,
+
+
+                                                                       16
+Figure 1: Three-dimensional permeability field of the Norne reservoir model (Nx = 46, Ny = 112, Nz = 22).
+Top-left: 3D permeability distribution with well trajectories overlaid, including water injectors, gas injectors, and
+oil/water/gas producers. Top-right: side view highlighting vertical heterogeneity and stratigraphic connectivity.
+Bottom-left: top view illustrating lateral permeability variations and channelized structures. Bottom-right: vertically
+averaged permeability map with well locations annotated. Permeability is shown on a logarithmic scale (mD), empha-
+sizing strong spatial heterogeneity that governs multiphase flow and plume migration dynamics.
+
+
+
+
+                                                          17
+and well-control perturbations. Evaluation: time-resolved coefficient of determination
+                                                                     2
+                                          PNs        (i)       (i)
+                                              i=1   x̂α,n − xα,n
+                           2                                         ϕ
+                          Rα (tn ) := 1 − P                          2,   α ∈ {P, Sw , So , Sg },            (51)
+                                              Ns     (i)
+                                              i=1   xα,n − x̄α,n
+                                                                     ϕ
+
+                 −1
+                    P     (i)                        2                                      2
+where x̄α,n = Ns       i xα,n is the ensemble mean. Rα (tn ) = 1 means perfect prediction; Rα (tn ) < 0 means the
+model is worse than the ensemble mean.
+
+                                     Table 2: Norne field simulation properties.
+                  Property                             Value
+                  Grid configuration                       46 × 112 × 22, N = 113,344 cells
+                  Cell size                                50 × 50 × 20 ft
+                  Producers / injectors                    22 / 13
+                  Simulation period                        3,298 days (30 timesteps of 100 days)
+                  Reservoir depth                          4,000 ft
+                  Initial reservoir pressure               1,000 psia
+                  Injector / producer well constraint      500 STB/day / 100 psia
+                  Residual oil / connate water sat.        0.20 / 0.20
+                  Petrophysical model                      Gaussian permeability/porosity realizations
+
+
+11.2   Results
+
+
+
+
+                                                            18
+                    (a) Pressure R2 (t)                                        (b) Water saturation R2 (t)
+
+
+
+
+                 (c) Oil saturation R2 (t)                                      (d) Gas saturation R2 (t)
+
+Figure 2: Time-resolved R2 comparison on the Norne benchmark (46 × 112 × 22, T = 30 timesteps, ≈3298 days).
+Blue dashed: 1–1 (teacher-forced) model. Orange solid: autoregressive PINO model. Gas saturation (d) shows
+the largest divergence, consistent with Theorems 5.1–6.7: gas is the most hyperbolic variable, has the largest effective
+Lipschitz constant LG > 1 under 1–1 training, and benefits most from AR-induced Jacobian contractivity. Pressure (a)
+benefits least, consistent with the elliptic regularity of the pressure equation (Proposition 8.2(a)) which keeps LP ≈ 1.
+
+
+11.3   Theory-consistent quantitative interpretation
+
+Gas saturation: catastrophic 1–1 failure. From Figure 2d, the 1–1 model drops to R2 ≈ 0.38 near t ≈ 1250
+   √ Fitting Theorem 5.1(d) to the observed degradation: at n = 12 steps (t = 1200 days), ∥δ12 ∥ / ∥x12 ∥ =
+days.
+O( 1 − 0.38) = O(0.79). Using (27) with LG ≈ 1.15 (estimated from the slope of the R2 decay on a log scale) and
+ε ≈ 3 × 10−3 (cross-validated one-step error): ε(L12 − 1)/(L − 1) ≈ 3 × 10−3 × 5.8/0.15 ≈ 0.12, giving relative
+error ≈ 12%, which corresponds to R2 ≈ 0.35, consistent with Figure 2d. The AR model avoids this by reducing LG
+below unity via Jacobian regularization (Theorem 6.5), maintaining R2 > 0.90 throughout.
+
+Pressure: transient dip and recovery. The 1–1 model shows a transient dip to R2 ≈ 0.72 near t = 1250 days
+(Figure 2a), coinciding with the gas-front breakthrough that perturbs the total mobility Ttot and temporarily elevates
+LP . The AR model recovers faster because its Jacobian is constrained to be contractive even in this regime (Theo-
+rem 6.5(c)). By t = 2100 days, both models converge to R2 ≈ 0.80, consistent with the long-time asymptotic error
+floor determined by the intrinsic ensemble spread.
+
+Oil saturation: slow degradation. The 1–1 model degrades from R2 ≈ 1.00 to R2 ≈ 0.96 over the horizon
+(Figure 2c), consistent with LO marginally above unity (LO ≈ 1.005, giving ε(1.00530 − 1)/0.005 ≈ 30ε, a 3%
+relative error at n = 30). The AR model maintains R2 > 0.99 throughout.
+
+Water saturation: monotone AR improvement. The AR model shows monotone R2 improvement from 0.753 to
+0.776 (Figure 2b), a behavior predicted by Theorem 6.7: for L < 1 (which the PINO AR model achieves for water
+
+
+                                                          19
+saturation after breakthrough), the rollout error is uniformly bounded and the model becomes more calibrated as fronts
+slow down late in the production history. The 1–1 model plateaus at R2 ≈ 0.755.
+
+12    Conclusion
+We have developed a comprehensive mathematical framework for sequential neural-operator surrogate modeling of
+black-oil reservoir dynamics, proving sharp results across four interlocking areas.
+Foundations (Section 2). Theorems 2.6 and Lemma 2.7 establish well-posedness of the implicit timestep map and
+provide phase-type-dependent Lipschitz constants, quantifying why gas saturation is intrinsically more fragile than
+pressure under operator composition.
+Covariate shift (Section 4). Theorem 4.1 proves the Wasserstein-2 gap grows as ε(Ln − 1)/(L − 1); Corollary 4.2
+shows the population-risk discrepancy between 1–1 and AR training is Θ(LT ) for L > 1, mathematically explaining
+the catastrophic 1–1 failure in gas saturation.
+PINO stability (Section 6). Theorem 6.5 shows PINO training with λR ≥ λ∗R reduces the operator spectral radius to
+         −1/2                                                                                             −1/2
+ρF + O(λR ) < 1; Theorem 6.6 shows physics residuals act as spectral Jacobian regularizers with error O(λR );
+Theorem 6.7 gives uniform-in-time rollout error bounds ε/(1 − ρ) for PINO AR operators.
+TBPTT (Section 7). Theorem 7.3 establishes geometric bias decay√O(ρK ); Corollary 7.4 derives optimal window
+                                                                           ∗
+K ∗ = O(log T ); Proposition 7.5 gives Adam convergence rate O(1/ t) + O(ρK ).
+Empirical validation (Section 11). Autoregressive PINO surrogates maintain R2 > 0.99 (oil), R2 > 0.90 (gas),
+R2 ≈ 0.80 (pressure), and monotone improvement (water) across the full Norne 3298-day horizon; 1–1 models fail
+on gas and pressure. Ensemble inference runs in < 1 minute on a single B200 GPU: a ∼ 104 × wall-clock speedup
+over the OPM finite-volume simulator.
+Future work includes: (a) extending the Wasserstein covariate-shift bounds to non-Markovian (multi-step condition-
+ing) operator inputs; (b) extending the PINO stability theorem to non-coercive residuals (e.g., hyperbolic-only without
+capillary regularization); (c) sharp Rademacher complexity bounds for FNO function classes via their spectral struc-
+ture.
+
+Acknowledgments
+This work was supported by NVIDIA Corporation. The authors also thanks Harpreet Sethi (NVIDIA Corporation)
+for his expert guidance and deep technical insights in reservoir simulation and physics-informed machine learning,
+which greatly benefited this work.
+
+References
+ [1] Aziz, K., & Settari, A. (1979). Petroleum Reservoir Simulation. Applied Science Publishers.
+ [2] Bartlett, P. L., & Mendelson, S. (2002). Rademacher and Gaussian complexities: Risk bounds and structural
+     results. Journal of Machine Learning Research, 3, 463–482.
+ [3] Bengio, Y., Simard, P., & Frasconi, P. (1994). Learning long-term dependencies with gradient descent is difficult.
+     IEEE Transactions on Neural Networks, 5(2), 157–166.
+ [4] Bengio, S., Vinyals, O., Jaitly, N., & Shazeer, N. (2015). Scheduled sampling for sequence prediction with
+     recurrent neural networks. Advances in Neural Information Processing Systems, 28.
+ [5] Bi, K., Xie, L., Zhang, H., Chen, X., Gu, X., & Tian, Q. (2023). Accurate medium-range global weather fore-
+     casting with 3D neural networks. Nature, 619, 533–538.
+ [6] Chandra, A., Koch, M., Pawar, S., Panda, A., Azizzadenesheli, K., Snippe, J., et al. (2025). Accelerating porous
+     media flow simulations with Fourier neural operators. Advanced Theory and Simulations, e00747.
+ [7] Chen, T., & Chen, H. (1995). Universal approximation to nonlinear operators by neural networks. IEEE Trans-
+     actions on Neural Networks, 6(4), 911–917.
+ [8] Chen, Z., Huan, G., & Ma, Y. (2006). Computational Methods for Multiphase Flows in Porous Media. SIAM.
+ [9] Equinor ASA. (2012). Norne Field Open Data Set. Open Porous Media Initiative. https://opm-project.org/
+     ?page_id=559.
+
+
+                                                          20
+[10] Etienam, C., Juntao, Y., Said, I., Ovcharenko, O., et al. (2024). A novel AI-enhanced reservoir characterization
+     with a combined mixture of experts–NVIDIA Modulus based PINO forward model. arXiv:2404.14447.
+[11] Etienam, C., Juntao, Y., Ovcharenko, O., & Said, I. (2024). Reservoir history matching of the Norne field with
+     generative exotic priors and a coupled MoE–PINO forward model. arXiv:2406.00889.
+[12] Etienam, C., Juntao, Y., Said, I., & Ovcharenko, O. (2024). A reservoir history matching approach using a
+     coupled MoE-PINO forward model. ECMOR 2024, 1–35.
+[13] Herde, M., Raonic, B., Rohner, T., Käppeli, R., Mishra, S., de Bezenac, E., & Koumoutsakos, P. (2024). Poseidon:
+     Efficient foundation models for PDEs. arXiv:2405.19101.
+[14] Karniadakis, G. E., Kevrekidis, I. G., Lu, L., Perdikaris, P., Wang, S., & Yang, L. (2021). Physics-informed
+     machine learning. Nature Reviews Physics, 3, 422–440.
+[15] Kochkov, D., Smith, J. A., Alieva, A., Wang, Q., Brenner, M. P., & Hoyer, S. (2021). Machine learning–
+     accelerated computational fluid dynamics. Proceedings of the National Academy of Sciences, 118(21).
+[16] Kovachki, N., Li, Z., Liu, B., Azizzadenesheli, K., Bhattacharya, K., Stuart, A., & Anandkumar, A. (2021).
+     Neural operator: Learning maps between function spaces. arXiv:2108.08481.
+[17] Lam, R., Sanchez-Gonzalez, A., Willson, M., et al. (2023). Learning skillful medium-range global weather
+     forecasting. Science, 382, 1416–1421.
+[18] Lamb, A. M., Goyal, A., Zhang, Y., Zhang, S., Courville, A. C., & Bengio, Y. (2016). Professor forcing: A new
+     algorithm for training recurrent networks. Advances in Neural Information Processing Systems, 29.
+[19] Lanthaler, S., Mishra, S., & Karniadakis, G. E. (2022). Error estimates for DeepONets: A deep learning frame-
+     work in infinite dimensions. Transactions of Mathematics and Its Applications, 6(1).
+[20] Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhattacharya, K., Stuart, A., & Anandkumar, A. (2020).
+     Fourier neural operator for parametric partial differential equations. arXiv:2010.08895.
+[21] Li, Z., Zheng, H., Kovachki, N., Jin, D., Chen, H., Liu, B., Azizzadenesheli, K., & Anandkumar, A. (2021).
+     Physics-informed neural operator for learning partial differential equations. arXiv:2111.03794.
+[22] Lu, L., Jin, P., Pang, G., Zhang, Z., & Karniadakis, G. E. (2021). Learning nonlinear operators via DeepONet.
+     Nature Machine Intelligence, 3, 218–229.
+[23] Mikhaeil, J. M., Monfared, Z., & Durstewitz, D. (2022). On the difficulty of learning chaotic dynamics with
+     RNNs. Advances in Neural Information Processing Systems, 35.
+[24] Mukundakrishnan, K., Wiegand, K., Natoli, V., Etienam, C., et al. (2024). Accelerating reservoir modeling
+     workflows with neural operators and GPU-based simulations. ADIPEC 2024, D021S068R002.
+[25] Rasmussen, A. F., Sandve, T. H., Bao, K., et al. (2021). The Open Porous Media Flow reservoir simulator.
+     Computers & Mathematics with Applications, 81, 159–185.
+[26] Pascanu, R., Mikolov, T., & Bengio, Y. (2013). On the difficulty of training recurrent neural networks. ICML
+     2013, 1310–1318.
+[27] Pathak, J., Subramanian, S., Harrington, P., et al. (2022). FourCastNet: A global data-driven high-resolution
+     weather model. arXiv:2202.11214.
+[28] Peaceman, D. W. (1977). Fundamentals of Numerical Reservoir Simulation. Elsevier.
+[29] NVIDIA PhysicsNeMo. (2023). GitHub. https://github.com/NVIDIA/physicsnemo.
+[30] Raissi, M., Perdikaris, P., & Karniadakis, G. E. (2019). Physics-informed neural networks. Journal of Computa-
+     tional Physics, 378, 686–707.
+[31] Ranzato, M., Chopra, S., Auli, M., & Zaremba, W. (2016). Sequence level training with recurrent neural net-
+     works. ICLR 2016.
+[32] Rwechungura, R., Sjetne, O., & Lien, M. (2011). Application of advanced history matching techniques to the
+     Norne field. SPE Reservoir Simulation Symposium.
+[33] Takamoto, M., Praditia, T., Leiteritz, R., et al. (2022). PDEBench: An extensive benchmark for scientific machine
+     learning. Advances in Neural Information Processing Systems, 35.
+[34] Tallec, C., Ollivier, Y., & Chrisman, O. (2017). Unbiasing truncated backpropagation through time.
+     arXiv:1705.08209.
+[35] Tang, M., Liu, Y., & Durlofsky, L. J. (2020). A deep-learning-based surrogate model for CO2 storage. Interna-
+     tional Journal of Greenhouse Gas Control, 100, 103096.
+
+
+                                                         21
+[36] Um, K., Brand, R., Fei, Y., Holl, P., & Thuerey, N. (2020). Solver-in-the-loop: Learning from differentiable
+     physics. Advances in Neural Information Processing Systems, 33.
+[37] Venkatraman, A., Hebert, M., & Bagnell, J. A. (2015). Improving multi-step prediction of learned time series
+     models. AAAI 2015.
+[38] Villani, C. (2009). Optimal Transport: Old and New. Springer.
+[39] Williams, R. J., & Zipser, D. (1989). A learning algorithm for continually running fully recurrent neural networks.
+     Neural Computation, 1, 270–280.
+[40] Zygmund, A. (2002). Trigonometric Series, 3rd ed. Cambridge University Press.
+[41] Zhu, Y., & Zabaras, N. (2018). Bayesian deep convolutional encoder–decoder networks for surrogate modeling.
+     Journal of Computational Physics, 366, 415–447.
+
+
+
+
+                                                          22
+
